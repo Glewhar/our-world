@@ -1,0 +1,7 @@
+{
+  "attrs_dir": "C:\\Users\\erdem\\Desktop\\game\\data-pipeline\\sources\\attrs",
+  "config_dir": "C:\\Users\\erdem\\Desktop\\game\\data-pipeline\\config",
+  "nside": 1024,
+  "source": "natural-earth",
+  "sources_dir": "C:\\Users\\erdem\\Desktop\\game\\data-pipeline\\sources\\natural_earth"
+}
