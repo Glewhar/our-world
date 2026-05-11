@@ -37,6 +37,11 @@ export const DEFAULT_WAVE_AMPLITUDE_M = 150;
 export const DEFAULT_WAVE_SPEED = 1.0;
 export const DEFAULT_WAVE_STEEPNESS = 0.5;
 export const DEFAULT_FRESNEL_STRENGTH = 1.0;
+// Depth-falloff scale for the exponential ocean tint. depthT = exp(-depth / k).
+// 25 gives very tight shelves — depthT drops to ~0.02 by 100 m of depth, so
+// only the literal coast strip catches the shallow tint and everything else
+// reads as deep. Tunable in Tweakpane (Materials → Ocean → depth falloff).
+export const DEFAULT_DEPTH_FALLOFF_M = 50;
 // Default ocean-current visualisation strength. 0 hides streamlines, 1 is
 // "subtle but visible" — the streamlines are a low-contrast additive
 // overlay on the day-side ocean, dimmed in shallow water and gated to
@@ -55,8 +60,16 @@ export function createWaterMaterial() {
         uAttrTexWidth: { value: 1 },
         uElevationScale: { value: DEFAULT_ELEVATION_SCALE },
         uWaterRadialBias: { value: DEFAULT_WATER_RADIAL_BIAS },
-        uOceanDeep: { value: new THREE.Color('#0a2a4f') },
+        uOceanAbyssal: { value: new THREE.Color('#03081a') },
+        uOceanDeep: { value: new THREE.Color('#143e7a') },
+        uOceanShelf: { value: new THREE.Color('#1a6b95') },
         uOceanShallow: { value: new THREE.Color('#3da6c2') },
+        uOceanTrenchStart: { value: 4500 },
+        uOceanTrenchEnd: { value: 8000 },
+        uCoastalTintColor: { value: new THREE.Color('#2d8c80') },
+        uCoastalTintStrength: { value: 0.4 },
+        uCoastalTintFalloff: { value: 400 },
+        uDepthFalloff: { value: DEFAULT_DEPTH_FALLOFF_M },
         uTime: { value: 0 },
         uWaveAmplitude: { value: DEFAULT_WAVE_AMPLITUDE_M },
         uWaveSpeed: { value: DEFAULT_WAVE_SPEED },
@@ -66,6 +79,9 @@ export function createWaterMaterial() {
         uCurrentStrength: { value: DEFAULT_CURRENT_STRENGTH },
         uStreamlinesEnabled: { value: 1 },
         uStrongJetsOnly: { value: 0 },
+        uSkyView: { value: null },
+        uHazeExposure: { value: 3.5 },
+        uHazeAmount: { value: 0.25 },
     };
     const vertexShader = `${healpixGlsl}\n${wavesGlsl}\n${vertGlsl}`;
     const fragmentShader = `${healpixGlsl}\n${wavesGlsl}\n${fragGlsl}`;

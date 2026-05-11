@@ -47,7 +47,7 @@ async function boot() {
     const toggleClouds = document.getElementById('toggle-clouds');
     const toggleOcean = document.getElementById('toggle-ocean');
     const toggleAtmosphere = document.getElementById('toggle-atmosphere');
-    const toggleCities = document.getElementById('toggle-cities');
+    const toggleHighways = document.getElementById('toggle-highways');
     const togglePlanes = document.getElementById('toggle-planes');
     const wireLayerToggle = (el, key) => {
         if (!el)
@@ -60,7 +60,7 @@ async function boot() {
     wireLayerToggle(toggleClouds, 'clouds');
     wireLayerToggle(toggleOcean, 'ocean');
     wireLayerToggle(toggleAtmosphere, 'atmosphere');
-    wireLayerToggle(toggleCities, 'cities');
+    wireLayerToggle(toggleHighways, 'highways');
     // Planes toggle is a combined master for two state keys: heads (planes)
     // and trails. Both flip together so the user has one obvious "show air
     // traffic" switch — fine-grained airports/routes still live in Tweakpane.

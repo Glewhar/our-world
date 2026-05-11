@@ -23,8 +23,8 @@ export class Globe {
     group = new THREE.Group();
     land;
     water;
-    constructor(world) {
-        this.land = new Land(world);
+    constructor(world, renderer) {
+        this.land = new Land(world, renderer);
         this.water = new Water(world);
         this.group.add(this.land.group, this.water.group);
     }

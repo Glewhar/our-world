@@ -21,6 +21,7 @@
 import * as THREE from 'three';
 import { AttributeTextures } from './AttributeTextures.js';
 import { BodyRegistry } from './BodyRegistry.js';
+import { DistanceFieldTexture } from './DistanceFieldTexture.js';
 import { IdRaster } from './IdRaster.js';
 import { WorkerBridge } from './WorkerBridge.js';
 import { xyzToLatLon } from './coordinates.js';
@@ -47,7 +48,7 @@ export async function createWorldRuntime(opts = {}) {
     const manifest = await loadManifest(manifestUrl);
     const baseUrl = manifestUrl.slice(0, manifestUrl.lastIndexOf('/'));
     const { nside, ordering } = manifest.healpix;
-    const [idRaster, attributes, windField, oceanCurrents, cities] = await Promise.all([
+    const [idRaster, attributes, windField, oceanCurrents, cities, roads, distanceField] = await Promise.all([
         IdRaster.load(`${baseUrl}/${manifest.artifacts.id_raster.path}`, nside, ordering),
         AttributeTextures.load({
             attribute_static: manifest.artifacts.attribute_static,
@@ -69,6 +70,22 @@ export async function createWorldRuntime(opts = {}) {
         // natural-earth bakes. Failure to fetch (e.g., legacy bake without the
         // file) degrades to an empty list so the runtime still boots.
         loadCitiesArtifact(`${baseUrl}/${manifest.artifacts.cities.path}`),
+        // roads.json — same shape as cities. Empty on fixture / legacy bakes.
+        // Manifests written before the highways layer existed don't have a
+        // `roads` artifact ref at all; degrade to an empty list so the runtime
+        // still boots. Once the user re-bakes (or runs the manifest stage)
+        // the new ref appears and the layer populates.
+        manifest.artifacts.roads
+            ? loadRoadsArtifact(`${baseUrl}/${manifest.artifacts.roads.path}`)
+            : Promise.resolve([]),
+        // distance_field — older bakes predate the artifact; the cli's
+        // back-fill writes a zero-byte placeholder. Same threshold as
+        // wind_field. When null, the land shader treats every pixel as
+        // "deep land, far from any boundary" and the visuals revert to
+        // the pre-feature look.
+        manifest.artifacts.distance_field.size_bytes > 32
+            ? DistanceFieldTexture.load(`${baseUrl}/${manifest.artifacts.distance_field.path}`)
+            : Promise.resolve(null),
     ]);
     const registry = new BodyRegistry(manifest.bodies);
     const bridge = new WorkerBridge();
@@ -120,7 +137,9 @@ export async function createWorldRuntime(opts = {}) {
         getHealpixSpec: () => ({ nside, ordering }),
         getWindFieldTexture: () => (windField ? windField.texture : null),
         getOceanCurrentsTexture: () => (oceanCurrents ? oceanCurrents.texture : null),
+        getDistanceFieldTexture: () => (distanceField ? distanceField.texture : null),
         getCities: () => cities,
+        getRoads: () => roads,
         getAggregates: () => ZERO_AGGREGATES,
         onAttributeChanged: (cb) => {
             attrListeners.add(cb);
@@ -176,8 +195,9 @@ export async function createWorldRuntime(opts = {}) {
 /**
  * Fetch + parse `cities.json`. Returns an empty array on any failure
  * (404, parse error, schema mismatch) so a stale or partial bake doesn't
- * keep the runtime from booting — the cities layer will simply render
- * nothing in that case.
+ * keep the runtime from booting — `getCities()` will simply return an
+ * empty list. No render layer consumes this today; the data is retained
+ * for potential downstream consumers (labels, sim hooks).
  */
 async function loadCitiesArtifact(url) {
     try {
@@ -190,6 +210,25 @@ async function loadCitiesArtifact(url) {
     }
     catch (err) {
         console.warn(`[cities] load error from ${url}:`, err);
+        return [];
+    }
+}
+/**
+ * Fetch + parse `roads.json`. Returns an empty array on any failure so a
+ * stale or partial bake doesn't keep the runtime from booting — the
+ * highways layer simply renders nothing in that case.
+ */
+async function loadRoadsArtifact(url) {
+    try {
+        const file = await fetchMaybeGzJson(url);
+        if (!Array.isArray(file?.roads)) {
+            console.warn(`[roads] missing 'roads' array in ${url}`);
+            return [];
+        }
+        return file.roads;
+    }
+    catch (err) {
+        console.warn(`[roads] load error from ${url}:`, err);
         return [];
     }
 }

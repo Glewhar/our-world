@@ -30,8 +30,8 @@ export class Globe {
   readonly land: Land;
   readonly water: Water;
 
-  constructor(world: WorldRuntime) {
-    this.land = new Land(world);
+  constructor(world: WorldRuntime, renderer: THREE.WebGLRenderer) {
+    this.land = new Land(world, renderer);
     this.water = new Water(world);
     this.group.add(this.land.group, this.water.group);
   }

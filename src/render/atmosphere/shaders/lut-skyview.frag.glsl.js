@@ -25,7 +25,31 @@ uniform float uRayleighScale;
 uniform float uMieScale;
 uniform vec3 uSolarIrradiance;
 
-const int SKYVIEW_STEPS = 32;
+const int SKYVIEW_STEPS = 96;
+
+// Non-linear zenith parameterization that clusters LUT samples around the
+// horizon. Without this, a thin atmosphere shell occupies a sub-pixel slice
+// of a uniformly-sampled LUT and bilinear filtering washes the halo out.
+// The horizon angle depends on camera distance, so both bake and runtime
+// shaders must compute it identically from \`uCameraPos\`.
+float horizonZenithFromCam(vec3 cam) {
+  float r = length(cam);
+  float s = clamp(PLANET_RADIUS / r, 0.0, 1.0);
+  return PI - asin(s);
+}
+
+// Decode LUT v ∈ [0,1] to view-zenith ∈ [0, π].
+//   v < 0.5 → above horizon, sqrt-spaced from zenith=0 to horizon
+//   v > 0.5 → below horizon, sqrt-spaced from horizon to zenith=π
+float zenithFromV(float v, float horizonZenith) {
+  if (v < 0.5) {
+    float t = (0.5 - v) * 2.0;
+    return horizonZenith * (1.0 - t * t);
+  } else {
+    float t = (v - 0.5) * 2.0;
+    return horizonZenith + (PI - horizonZenith) * t * t;
+  }
+}
 
 // Build an orthonormal basis at the camera. The basis vector \`up\` is the
 // camera-to-planet "up" direction (away from planet center), \`right\` is
@@ -56,7 +80,13 @@ vec3 marchAtmosphere(vec3 origin, vec3 dir, vec3 sunDir) {
   float tEnter = raySphereNearest(origin, dir, uAtmosphereRadius);
   float tFar = raySphereFar(origin, dir, uAtmosphereRadius);
   if (tFar <= 0.0) return vec3(0.0);
-  float tStart = max(tEnter, 0.0);
+  // If camera is inside the atmosphere shell, integration begins at the camera
+  // (t = 0). Otherwise it begins at the shell entry. raySphereNearest returns
+  // the exit point when origin is inside, which would collapse tStart == tEnd
+  // and produce zero radiance — visible as flicker as the camera crosses the
+  // shell during zoom.
+  bool insideAtm = dot(origin, origin) < uAtmosphereRadius * uAtmosphereRadius;
+  float tStart = insideAtm ? 0.0 : max(tEnter, 0.0);
   // If the ray hits the planet, integrate up to the ground hit.
   float tGround = raySphereNearest(origin, dir, PLANET_RADIUS);
   float tEnd = (tGround > 0.0 && tGround > tStart) ? tGround : tFar;
@@ -102,7 +132,8 @@ vec3 marchAtmosphere(vec3 origin, vec3 dir, vec3 sunDir) {
 
 void main() {
   float azimuth = vUv.x * 2.0 * PI;
-  float zenith = vUv.y * PI;
+  float horizonZ = horizonZenithFromCam(uCameraPos);
+  float zenith = zenithFromV(vUv.y, horizonZ);
 
   vec3 cUp, cAzRef, cTangent;
   cameraBasis(uCameraPos, uSunDirection, cUp, cAzRef, cTangent);

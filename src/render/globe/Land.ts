@@ -14,6 +14,8 @@
 
 import * as THREE from 'three';
 
+import { bakeBiomeColorTexture } from './BiomeColorPrebake.js';
+import { bakeElevationEquirectTexture } from './ElevationEquirectPrebake.js';
 import { createLandMaterial, type LandUniforms } from './LandMaterial.js';
 import type { WorldRuntime } from '../../world/index.js';
 
@@ -26,7 +28,7 @@ export class Land {
   private readonly geometry: THREE.IcosahedronGeometry;
   private readonly material: THREE.ShaderMaterial & { _landUniforms: LandUniforms };
 
-  constructor(world: WorldRuntime) {
+  constructor(world: WorldRuntime, renderer: THREE.WebGLRenderer) {
     this.geometry = new THREE.IcosahedronGeometry(UNIT_RADIUS, ICOSPHERE_SUBDIVISION);
     this.material = createLandMaterial();
 
@@ -36,6 +38,9 @@ export class Land {
     u.uAttrClimate.value = world.getAttributeTexture('temperature');
     u.uAttrDynamic.value = world.getAttributeTexture('fire');
     u.uElevationMeters.value = world.getElevationMetersTexture();
+    u.uElevationEquirect.value = bakeElevationEquirectTexture(renderer, world);
+    u.uDistanceField.value = world.getDistanceFieldTexture();
+    u.uBiomeColor.value = bakeBiomeColorTexture(renderer, world);
 
     const { nside, ordering } = world.getHealpixSpec();
     u.uHealpixNside.value = nside;

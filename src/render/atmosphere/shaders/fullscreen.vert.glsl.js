@@ -18,6 +18,10 @@ void main() {
     (gl_VertexID == 2) ?  3.0 : -1.0
   );
   vUv = 0.5 * (clip + 1.0);
-  gl_Position = vec4(clip, 0.0, 1.0);
+  // z=1 → fragment lands at far plane so the runtime atmosphere pass
+  // depth-tests against the globe (LessEqualDepth) — it survives only where
+  // no opaque geometry has written depth. The LUT bakes use depth-less
+  // render-targets, so this z has no effect there.
+  gl_Position = vec4(clip, 1.0, 1.0);
 }
 `;

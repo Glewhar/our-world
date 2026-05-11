@@ -1,16 +1,16 @@
 /**
- * Hillaire 2020 atmosphere pass — replaces the Phase 2 fresnel placeholder.
+ * Hillaire 2020 atmosphere pass.
  *
  * Three precomputed LUTs (transmittance, multi-scattering, sky-view) feed
  * a runtime fullscreen-triangle Mesh that alpha-composites the sky over
- * the globe. The Mesh is `attached to the scene with `depthTest=false` and
- * `renderOrder=1`, so it draws after the globe and before any post-FX.
+ * the globe. The Mesh draws at `renderOrder=1` with `depthTest=true` and
+ * the vertex shader emits at the far plane (`gl_Position.z = 1.0`), so the
+ * fragment passes only where no opaque geometry has written depth. The
+ * rendered terrain silhouette (including displaced mountain peaks) thus
+ * punches through the halo naturally.
  *
- * Public API preserved from Phase 2 (constructor, mesh, material,
- * `setSunDirection`, `dispose`) so [scene-graph.ts](../scene-graph.ts)'s
- * `scene.add(atmosphere.mesh)` line works unchanged. The constructor now
- * also requires a `THREE.WebGLRenderer` because LUT precompute happens at
- * construction.
+ * The constructor requires a `THREE.WebGLRenderer` because the two static
+ * LUTs (transmittance, multi-scatter) bake at construction.
  *
  * See `docs/adr/0007-bruneton-hillaire-atmosphere.md`.
  */
@@ -41,6 +41,9 @@ export class AtmospherePass {
   private readonly sunDir = new THREE.Vector3(1, 0, 0.3).normalize();
   private readonly cameraPos = new THREE.Vector3(3, 0, 0);
   private dirty = true;
+  private prevRayleighScale = NaN;
+  private prevMieScale = NaN;
+  private prevAtmosphereRadius = NaN;
 
   constructor(renderer: THREE.WebGLRenderer, opts: AtmosphereOptions = {}) {
     const atmosphereRadius = opts.atmosphereRadius ?? 1.07;
@@ -70,7 +73,7 @@ export class AtmospherePass {
         uAtmosphereRadius: { value: atmosphereRadius },
       },
       transparent: true,
-      depthTest: false,
+      depthTest: true,
       depthWrite: false,
       blending: THREE.NormalBlending,
     });
@@ -86,18 +89,28 @@ export class AtmospherePass {
     this.mesh.renderOrder = 1;
   }
 
+  /**
+   * Sky-view LUT colour texture. Exposed so the land/water shaders can
+   * sample the same precomputed sky radiance for in-shader aerial
+   * perspective (haze tint) — see `LandMaterial`/`WaterMaterial`
+   * `uSkyView`. The LUT updates whenever camera or sun moves.
+   */
+  get skyViewTexture(): THREE.Texture {
+    return this.luts.skyView.texture;
+  }
+
+  /** Current exposure multiplier; surface haze uses the same value so the
+   *  rim tint colour-matches the visible halo. */
+  get exposure(): number {
+    return this.material.uniforms.uExposure!.value as number;
+  }
+
   setSunDirection(dir: THREE.Vector3): void {
     this.sunDir.copy(dir).normalize();
     (this.material.uniforms.uSunDirection!.value as THREE.Vector3).copy(this.sunDir);
     this.dirty = true;
   }
 
-  /**
-   * Push the current camera state into uniforms + re-render the sky-view
-   * LUT if anything changed since last frame. Called by `scene-graph.ts`
-   * before composer.render so the runtime fragment shader has fresh
-   * `uInvViewProj` + a coherent sky-view LUT.
-   */
   syncFromCamera(camera: THREE.PerspectiveCamera): void {
     camera.getWorldPosition(this.tmpCameraPos);
     if (!this.tmpCameraPos.equals(this.cameraPos)) {
@@ -115,13 +128,26 @@ export class AtmospherePass {
     }
   }
 
-  setScales(rayleigh: number, mie: number, atmosphereRadius?: number): void {
-    const radius = atmosphereRadius ?? this.luts.getAtmosphereRadius();
-    this.material.uniforms.uAtmosphereRadius!.value = radius;
+  // `scene-graph.ts` calls this every frame from the Tweakpane apply path.
+  // Skip the LUT rebake when nothing actually changed — otherwise `recomputeAll`
+  // re-renders the sky-view LUT every frame on top of `syncFromCamera` doing the
+  // same, doubling the sky-view bake cost.
+  setScales(rayleigh: number, mie: number, atmosphereRadius: number): void {
+    if (
+      rayleigh === this.prevRayleighScale &&
+      mie === this.prevMieScale &&
+      atmosphereRadius === this.prevAtmosphereRadius
+    ) {
+      return;
+    }
+    this.prevRayleighScale = rayleigh;
+    this.prevMieScale = mie;
+    this.prevAtmosphereRadius = atmosphereRadius;
+    this.material.uniforms.uAtmosphereRadius!.value = atmosphereRadius;
     this.luts.recomputeAll(this.cameraPos, this.sunDir, {
       rayleigh,
       mie,
-      atmosphereRadius: radius,
+      atmosphereRadius,
     });
   }
 

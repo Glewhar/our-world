@@ -132,6 +132,21 @@ const float WIND_M_PER_S_TO_RAD_PER_S = 1.566e-7;
 const float MORPH_RATE = 3.0e-4;
 const vec3 MORPH_AXIS = vec3(0.71, 0.39, 1.13);
 
+// Wind-shift crossfade period in uTime units. The wind-advection
+// integral grows linearly with time and eventually pushes
+// \`normalize(dir + huge*wind)\` into a degenerate regime where adjacent
+// fragments collapse onto the same advected sample — visible as a
+// single huge cloud streaking through high-wind regions. Solved by
+// running TWO phases of the same density function offset by half a
+// period; each phase's integral wraps every WIND_PERIOD, and a
+// cosine crossfade hides the wraparound (the expiring phase has
+// weight 0 at the moment its shift snaps back to zero). With
+// CLOUD_TIME_SCALE=400 driving uTime at 400/sec wall-clock, 6400 = 16
+// real seconds per cycle. Collapse begins around 22-25 sec (where
+// max-wind × shift exceeds ~1 unit), so 16 leaves headroom while
+// giving wind motion enough time per cycle to be clearly visible.
+const float WIND_PERIOD = 6400.0;
+
 // Ray-sphere helpers. Mirrors atmosphere/common.glsl's pair so we don't
 // need to pull the whole atmosphere preamble into this shader.
 float rayShellNearest(vec3 ro, vec3 dir, float radius) {
@@ -162,6 +177,37 @@ vec2 sampleWindLatLon(vec3 dir) {
   // (textures with origin at top-left: top row = +90°N).
   vec2 uv = vec2((lon + PI) / (2.0 * PI), 0.5 - lat / PI);
   return texture(uWindField, uv).rg;
+}
+
+// Single-phase noise contribution. Called twice by \`cloudDensity\` with
+// two phaseTimes offset by half a wind cycle and crossfaded — see the
+// WIND_PERIOD comment for why. \`phaseTime\` replaces \`uTime\` only in the
+// wind-shift integral; the morph term is passed in directly so both
+// phases sample the noise volume at the same morph offset (only their
+// wind shift differs).
+float phaseDensity(vec3 dir, vec2 wind, vec3 east, vec3 north,
+                   float polarFade, vec3 morph, float phaseTime) {
+  float shift = WIND_M_PER_S_TO_RAD_PER_S * phaseTime * uAdvection;
+  float advShift = shift * polarFade;
+  vec3 dShift = dir + east * (wind.x * advShift) + north * (wind.y * advShift);
+  vec3 advDir = normalize(dShift);
+
+  // Single FBM with FIXED octave weights — same noise function at every
+  // pixel. No biome dependence here.
+  const vec4 OCTAVE_W = vec4(0.40, 0.30, 0.20, 0.10);
+  float n = cn_fbm_weighted(advDir * 8.0 + morph, OCTAVE_W);
+
+  // Coverage threshold — globally uniform. Same Tweakpane control,
+  // same value everywhere on the planet.
+  float thresh = 1.0 - uCoverage;
+  float baseSlab = smoothstep(thresh, 1.0, n);
+  if (baseSlab <= 0.0) return 0.0;
+
+  // Erosion: 3D Worley carves billows / chunkiness inside the slabs.
+  float wd = cn_worley(advDir * 8.0 + vec3(3.7, 1.3, 5.1) + morph);
+  float erosion = clamp(1.0 - wd, 0.0, 1.0);
+
+  return baseSlab * (0.45 + 0.55 * erosion);
 }
 
 // Sample cloud density at world position \`p\`. Returns ~[0, 1] scaled by
@@ -200,30 +246,43 @@ float cloudDensity(vec3 p, float coverMul) {
   // shifts) so no procedural mountain-deflection workaround is needed.
   vec2 wind = sampleWindLatLon(dir);
 
-  float shift = WIND_M_PER_S_TO_RAD_PER_S * uTime * uAdvection;
-  vec3 up = abs(dir.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
-  vec3 east = normalize(cross(up, dir));
+  // Lat-tangent basis: east = unit eastward tangent ((-y, x, 0) normalised),
+  // which is the limit of \`cross((0,0,1), dir) / cos(lat)\` everywhere away
+  // from the pole. The previous \`abs(dir.z) < 0.99\` switch flipped the
+  // basis vectors at ~81.9° latitude, producing a visible cloud-pattern
+  // barrier in a circle around each pole. The fallback only triggers at
+  // the actual pole now (where every direction is "south" anyway).
+  vec3 east = vec3(-dir.y, dir.x, 0.0);
+  float eastLen = length(east);
+  east = (eastLen > 1e-3) ? east / eastLen : vec3(1.0, 0.0, 0.0);
   vec3 north = cross(dir, east);
-  vec3 dShift = dir + east * (wind.x * shift) + north * (wind.y * shift);
-  vec3 advDir = normalize(dShift);
+  // Polar wind fade: within ~10° of either pole the lat-tangent basis
+  // spins rapidly with longitude, so a fixed wind shift would sample
+  // noise at radically different positions for adjacent fragments and
+  // scramble the cloud pattern. \`eastLen\` = cos(lat), so fading shift
+  // by smoothstep(0.05, 0.20, eastLen) kills wind inside ~3° of the
+  // pole and recovers full wind by ~12° away. Real polar wind has no
+  // well-defined direction anyway.
+  float polarFade = smoothstep(0.05, 0.20, eastLen);
 
-  // Single FBM with FIXED octave weights — same noise function at every
-  // pixel. No biome dependence here.
+  // Morph drift. Stays bounded statistically (cn_fbm_weighted of any
+  // input lives in roughly [-1, 1]), so it can keep using the
+  // unbounded uTime directly.
   vec3 morph = MORPH_AXIS * (uTime * MORPH_RATE);
-  const vec4 OCTAVE_W = vec4(0.40, 0.30, 0.20, 0.10);
-  float n = cn_fbm_weighted(advDir * 8.0 + morph, OCTAVE_W);
 
-  // Coverage threshold — globally uniform. Same Tweakpane control,
-  // same value everywhere on the planet.
-  float thresh = 1.0 - uCoverage;
-  float baseSlab = smoothstep(thresh, 1.0, n);
-  if (baseSlab <= 0.0) return 0.0;
+  // Two-phase wind crossfade — see WIND_PERIOD comment. Each phase's
+  // wind shift wraps every WIND_PERIOD; phaseB lags phaseA by half a
+  // cycle. Cosine weights sum to 1 always, so the wraparound moment
+  // (when one phase's shift snaps from max back to zero) lands when
+  // that phase's weight is exactly 0 → invisible discontinuity.
+  float phaseA = mod(uTime, WIND_PERIOD);
+  float phaseB = mod(uTime + WIND_PERIOD * 0.5, WIND_PERIOD);
+  float wA = 0.5 - 0.5 * cos(6.2831853 * (phaseA / WIND_PERIOD));
+  float wB = 0.5 - 0.5 * cos(6.2831853 * (phaseB / WIND_PERIOD));
 
-  // Erosion: 3D Worley carves billows / chunkiness inside the slabs.
-  float wd = cn_worley(advDir * 8.0 + vec3(3.7, 1.3, 5.1) + morph);
-  float erosion = clamp(1.0 - wd, 0.0, 1.0);
-
-  float density = baseSlab * (0.45 + 0.55 * erosion);
+  float dA = phaseDensity(dir, wind, east, north, polarFade, morph, phaseA);
+  float dB = phaseDensity(dir, wind, east, north, polarFade, morph, phaseB);
+  float density = dA * wA + dB * wB;
 
   // Biome-driven cover modifier — the ONLY place biome enters. Multiplies
   // the cloud's final opacity. Smooth \`coverMul\` → smooth visibility
@@ -303,8 +362,14 @@ float coverAt(vec3 dir) {
 // transitions so coastlines and biome boundaries don't stamp hard steps
 // into cloud opacity.
 float sampleCoverMul(vec3 dir) {
-  vec3 up = abs(dir.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
-  vec3 east = normalize(cross(up, dir));
+  // Lat-tangent basis (see cloudDensity for the full explanation). The
+  // previous \`abs(dir.z) < 0.99\` switch flipped the kernel orientation
+  // at ~81.9° latitude — visible as a barrier circle around each pole
+  // because the 19-tap blur sampled different neighbouring biome cells
+  // on either side.
+  vec3 east = vec3(-dir.y, dir.x, 0.0);
+  float eastLen = length(east);
+  east = (eastLen > 1e-3) ? east / eastLen : vec3(1.0, 0.0, 0.0);
   vec3 north = cross(dir, east);
 
   const float R = 0.012;

@@ -52,12 +52,12 @@ async function boot(): Promise<void> {
   const toggleClouds = document.getElementById('toggle-clouds') as HTMLInputElement | null;
   const toggleOcean = document.getElementById('toggle-ocean') as HTMLInputElement | null;
   const toggleAtmosphere = document.getElementById('toggle-atmosphere') as HTMLInputElement | null;
-  const toggleCities = document.getElementById('toggle-cities') as HTMLInputElement | null;
+  const toggleHighways = document.getElementById('toggle-highways') as HTMLInputElement | null;
   const togglePlanes = document.getElementById('toggle-planes') as HTMLInputElement | null;
 
   const wireLayerToggle = (
     el: HTMLInputElement | null,
-    key: 'clouds' | 'ocean' | 'atmosphere' | 'cities',
+    key: 'clouds' | 'ocean' | 'atmosphere' | 'highways',
   ): void => {
     if (!el) return;
     el.checked = debug.state.layers[key];
@@ -68,7 +68,7 @@ async function boot(): Promise<void> {
   wireLayerToggle(toggleClouds, 'clouds');
   wireLayerToggle(toggleOcean, 'ocean');
   wireLayerToggle(toggleAtmosphere, 'atmosphere');
-  wireLayerToggle(toggleCities, 'cities');
+  wireLayerToggle(toggleHighways, 'highways');
 
   // Planes toggle is a combined master for two state keys: heads (planes)
   // and trails. Both flip together so the user has one obvious "show air

@@ -25,7 +25,7 @@ import { Globe } from './globe/Globe.js';
 import { AtmospherePass } from './atmosphere/AtmospherePass.js';
 import { PostFXChain } from './postfx/PostFXChain.js';
 import { VolumetricCloudPass } from './clouds/VolumetricCloudPass.js';
-import { CitiesLayer } from './cities/CitiesLayer.js';
+import { HighwaysLayer } from './highways/HighwaysLayer.js';
 import { AirplaneSystem } from './airplanes/AirplaneSystem.js';
 import { loadAirplaneData } from './airplanes/data.js';
 import { SunMoon } from './sky/SunMoon.js';
@@ -82,7 +82,7 @@ export function createSceneGraph(): SceneGraph {
   let world: WorldRuntime | null = null;
   let globe: Globe | null = null;
   let cloudsPass: VolumetricCloudPass | null = null;
-  let cities: CitiesLayer | null = null;
+  let highways: HighwaysLayer | null = null;
   let airplanes: AirplaneSystem | null = null;
   const sunMoon = new SunMoon();
   scene.add(sunMoon.group);
@@ -122,7 +122,10 @@ export function createSceneGraph(): SceneGraph {
     // vs ocean cells, and per vertex displaces land outward by the continuous
     // `elevation_meters` texture. All attribute texture bindings happen
     // inside the Globe constructor.
-    globe = new Globe(w);
+    if (!webglRenderer) {
+      throw new Error('attachWorld called before attachRenderer — Land needs the renderer for the biome-color prebake.');
+    }
+    globe = new Globe(w, webglRenderer);
     globe.setSunDirection(sunDirection);
     scene.add(globe.group);
 
@@ -135,13 +138,17 @@ export function createSceneGraph(): SceneGraph {
     );
     scene.add(cloudsPass.mesh);
 
-    // Cities — instanced quads tangent to the globe, painted with an
-    // organic spray of rectangular blocks. Empty city array (fixture or
-    // legacy bake) yields a no-op layer. The id raster uniform is shared
-    // with Land/Clouds for the coastline mask.
-    cities = new CitiesLayer(w, w.getCities());
-    cities.setSunDirection(sunDirection);
-    scene.add(cities.mesh);
+    // Highways — merged ribbon mesh wrapping every kept road polyline.
+    // Width is in *screen pixels* (Mapbox-style), so the network stays
+    // delicate at every zoom. Three kinds (major / arterial / local)
+    // each drive their own pixel width + brightness boost. Coastline-
+    // clipped via the same HEALPix id raster Land + Clouds use.
+    const initW = canvas.clientWidth || canvas.width || 1;
+    const initH = canvas.clientHeight || canvas.height || 1;
+    highways = new HighwaysLayer(w, w.getRoads());
+    highways.setSunDirection(sunDirection);
+    highways.setViewportSize(initW, initH);
+    scene.add(highways.mesh);
 
     // Airplane visualisation — async because the data is loaded over fetch.
     // Failure is non-fatal; the rest of the scene still renders.
@@ -204,7 +211,7 @@ export function createSceneGraph(): SceneGraph {
     globe?.setSunDirection(tmpSunDir);
     atmosphere?.setSunDirection(tmpSunDir);
     cloudsPass?.setSunDirection(tmpSunDir);
-    cities?.setSunDirection(tmpSunDir);
+    highways?.setSunDirection(tmpSunDir);
     sunMoon.syncFromCamera(camera, tmpSunDir);
   }
 
@@ -233,6 +240,27 @@ export function createSceneGraph(): SceneGraph {
       land.uSeasonOffsetC.value = m.seasonOffsetC;
       land.uAlpineStrength.value = m.alpineStrength;
 
+      // Distance-field knobs — coast smoothstep half-width and biome
+      // edge fade distance, both in km.
+      land.uCoastSharpness.value = m.coastSharpness;
+      land.uBiomeEdgeSharpness.value = m.biomeEdgeSharpness;
+
+      // Biome surface variation. Master = 0 → identical to pre-feature look.
+      land.uBiomeSurfaceStrength.value = m.biomeSurfaceStrength;
+      land.uBiomeColorVar.value = m.biomeColorVar;
+      land.uBiomeBumpStrength.value = m.biomeBumpStrength;
+      land.uBiomeNoiseFreq.value = m.biomeNoiseFreq;
+      const amps = land.uBiomeSurfaceAmps.value;
+      for (let i = 0; i < 12; i++) {
+        amps[i] = m.biomeSurfaceAmps[i] ?? amps[i]!;
+      }
+
+      land.uSpecularStrength.value = m.specularStrength;
+      const specAmps = land.uBiomeSpecAmps.value;
+      for (let i = 0; i < 12; i++) {
+        specAmps[i] = m.biomeSpecAmps[i] ?? specAmps[i]!;
+      }
+
       // Ocean colours + Gerstner knobs live on the dedicated water material.
       // Time is advanced separately in `update()`; this hook only pushes
       // Tweakpane-driven uniforms.
@@ -240,12 +268,20 @@ export function createSceneGraph(): SceneGraph {
       const water = globe.uniforms.water;
       water.uAmbient.value = m.ambient;
       water.uNightTint.value.set(m.nightTint);
+      water.uOceanAbyssal.value.set(o.abyssalColor);
       water.uOceanDeep.value.set(o.deepColor);
+      water.uOceanShelf.value.set(o.shelfColor);
       water.uOceanShallow.value.set(o.shallowColor);
+      water.uOceanTrenchStart.value = o.trenchStart;
+      water.uOceanTrenchEnd.value = o.trenchEnd;
+      water.uCoastalTintColor.value.set(o.coastalTintColor);
+      water.uCoastalTintStrength.value = o.coastalTintStrength;
+      water.uCoastalTintFalloff.value = o.coastalTintFalloff;
       water.uWaveAmplitude.value = o.waveAmplitude;
       water.uWaveSpeed.value = o.waveSpeed;
       water.uWaveSteepness.value = o.waveSteepness;
       water.uFresnelStrength.value = o.fresnelStrength;
+      water.uDepthFalloff.value = o.depthFalloff;
       water.uCurrentStrength.value = o.currentStrength;
       water.uStreamlinesEnabled.value = o.streamlinesEnabled ? 1 : 0;
       water.uStrongJetsOnly.value = o.strongJetsOnly ? 1 : 0;
@@ -260,21 +296,28 @@ export function createSceneGraph(): SceneGraph {
       cloudsPass.setAdvection(c.advection);
     }
 
-    if (cities) {
-      const cz = debug.materials.cities;
-      const u = cities.uniforms;
-      u.uBaseRadiusKm.value = cz.baseRadiusKm;
-      u.uMinRadiusKm.value = cz.minRadiusKm;
-      u.uMaxRadiusKm.value = cz.maxRadiusKm;
-      u.uMinPopulation.value = cz.minPopulation;
-      u.uFalloffStrength.value = cz.falloffStrength;
-      u.uGridDensity.value = cz.gridDensity;
-      u.uBlockThreshold.value = cz.blockThreshold;
-      u.uOutlineMin.value = cz.outlineMin;
-      u.uOutlineMax.value = cz.outlineMax;
-      u.uNightBrightness.value = cz.nightBrightness;
-      u.uDayContrast.value = cz.dayContrast;
-      u.uOpacity.value = cz.opacity;
+    // Zoom-fade factor for highways. Camera position length to the origin
+    // is the globe-centre distance (globe is at world 0). tFar = 0 at
+    // camera distance ≤ 1.5 (zoomed in), 1 at ≥ 15 (zoomed out).
+    const camDist = camera.position.length();
+    const tFar = THREE.MathUtils.smoothstep(camDist, 1.5, 15);
+
+    if (highways) {
+      const hz = debug.materials.highways;
+      const u = highways.uniforms;
+      u.uMajorWidthPx.value = hz.majorWidthPx;
+      u.uArterialWidthPx.value = hz.arterialWidthPx;
+      u.uLocalWidthPx.value = hz.localWidthPx;
+      u.uNightBrightness.value = hz.nightBrightness;
+      u.uMajorBoost.value = hz.majorBoost;
+      u.uArterialBoost.value = hz.arterialBoost;
+      u.uLocalBoost.value = hz.localBoost;
+      u.uCoreWidth.value = hz.coreWidth;
+      u.uCoreBoost.value = hz.coreBoost;
+      u.uHaloStrength.value = hz.haloStrength;
+      u.uHaloFalloff.value = hz.haloFalloff;
+      u.uDayStrength.value = hz.dayStrength;
+      u.uOpacity.value = THREE.MathUtils.lerp(hz.opacityNear, hz.opacityFar, tFar);
     }
 
     // Altitude exaggeration — drives every metres-based altitude in the
@@ -289,7 +332,7 @@ export function createSceneGraph(): SceneGraph {
       globe.uniforms.water.uElevationScale.value = elevScale;
     }
     cloudsPass?.setElevationScale(elevScale);
-    cities?.setElevationScale(elevScale);
+    highways?.setElevationScale(elevScale);
     if (airplanes) {
       airplanes.trails.setElevationScale(elevScale);
       airplanes.scaffold.setElevationScale(elevScale);
@@ -305,6 +348,21 @@ export function createSceneGraph(): SceneGraph {
       atmosphere.setScales(a.rayleighScale, a.mieScale, atmRadius);
       atmosphere.setExposure(a.exposure);
       atmosphere.setSunDiskAngleDeg(a.sunDiskSize * 3);
+
+      // Share the atmosphere's sky-view LUT with land + water so the
+      // in-shader aerial perspective tint colour-matches the rim halo.
+      // The LUT rebakes on sun/camera change inside AtmospherePass; the
+      // texture reference itself stays stable, so this assignment is a
+      // no-op after the first frame — left in the loop for clarity and
+      // to survive any future LUT swap.
+      if (globe) {
+        globe.uniforms.land.uSkyView.value = atmosphere.skyViewTexture;
+        globe.uniforms.land.uHazeExposure.value = a.exposure;
+        globe.uniforms.land.uHazeAmount.value = a.hazeAmount;
+        globe.uniforms.water.uSkyView.value = atmosphere.skyViewTexture;
+        globe.uniforms.water.uHazeExposure.value = a.exposure;
+        globe.uniforms.water.uHazeAmount.value = a.hazeAmount;
+      }
     }
     sunMoon.setSunDiskSize(a.sunDiskSize);
   }
@@ -320,7 +378,7 @@ export function createSceneGraph(): SceneGraph {
     }
     if (atmosphere) atmosphere.mesh.visible = debug.layers.atmosphere;
     cloudsPass?.setActive(debug.layers.clouds);
-    cities?.setActive(debug.layers.cities);
+    highways?.setActive(debug.layers.highways);
     if (airplanes) {
       airplanes.setLayerActive('airports', debug.layers.airports);
       airplanes.setLayerActive('scaffold', debug.layers.routeScaffold);
@@ -356,6 +414,10 @@ export function createSceneGraph(): SceneGraph {
       debug.timeOfDay.t01 = next - Math.floor(next);
     }
 
+    // When paused, freeze every time-driven system (waves, clouds, planes)
+    // by feeding them a zero delta. Camera + opacity sliders still apply.
+    const simDelta = debug.timeOfDay.paused ? 0 : deltaSec;
+
     applyMaterials(debug);
     applyTimeOfDay(debug);
     applyLayers(debug);
@@ -364,12 +426,12 @@ export function createSceneGraph(): SceneGraph {
     // already pushed `waveSpeed`; here we just step `uTime` by real seconds
     // so toggling speed scales an honest second count.
     if (globe) {
-      globe.uniforms.water.uTime.value += deltaSec;
+      globe.uniforms.water.uTime.value += simDelta;
     }
 
     atmosphere?.syncFromCamera(camera);
     cloudsPass?.syncFromCamera(camera);
-    cloudsPass?.update(deltaSec);
+    cloudsPass?.update(simDelta);
 
     if (airplanes) {
       airplanes.setSpeed(debug.airplanes.speed);
@@ -381,7 +443,7 @@ export function createSceneGraph(): SceneGraph {
       // with the rendered terminator.
       const sunTheta = (debug.timeOfDay.t01 - 0.5) * Math.PI * 2;
       airplanes.setSunLonRad(sunTheta);
-      airplanes.update(deltaSec);
+      airplanes.update(simDelta);
     }
   }
 
@@ -412,6 +474,7 @@ export function createSceneGraph(): SceneGraph {
     postFx?.setSize(width, height);
     cloudsPass?.setSize(width, height);
     airplanes?.setViewport(width, height);
+    highways?.setViewportSize(width, height);
   }
 
   function dispose(): void {
@@ -424,8 +487,8 @@ export function createSceneGraph(): SceneGraph {
     globe = null;
     cloudsPass?.dispose();
     cloudsPass = null;
-    cities?.dispose();
-    cities = null;
+    highways?.dispose();
+    highways = null;
     airplanes?.dispose();
     airplanes = null;
     atmosphere?.dispose();

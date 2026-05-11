@@ -264,7 +264,7 @@
       /* Floating left-center vertical altitude-scale slider. Range 1..10×
          drives debug.state.altitude.scaleFactor — a global stretch toward
          orbit applied to every metres-based altitude (terrain, water,
-         clouds, cities, plane arcs, atmosphere shell). Sits to the right
+         clouds, plane arcs, atmosphere shell). Sits to the right
          of the season thermostat as a paired control. */
       #altitude-control {
         position: fixed;
@@ -466,13 +466,6 @@
       .layer-toggle.atmosphere:has(input:checked) .toggle-thumb {
         background: #9cc4ff;
         box-shadow: 0 0 8px rgba(127, 182, 255, 0.8);
-      }
-      .layer-toggle.cities:has(input:checked) .toggle-track {
-        background: rgba(255, 200, 100, 0.5);
-      }
-      .layer-toggle.cities:has(input:checked) .toggle-thumb {
-        background: #ffd980;
-        box-shadow: 0 0 8px rgba(255, 200, 100, 0.85);
       }
       .layer-toggle.planes:has(input:checked) .toggle-track {
         background: rgba(255, 154, 111, 0.5);
@@ -763,45 +756,18 @@
         <input id="toggle-atmosphere" type="checkbox" checked />
         <span class="toggle-track"><span class="toggle-thumb"></span></span>
       </label>
-      <label class="layer-toggle cities" for="toggle-cities">
+      <label class="layer-toggle highways" for="toggle-highways">
         <span class="layer-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22" xmlns="http://www.w3.org/2000/svg">
-            <g fill="#3a4458">
-              <rect x="3" y="11" width="4.5" height="10" rx="0.4"/>
-              <rect x="8.5" y="6" width="5" height="15" rx="0.4"/>
-              <rect x="14.5" y="9" width="4" height="12" rx="0.4"/>
-              <rect x="19" y="13" width="2.8" height="8" rx="0.4"/>
-            </g>
-            <g fill="#ffd980">
-              <rect x="4" y="13" width="0.9" height="0.9"/>
-              <rect x="5.6" y="13" width="0.9" height="0.9"/>
-              <rect x="4" y="15" width="0.9" height="0.9"/>
-              <rect x="5.6" y="15" width="0.9" height="0.9"/>
-              <rect x="4" y="17" width="0.9" height="0.9"/>
-              <rect x="5.6" y="17" width="0.9" height="0.9"/>
-              <rect x="9.5" y="8" width="0.9" height="0.9"/>
-              <rect x="11.1" y="8" width="0.9" height="0.9"/>
-              <rect x="9.5" y="10" width="0.9" height="0.9"/>
-              <rect x="11.1" y="10" width="0.9" height="0.9"/>
-              <rect x="9.5" y="12" width="0.9" height="0.9"/>
-              <rect x="11.1" y="12" width="0.9" height="0.9"/>
-              <rect x="9.5" y="14" width="0.9" height="0.9"/>
-              <rect x="11.1" y="14" width="0.9" height="0.9"/>
-              <rect x="9.5" y="16" width="0.9" height="0.9"/>
-              <rect x="11.1" y="16" width="0.9" height="0.9"/>
-              <rect x="15.5" y="11" width="0.9" height="0.9"/>
-              <rect x="17.1" y="11" width="0.9" height="0.9"/>
-              <rect x="15.5" y="13" width="0.9" height="0.9"/>
-              <rect x="17.1" y="13" width="0.9" height="0.9"/>
-              <rect x="15.5" y="15" width="0.9" height="0.9"/>
-              <rect x="17.1" y="15" width="0.9" height="0.9"/>
-              <rect x="20" y="14.5" width="0.9" height="0.9"/>
-              <rect x="20" y="16.5" width="0.9" height="0.9"/>
-            </g>
+          <svg viewBox="0 0 24 24" width="22" height="22" xmlns="http://www.w3.org/2000/svg" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 20 L11 4" stroke="#c9b07e" stroke-width="2.2"/>
+            <path d="M21 20 L13 4" stroke="#c9b07e" stroke-width="2.2"/>
+            <path d="M9 9 L15 9" stroke="#f3eee0" stroke-width="0.9" stroke-dasharray="1.6 1.6"/>
+            <path d="M7 14 L17 14" stroke="#f3eee0" stroke-width="0.9" stroke-dasharray="1.6 1.6"/>
+            <path d="M5 19 L19 19" stroke="#f3eee0" stroke-width="0.9" stroke-dasharray="1.6 1.6"/>
           </svg>
         </span>
-        <span class="layer-name">Cities</span>
-        <input id="toggle-cities" type="checkbox" checked />
+        <span class="layer-name">Highways</span>
+        <input id="toggle-highways" type="checkbox" checked />
         <span class="toggle-track"><span class="toggle-thumb"></span></span>
       </label>
       <label class="layer-toggle planes" for="toggle-planes">

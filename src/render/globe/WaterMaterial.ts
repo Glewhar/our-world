@@ -50,8 +50,23 @@ export type WaterUniforms = {
    */
   uWaterRadialBias: { value: number };
 
+  uOceanAbyssal: { value: THREE.Color };
   uOceanDeep: { value: THREE.Color };
+  uOceanShelf: { value: THREE.Color };
   uOceanShallow: { value: THREE.Color };
+  /** Trench gate start depth (m). Below this, no abyssal mixed in. */
+  uOceanTrenchStart: { value: number };
+  /** Trench gate end depth (m). Above this, fully abyssal. */
+  uOceanTrenchEnd: { value: number };
+  /** Coastal sediment / chlorophyll cast — mixed over the shallowest band. */
+  uCoastalTintColor: { value: THREE.Color };
+  /** 0 disables the tint; 0.25 is the default subtle cast; 1 saturates. */
+  uCoastalTintStrength: { value: number };
+  /** Exponential falloff scale (m) for the coastal tint. 80 m by default. */
+  uCoastalTintFalloff: { value: number };
+  /** Exponential depth-falloff scale (m). depthT = exp(-depth / k).
+   * Smaller = sharper/narrower shelves, larger = softer/wider shelves. */
+  uDepthFalloff: { value: number };
 
   // M-water — Gerstner waves. `uTime` is driven by the scene-graph update
   // loop; the rest are exposed in Tweakpane (Materials → Ocean).
@@ -73,6 +88,19 @@ export type WaterUniforms = {
    * (Gulf Stream / Kuroshio / ACC) only. 0 = gentle gate showing
    * most surface currents. */
   uStrongJetsOnly: { value: number };
+
+  /**
+   * Sky-view LUT shared with the atmosphere pass — see `LandUniforms.uSkyView`.
+   * Same texture handle; both surface shaders tint toward the rim haze
+   * the atmosphere already paints in the sky around the planet.
+   */
+  uSkyView: { value: THREE.Texture | null };
+
+  /** Exposure multiplier on the LUT sample. Should track atmosphere exposure. */
+  uHazeExposure: { value: number };
+
+  /** Aerial-perspective haze strength. 0 disables; ~0.25 is the design default. */
+  uHazeAmount: { value: number };
 };
 
 // 30 m of ocean rise. `bias_in_unit_sphere = metres * uElevationScale`,
@@ -89,6 +117,12 @@ export const DEFAULT_WAVE_AMPLITUDE_M = 150;
 export const DEFAULT_WAVE_SPEED = 1.0;
 export const DEFAULT_WAVE_STEEPNESS = 0.5;
 export const DEFAULT_FRESNEL_STRENGTH = 1.0;
+
+// Depth-falloff scale for the exponential ocean tint. depthT = exp(-depth / k).
+// 25 gives very tight shelves — depthT drops to ~0.02 by 100 m of depth, so
+// only the literal coast strip catches the shallow tint and everything else
+// reads as deep. Tunable in Tweakpane (Materials → Ocean → depth falloff).
+export const DEFAULT_DEPTH_FALLOFF_M = 50;
 
 // Default ocean-current visualisation strength. 0 hides streamlines, 1 is
 // "subtle but visible" — the streamlines are a low-contrast additive
@@ -115,8 +149,16 @@ export function createWaterMaterial(): THREE.ShaderMaterial & {
     uElevationScale: { value: DEFAULT_ELEVATION_SCALE },
     uWaterRadialBias: { value: DEFAULT_WATER_RADIAL_BIAS },
 
-    uOceanDeep: { value: new THREE.Color('#0a2a4f') },
+    uOceanAbyssal: { value: new THREE.Color('#03081a') },
+    uOceanDeep: { value: new THREE.Color('#143e7a') },
+    uOceanShelf: { value: new THREE.Color('#1a6b95') },
     uOceanShallow: { value: new THREE.Color('#3da6c2') },
+    uOceanTrenchStart: { value: 4500 },
+    uOceanTrenchEnd: { value: 8000 },
+    uCoastalTintColor: { value: new THREE.Color('#2d8c80') },
+    uCoastalTintStrength: { value: 0.4 },
+    uCoastalTintFalloff: { value: 400 },
+    uDepthFalloff: { value: DEFAULT_DEPTH_FALLOFF_M },
 
     uTime: { value: 0 },
     uWaveAmplitude: { value: DEFAULT_WAVE_AMPLITUDE_M },
@@ -127,6 +169,10 @@ export function createWaterMaterial(): THREE.ShaderMaterial & {
     uCurrentStrength: { value: DEFAULT_CURRENT_STRENGTH },
     uStreamlinesEnabled: { value: 1 },
     uStrongJetsOnly: { value: 0 },
+
+    uSkyView: { value: null },
+    uHazeExposure: { value: 3.5 },
+    uHazeAmount: { value: 0.25 },
   };
 
   const vertexShader = `${healpixGlsl}\n${wavesGlsl}\n${vertGlsl}`;

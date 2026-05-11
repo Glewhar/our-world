@@ -1,11 +1,12 @@
 // Inlined from atmosphere.frag.glsl. Edit the GLSL inside the template literal —
 // the source of truth lives here, no separate .glsl file on disk.
-export const source = `// Runtime atmosphere fragment shader (GLSL3). Replaces the Phase 2 fresnel
-// placeholder with a Hillaire 2020-style precomputed-LUT lookup + sun disk.
+export const source = `// Runtime atmosphere fragment shader (GLSL3). Hillaire 2020-style
+// precomputed-LUT lookup + sun disk.
 //
-// The pass is a fullscreen triangle (see \`fullscreen.vert.glsl\`) added to
-// the scene as a \`THREE.Mesh\` with \`depthTest=false\` and \`renderOrder=1\`,
-// so it draws after the globe and alpha-composites over it. Alpha is 1
+// The pass is a fullscreen triangle (see \`fullscreen.vert.glsl\`) drawn at
+// \`renderOrder=1\` with \`depthTest=true\`. The vertex shader emits at the far
+// plane so the depth test passes only where no opaque geometry was drawn —
+// the rendered terrain silhouette punches through the halo. Alpha is 1
 // where the line of sight passes only through atmosphere, fading to ~0 if
 // the ray exits without hitting anything (deep space) — but we keep alpha
 // slightly above 0 so the rim isn't crushed against the dark background.
@@ -52,7 +53,22 @@ void main() {
   float az = atan(dot(dir, cTangent), dot(dir, cAzRef));
   if (az < 0.0) az += 2.0 * PI;
 
-  vec2 lutUv = vec2(az / (2.0 * PI), zenith / PI);
+  // Match the sky-view LUT's non-linear zenith parameterization: samples
+  // are clustered around the camera's horizon so a thin atmosphere shell
+  // occupies enough LUT pixels to survive bilinear filtering. Both shaders
+  // must compute horizonZ identically from uCameraPos.
+  float r0 = length(uCameraPos);
+  float s0 = clamp(PLANET_RADIUS / r0, 0.0, 1.0);
+  float horizonZ = PI - asin(s0);
+  float vCoord;
+  if (zenith < horizonZ) {
+    float t = sqrt(max(0.0, 1.0 - zenith / horizonZ));
+    vCoord = 0.5 - 0.5 * t;
+  } else {
+    float t = sqrt(clamp((zenith - horizonZ) / (PI - horizonZ), 0.0, 1.0));
+    vCoord = 0.5 + 0.5 * t;
+  }
+  vec2 lutUv = vec2(az / (2.0 * PI), vCoord);
   vec3 sky = texture(uSkyView, lutUv).rgb;
 
   // Sun disk: visible if cosTheta with sun > cos(uSunDiskAngle), modulated by
@@ -74,11 +90,10 @@ void main() {
   // Apply exposure, output linear (postfx grade does final tonemap in M8).
   vec3 col = sky * uExposure;
 
-  // Alpha: bright pixels (atmosphere rim, sun) fully opaque; dim pixels
-  // (deep space behind the limb) transparent so the dark scene background
-  // shows through. Use luminance as a proxy.
+  // Alpha: exponential rolloff so faint outer pixels fade smoothly into
+  // space rather than cutting off as a hard line.
   float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
-  float alpha = clamp(lum * 1.5, 0.0, 1.0);
+  float alpha = 1.0 - exp(-lum * 6.0);
 
   fragColor = vec4(col, alpha);
 }

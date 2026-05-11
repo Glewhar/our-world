@@ -47,17 +47,23 @@ export const DEFAULT_CLOUD_ADVECTION = 14;
 // the clock by this factor before handing it to the shader so the
 // `advection` slider's defaults produce visible drift in real time.
 const CLOUD_TIME_SCALE = 400;
+// Cloud raymarch resolution divisor — render target is `canvas / N` per
+// axis (so 1/N² of total pixels). 2 = half-res (4× speedup vs full),
+// 4 = quarter-res (16× speedup vs full, 4× speedup vs half). Bilinear
+// upsample softens cloud silhouettes at higher divisors — works well
+// for fluffy procedural clouds, breaks down past ~4 where edges turn
+// visibly blurry.
+const CLOUD_RES_DIVISOR = 4;
 // Initial uTime offset — pre-rolls the simulation so the first rendered
-// frame already shows wind-streaked, mid-morph clouds instead of a
-// pristine static noise field. Two effects baked in at this seed:
-//   * morph offset = MORPH_RATE × uTime ≈ 1.5 noise units (clouds in
-//     mid-cycle of their bloom/dissolve breathing).
-//   * wind shift  = 1.566e-7 × uTime × advection × wind_mps ≈ 1.4° of
-//     arc at default advection=14 and 10 m/s wind — enough that
-//     streamlines are visible from frame 1 without being over-stretched.
-// Picked at the elbow of "lived-in" before "smeared". If you bump
-// CLOUD_TIME_SCALE, scale this alongside it.
-const INITIAL_TIME = 10000;
+// frame already shows wind-streaked, mid-morph clouds rather than a
+// pristine static noise field. With the two-phase wind crossfade
+// (WIND_PERIOD=6400 in the shader), 30000 lands phaseA at 4400 (68%
+// through cycle, weight 0.69, ~11 sec of wind buildup visible) and
+// phaseB at 1200 (18%, weight 0.31, ~3 sec buildup). Net: clear wind
+// motion from frame 1, no "wait for the simulation to warm up" gap.
+// Morph offset at this seed = 9 noise units — well past the boring
+// initial slice. If you bump CLOUD_TIME_SCALE or WIND_PERIOD, revisit.
+const INITIAL_TIME = 30000;
 export class VolumetricCloudPass {
     /** Composite mesh — lives in the main scene at `renderOrder = 0`. Samples
      *  the half-res cloud target via the upsample shader and blends with the
@@ -234,13 +240,14 @@ export class VolumetricCloudPass {
         this.cloudMaterial.uniforms.uTime.value += deltaSec * CLOUD_TIME_SCALE;
     }
     /**
-     * Resize the half-res target. Call from the scene-graph's `resize` hook
-     * with the canvas dimensions; the half-res target is sized to half on
-     * each axis (quartered total pixel count).
+     * Resize the cloud raymarch target. Call from the scene-graph's
+     * `resize` hook with the canvas dimensions; the target is sized to
+     * a fraction of each axis (1/CLOUD_RES_DIVISOR per axis → 1/N² total
+     * pixel count).
      */
     setSize(width, height) {
-        const w = Math.max(1, Math.floor(width / 2));
-        const h = Math.max(1, Math.floor(height / 2));
+        const w = Math.max(1, Math.floor(width / CLOUD_RES_DIVISOR));
+        const h = Math.max(1, Math.floor(height / CLOUD_RES_DIVISOR));
         this.halfResTarget.setSize(w, h);
     }
     /**

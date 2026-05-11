@@ -19,6 +19,8 @@ export type {
   AttributeKey,
   CitiesFile,
   CityRecord,
+  RoadsFile,
+  RoadRecord,
   PickResult,
   TopologyChange,
   WorldAggregates,

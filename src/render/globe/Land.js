@@ -12,6 +12,8 @@
  * separate `Water` mesh paints those.
  */
 import * as THREE from 'three';
+import { bakeBiomeColorTexture } from './BiomeColorPrebake.js';
+import { bakeElevationEquirectTexture } from './ElevationEquirectPrebake.js';
 import { createLandMaterial } from './LandMaterial.js';
 const ICOSPHERE_SUBDIVISION = 64;
 const UNIT_RADIUS = 1.0;
@@ -20,7 +22,7 @@ export class Land {
     mesh;
     geometry;
     material;
-    constructor(world) {
+    constructor(world, renderer) {
         this.geometry = new THREE.IcosahedronGeometry(UNIT_RADIUS, ICOSPHERE_SUBDIVISION);
         this.material = createLandMaterial();
         const u = this.material._landUniforms;
@@ -29,6 +31,9 @@ export class Land {
         u.uAttrClimate.value = world.getAttributeTexture('temperature');
         u.uAttrDynamic.value = world.getAttributeTexture('fire');
         u.uElevationMeters.value = world.getElevationMetersTexture();
+        u.uElevationEquirect.value = bakeElevationEquirectTexture(renderer, world);
+        u.uDistanceField.value = world.getDistanceFieldTexture();
+        u.uBiomeColor.value = bakeBiomeColorTexture(renderer, world);
         const { nside, ordering } = world.getHealpixSpec();
         u.uHealpixNside.value = nside;
         u.uHealpixOrdering.value = ordering === 'ring' ? 0 : 1;

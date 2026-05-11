@@ -20,11 +20,11 @@ precision highp sampler2D;
 
 const float PI = 3.14159265359;
 
+// Planet radius is fixed at 1.0 in unit-sphere coordinates. Atmosphere top is
+// dynamic — driven from JS via Tweakpane → Altitude. All derived geometric
+// values (thickness, horizon, km-per-unit conversion) are helpers that read
+// the uniform; the GLSL compiler hoists them per draw.
 const float PLANET_RADIUS = 1.0;
-
-// Atmosphere top is dynamic — driven from JS via Tweakpane → Altitude. All
-// derived geometric values (thickness, horizon, km-per-unit conversion) are
-// helpers that read this uniform; the GLSL compiler hoists them per draw.
 uniform float uAtmosphereRadius;
 
 const float REAL_ATMOS_KM = 100.0;

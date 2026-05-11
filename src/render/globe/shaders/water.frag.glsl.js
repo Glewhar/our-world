@@ -36,8 +36,29 @@ uniform int uHealpixOrdering;
 uniform int uAttrTexWidth;
 uniform float uElevationScale;
 
+uniform vec3 uOceanAbyssal;
 uniform vec3 uOceanDeep;
+uniform vec3 uOceanShelf;
 uniform vec3 uOceanShallow;
+// Exponential depth-falloff scale (m) for the shallow stop only. Shelf
+// uses a fixed 350 m falloff so the band stays at a realistic continental
+// shelf scale; the shallow falloff is the most visible knob so it's the
+// one we expose.
+uniform float uDepthFalloff;
+// Smoothstep band (m) over which \`uOceanAbyssal\` blends in for trenches.
+// Below \`uOceanTrenchStart\` the colour is pure \`uOceanDeep\`; above
+// \`uOceanTrenchEnd\` it's pure \`uOceanAbyssal\`. Earth's abyssal plain is
+// 3–5 km and most major trenches are 6–11 km, so a 5000 → 9000 m gate
+// keeps abyssal restricted to the deepest features.
+uniform float uOceanTrenchStart;
+uniform float uOceanTrenchEnd;
+
+// Coastal sediment / chlorophyll tint. Real shallow water carries a
+// greenish cast from algae and river runoff that pure-blue ramps can't
+// produce. Mixed in over the 4-stop base after the shallow stop.
+uniform vec3 uCoastalTintColor;
+uniform float uCoastalTintStrength;
+uniform float uCoastalTintFalloff;
 
 uniform float uTime;
 uniform float uWaveAmplitude;
@@ -52,6 +73,12 @@ uniform sampler2D uOceanCurrents;
 uniform float uCurrentStrength;
 uniform float uStreamlinesEnabled;
 uniform float uStrongJetsOnly;
+
+// Aerial perspective — shared sky-view LUT with the atmosphere pass. See
+// land.frag.glsl for the longer explanation; same uniforms, same lookup.
+uniform sampler2D uSkyView;
+uniform float uHazeExposure;
+uniform float uHazeAmount;
 
 in vec3 vSphereDir;
 in float vWaterSurface;
@@ -97,6 +124,37 @@ float wn_fbm(vec3 p, int octaves) {
     a *= 0.5;
   }
   return v;
+}
+
+// Sample the atmosphere's sky-view LUT in a world-space view direction.
+// Mirrors the lookup in atmosphere.frag.glsl so the haze tint colour-matches
+// the rim halo. \`dir\` is camera→surface; returns linear radiance (apply
+// uHazeExposure at the call site).
+vec3 sampleSkyViewHaze(vec3 dir, vec3 camPos, vec3 sunDir) {
+  vec3 cUp = normalize(camPos);
+  vec3 sunInPlane = sunDir - dot(sunDir, cUp) * cUp;
+  float sunLen = length(sunInPlane);
+  vec3 cAzRef = (sunLen > 1e-4)
+    ? sunInPlane / sunLen
+    : normalize(cross(cUp, vec3(1.0, 0.0, 0.0)));
+  vec3 cTangent = cross(cUp, cAzRef);
+
+  float zenith = acos(clamp(dot(dir, cUp), -1.0, 1.0));
+  float az = atan(dot(dir, cTangent), dot(dir, cAzRef));
+  if (az < 0.0) az += 6.28318530;
+
+  float r0 = length(camPos);
+  float s0 = clamp(1.0 / r0, 0.0, 1.0);
+  float horizonZ = 3.14159265 - asin(s0);
+  float vCoord;
+  if (zenith < horizonZ) {
+    float t = sqrt(max(0.0, 1.0 - zenith / horizonZ));
+    vCoord = 0.5 - 0.5 * t;
+  } else {
+    float t = sqrt(clamp((zenith - horizonZ) / (3.14159265 - horizonZ), 0.0, 1.0));
+    vCoord = 0.5 + 0.5 * t;
+  }
+  return texture(uSkyView, vec2(az / 6.28318530, vCoord)).rgb;
 }
 
 // Sample the ocean-current vector (m/s, lat-tangent frame: u east, v north)
@@ -173,10 +231,25 @@ void main() {
   ivec2 tx = healpixIpixToTexel(ipx, uAttrTexWidth);
   float landElev = texelFetch(uElevationMeters, tx, 0).r;
 
-  // Depth tint: deeper water = darker.
+  // Layered ocean gradient. \`uOceanDeep\` is the open-ocean baseline that
+  // most of the world ocean reads as. Shelf + shallow blend up via exp
+  // falloffs as depth drops toward the coast; abyssal blends in via a
+  // smoothstep gate restricted to trench-grade depths so it doesn't
+  // smother the typical 3-4 km abyssal-plain depth.
   float depth = max(vWaterSurface - landElev, 0.0);
-  float depthT = 1.0 - clamp(depth / 4000.0, 0.0, 1.0);
-  vec3 base = mix(uOceanDeep, uOceanShallow, depthT);
+  float wShelf   = exp(-depth /  350.0);
+  float wShallow = exp(-depth / uDepthFalloff);
+  vec3 base = uOceanDeep;
+  base = mix(base, uOceanShelf,   wShelf);
+  base = mix(base, uOceanShallow, wShallow);
+  float trenchT = smoothstep(uOceanTrenchStart, uOceanTrenchEnd, depth);
+  base = mix(base, uOceanAbyssal, trenchT);
+
+  // Coastal sediment / chlorophyll cast — green-teal tint over the
+  // shallowest band only. River deltas (Amazon, Ganges, Mississippi)
+  // and shallow seas pick this up; mid-depth shelves stay pure blue.
+  float coastalT = exp(-depth / uCoastalTintFalloff);
+  base = mix(base, uCoastalTintColor, coastalT * uCoastalTintStrength);
 
   // Coast fade: same formula as the vertex shader so swell + glint
   // attenuate together. 0 m depth → 0, 400 m depth → full.
@@ -272,6 +345,19 @@ void main() {
   // gated on \`uCurrentStrength\`; Tweakpane drops it to 0 to disable.
   if (uCurrentStrength > 0.0) {
     col += streamlineOverlay(vSphereDir, coastFade, wrap) * uCurrentStrength;
+  }
+
+  // ----- Aerial perspective (haze) -----
+  // Same as land.frag.glsl: tint toward the inscattered sky colour by an
+  // air-thickness factor that grows as the view ray slants. Reuses
+  // \`viewDir\` already computed for the specular highlight above.
+  if (uHazeAmount > 0.0) {
+    vec3 outwardNormal = normalize(vWorldPos);
+    float cosToCamera = max(dot(viewDir, outwardNormal), 0.0);
+    float airThickness = 1.0 / max(cosToCamera, 0.1);
+    float hazeStrength = clamp((airThickness - 1.0) * uHazeAmount, 0.0, 0.85);
+    vec3 hazeColor = sampleSkyViewHaze(-viewDir, cameraPosition, sunDir) * uHazeExposure;
+    col = mix(col, hazeColor, hazeStrength);
   }
 
   fragColor = vec4(col, 1.0);

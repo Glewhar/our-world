@@ -38,10 +38,29 @@ export type WorldManifest = {
      * Cities + populated places, JSON list (see `CitiesFile`). Cities are
      * points (lat, lon, population), not polygons, so they live outside
      * the HEALPix rasterizer pipeline; the artifact is a standalone JSON
-     * consumed by the render layer's CitiesLayer. Format: `json`. Empty
-     * list ([]) on fixture bakes.
+     * exposed via `WorldRuntime.getCities()`. No render layer consumes
+     * this today (the per-point render was removed in favour of denser
+     * street geometry). Format: `json`. Empty list ([]) on fixture bakes.
      */
     cities: ArtifactRef;
+    /**
+     * Road polylines (Natural Earth ne_10m_roads, all paved types kept,
+     * tiered into major / arterial / local). JSON list (see `RoadsFile`).
+     * Lines are not polygons, so they live outside the HEALPix rasterizer
+     * pipeline; the artifact is a standalone JSON consumed by the render
+     * layer's HighwaysLayer. Format: `json`. Empty list ([]) on fixture bakes.
+     */
+    roads: ArtifactRef;
+    /**
+     * Equirectangular RG16F + 32-byte header. R = signed kilometres to
+     * nearest coastline (positive on land, negative in water). G =
+     * kilometres to nearest biome-class boundary. Sampled bilinearly by
+     * the land shader to produce smooth sub-cell coast and biome-edge
+     * transitions. See
+     * `docs/plans/coastlines-biomes/00-overview.md` for the byte layout
+     * and conventions.
+     */
+    distance_field: ArtifactRef;
   };
   bodies: BodyRecord[];
   graphs: {
@@ -84,6 +103,25 @@ export type CityRecord = {
   pop: number; // POP_MAX from Natural Earth
   name: string;
   country: string;
+};
+
+/**
+ * Roads artifact (`roads.json`). Sorted: major before arterial before local,
+ * longer lines first within each kind so the densest network draws earliest.
+ * Empty list on fixture bakes.
+ */
+export type RoadsFile = {
+  version: 2;
+  source: string; // e.g. "natural_earth_10m_roads_v5.1.1"
+  generated_at: string; // ISO8601
+  count: number;
+  roads: RoadRecord[];
+};
+
+export type RoadRecord = {
+  kind: 'major' | 'arterial' | 'local';
+  /** Polyline vertices as [lat, lon] pairs (degrees), already simplified. */
+  vertices: [number, number][];
 };
 
 export type GraphRef = {
@@ -196,6 +234,16 @@ export interface WorldRuntime {
    */
   getWaterLevelMetersTexture(): THREE.DataTexture;
 
+  /**
+   * Equirectangular RG16F distance-field texture. R = signed km to
+   * nearest coastline (positive on land); G = km to nearest biome-class
+   * boundary. Bilinear-sampled by the land shader for sub-cell smooth
+   * coast + biome-edge transitions. Returns null on bakes that didn't
+   * ship the artifact (loader degrades — shader treats null as
+   * "everywhere far from any boundary").
+   */
+  getDistanceFieldTexture(): THREE.DataTexture | null;
+
   // HEALPix spec exposed to render-side shaders that sample the id raster
   // (Phase 3+). `nside` lets the GLSL port know the grid resolution; `ordering`
   // selects the cell-numbering scheme. Not C1 — additive on the runtime API.
@@ -215,6 +263,12 @@ export interface WorldRuntime {
   // Sorted by population descending. Empty array when the bake didn't
   // produce real city data (fixture bakes).
   getCities(): readonly CityRecord[];
+
+  // Road polylines (Natural Earth ne_10m_roads, all paved types kept,
+  // tiered into major / arterial / local). Loaded from `artifacts.roads`
+  // at boot. Sorted major-first then by length descending within each
+  // kind. Empty array on fixture bakes.
+  getRoads(): readonly RoadRecord[];
 
   // Aggregates (refreshed by Sim @ 10 Hz)
   getAggregates(): WorldAggregates;

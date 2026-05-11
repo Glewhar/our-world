@@ -7,10 +7,11 @@ export const source = `// Land vertex shader — displaces dry-land vertices out
 //   1. Smoothing — 9-tap blur (centre + 8 sphere-neighbours arranged in
 //      a circle) at ~3 HEALPix cells radius. Kills cell-to-cell elevation
 //      jumps that show up as pointy triangles at high mesh density.
-//   2. Coast fade — count how many of the 8 neighbours are ocean
-//      (bodyId == 0). The more ocean nearby, the harder the displacement
-//      tapers toward 0, so coastal land meets the flat water shell flush
-//      instead of leaving a vertical gap.
+//   2. Coast fade — single bilinear sample of the distance field's R
+//      channel (signed km to coast). Replaces the old 8-neighbour ocean
+//      count (which produced quantized 0/0.25/0.5/.../1.0 fades, visible
+//      as cell-stepped tapering near coasts) with a continuous taper
+//      based on real distance.
 //
 // \`vSphereDir\` carries the pre-displacement direction so the fragment
 // shader's HEALPix lookups stay anchored to the original cell, not the
@@ -21,7 +22,7 @@ precision highp int;
 precision highp sampler2D;
 
 uniform sampler2D uElevationMeters;
-uniform sampler2D uIdRaster;
+uniform sampler2D uDistanceField;
 uniform int uHealpixNside;
 uniform int uHealpixOrdering;
 uniform int uAttrTexWidth;
@@ -33,6 +34,15 @@ out vec3 vSphereDir;
 ivec2 cellTexel(vec3 d) {
   int ipix = healpixZPhiToPix(uHealpixNside, uHealpixOrdering, d.z, atan(d.y, d.x));
   return healpixIpixToTexel(ipix, uAttrTexWidth);
+}
+
+vec2 sphereDirToEquirectUv(vec3 d) {
+  float phi = atan(d.y, d.x);
+  float theta = asin(clamp(d.z, -1.0, 1.0));
+  return vec2(
+    (phi + 3.14159265) * (1.0 / 6.28318530),
+    (1.5707963 - theta) * (1.0 / 3.14159265)
+  );
 }
 
 void main() {
@@ -82,19 +92,15 @@ void main() {
     texelFetch(uElevationMeters, tx8, 0).r
   ) / 9.0;
 
-  int oceanCount = 0;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx1, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx2, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx3, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx4, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx5, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx6, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx7, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx8, 0))) oceanCount++;
-
-  // Quadratic taper: 0 ocean → 1.0, 4 ocean → 0.25, 8 ocean → 0.0.
-  float coastFade = 1.0 - float(oceanCount) / 8.0;
-  coastFade *= coastFade;
+  // Coast taper from the distance field — single bilinear sample in km.
+  // Negative on water, positive on land. \`smoothstep(0, K, d)\` gives a
+  // continuous taper that hits 0 in the water and 1 a few km inland, so
+  // the coast meets the flat water shell flush without leaving a vertical
+  // gap. K = 4 km is wide enough to blend any sub-pixel sampling jitter
+  // and narrow enough that ~all of normal land sits at full displacement.
+  vec2 dfUv = sphereDirToEquirectUv(dir);
+  float distCoastKm = texture(uDistanceField, dfUv).r;
+  float coastFade = smoothstep(0.0, 4.0, distCoastKm);
 
   float displace = max(elev, 0.0) * uElevationScale * coastFade;
   vec3 displaced = dir * (1.0 + displace);
