@@ -22,11 +22,23 @@ import { source as vertGlsl } from './shaders/highways.vert.glsl.js';
 import { source as fragGlsl } from './shaders/highways.frag.glsl.js';
 import { DEFAULT_ELEVATION_SCALE } from '../globe/LandMaterial.js';
 /**
- * Radial bias applied on top of the elevation-matched lift, in unit-sphere
- * units. Well past the 24-bit depth-buffer noise floor so highways never
- * z-fight with the displaced land mesh.
+ * Radial nudge applied on top of the matched land-displacement lift, in
+ * metres of equivalent elevation. The shader multiplies by
+ * `uElevationScale` so the bias tracks the altitude-exaggeration slider:
+ * land and road lift in lock-step at every slider setting, so the
+ * safety margin never gets out-paced as the slider grows.
+ *
+ * Covers the worst-case linear-interpolation gap between the icosphere
+ * land mesh (which interpolates elevation linearly across each ~3 km
+ * triangle) and the road's point-sample of elevation. On steep slopes
+ * that gap is a few hundred metres; 280 m wins the depth fight in
+ * almost every case while keeping the road visually flush at orbital
+ * zoom. Bump up to fight more residual patches at the cost of visible
+ * float at close zoom; bump down to glue tighter at the cost of patches
+ * returning. Same metres-based convention as the airplane shaders'
+ * `uRadialBiasM`.
  */
-const DEFAULT_HIGHWAY_RADIAL_BIAS = 5e-4;
+const DEFAULT_HIGHWAY_RADIAL_BIAS_M = 280;
 const DEFAULT_UNIFORM_VALUES = {
     majorWidthPx: 3.5,
     arterialWidthPx: 2.0,
@@ -68,8 +80,9 @@ export class HighwaysLayer {
             uHealpixOrdering: { value: ordering === 'ring' ? 0 : 1 },
             uAttrTexWidth: { value: 4 * nside },
             uElevationMeters: { value: world.getElevationMetersTexture() },
+            uDistanceField: { value: world.getDistanceFieldTexture() },
             uElevationScale: { value: DEFAULT_ELEVATION_SCALE },
-            uHighwayRadialBias: { value: DEFAULT_HIGHWAY_RADIAL_BIAS },
+            uHighwayRadialBiasM: { value: DEFAULT_HIGHWAY_RADIAL_BIAS_M },
             // Viewport stays at 1×1 until scene-graph wires the canvas size in.
             // Until then the ribbon is degenerate (one-pixel-wide); the resize
             // path runs on first frame so the wrong-size window is never seen.

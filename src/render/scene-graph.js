@@ -84,7 +84,7 @@ export function createSceneGraph() {
         controls = new OrbitControls(camera, canvas);
         controls.enableDamping = true;
         controls.minDistance = 1.2;
-        controls.maxDistance = 30;
+        controls.maxDistance = 15;
         controls.target.set(0, 0, 0);
         // A single Globe mesh covers both land and water. The unified shader does
         // HEALPix lookups per fragment, branching on `id_raster` to colour land
@@ -112,6 +112,7 @@ export function createSceneGraph() {
         highways = new HighwaysLayer(w, w.getRoads());
         highways.setSunDirection(sunDirection);
         highways.setViewportSize(initW, initH);
+        highways.mesh.renderOrder = -1;
         scene.add(highways.mesh);
         // Airplane visualisation — async because the data is loaded over fetch.
         // Failure is non-fatal; the rest of the scene still renders.
@@ -248,7 +249,7 @@ export function createSceneGraph() {
         // is the globe-centre distance (globe is at world 0). tFar = 0 at
         // camera distance ≤ 1.5 (zoomed in), 1 at ≥ 15 (zoomed out).
         const camDist = camera.position.length();
-        const tFar = THREE.MathUtils.smoothstep(camDist, 1.5, 15);
+        const tFar = THREE.MathUtils.smoothstep(camDist, 1.2, 5);
         if (highways) {
             const hz = debug.materials.highways;
             const u = highways.uniforms;
@@ -283,6 +284,7 @@ export function createSceneGraph() {
             airplanes.trails.setElevationScale(elevScale);
             airplanes.scaffold.setElevationScale(elevScale);
             airplanes.heads.setElevationScale(elevScale);
+            airplanes.heads.setOpacity(THREE.MathUtils.lerp(1.0, 0.5, tFar));
         }
         // Atmosphere — Hillaire 2020 LUT-driven. `rayleighScale` / `mieScale`
         // and `atmosphereRadius` mutate optical-depth integration, so changing
@@ -303,6 +305,7 @@ export function createSceneGraph() {
                 globe.uniforms.land.uSkyView.value = atmosphere.skyViewTexture;
                 globe.uniforms.land.uHazeExposure.value = a.exposure;
                 globe.uniforms.land.uHazeAmount.value = a.hazeAmount;
+                globe.uniforms.land.uHazeFalloffM.value = a.hazeFalloffM;
                 globe.uniforms.water.uSkyView.value = atmosphere.skyViewTexture;
                 globe.uniforms.water.uHazeExposure.value = a.exposure;
                 globe.uniforms.water.uHazeAmount.value = a.hazeAmount;
@@ -324,8 +327,8 @@ export function createSceneGraph() {
         cloudsPass?.setActive(debug.layers.clouds);
         highways?.setActive(debug.layers.highways);
         if (airplanes) {
-            airplanes.setLayerActive('airports', debug.layers.airports);
-            airplanes.setLayerActive('scaffold', debug.layers.routeScaffold);
+            airplanes.setLayerActive('airports', false);
+            airplanes.setLayerActive('scaffold', false);
             airplanes.setLayerActive('trails', debug.layers.trails);
             airplanes.setLayerActive('heads', debug.layers.planes);
         }

@@ -22,12 +22,12 @@ precision highp int;
 precision highp sampler2D;
 
 uniform sampler2D uElevationMeters;
-uniform sampler2D uIdRaster;
+uniform sampler2D uDistanceField;
 uniform int uHealpixNside;
 uniform int uHealpixOrdering;
 uniform int uAttrTexWidth;
 uniform float uElevationScale;
-uniform float uHighwayRadialBias;
+uniform float uHighwayRadialBiasM;
 
 uniform vec2 uViewportSize;
 uniform float uMajorWidthPx;
@@ -94,22 +94,21 @@ void main() {
     texelFetch(uElevationMeters, tx8, 0).r
   ) / 9.0;
 
-  // Coast fade — taper the lift to zero as the kernel pokes out into ocean
-  // texels so coastal roads don't pop above sea level. Same shape as cities.
-  int oceanCount = 0;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx1, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx2, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx3, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx4, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx5, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx6, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx7, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx8, 0))) oceanCount++;
-  float coastFade = 1.0 - float(oceanCount) / 8.0;
-  coastFade *= coastFade;
+  // Coast fade — single bilinear sample of the distance field's signed-km
+  // channel. Matches Land's recipe exactly so the two meshes compute
+  // identical radial displacement at any given lat/lon; the previous
+  // 8-neighbour ocean count produced cell-quantized fades that
+  // disagreed with Land's continuous smoothstep by hundreds of metres
+  // in the coast band, losing the depth fight against the land mesh.
+  vec2 dfUv = sphereDirToEquirectUv(dir);
+  float distCoastKm = texture(uDistanceField, dfUv).r;
+  float coastFade = smoothstep(0.0, 4.0, distCoastKm);
 
   float landDisplace = max(elev, 0.0) * uElevationScale * coastFade;
-  float radial = 1.0 + landDisplace + uHighwayRadialBias;
+  // Bias is in metres so it tracks the altitude-exaggeration slider — the
+  // multiplication by uElevationScale lifts both the land and the road in
+  // lock-step, preserving the depth-fight safety margin at every factor.
+  float radial = 1.0 + landDisplace + uHighwayRadialBiasM * uElevationScale;
 
   vec3 liftedCenter = dir * radial;
 

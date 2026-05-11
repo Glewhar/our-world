@@ -110,6 +110,11 @@ export class AirplaneSystem {
 
     const N = data.routeWeight.length;
     this.routeSpawnAccum = new Float32Array(N);
+    // Random-phase the per-route spawn accumulators so the global spawn rate
+    // hits its steady value immediately. Otherwise low-weight routes (most of
+    // them) need many minutes of frame-time to first cross 1.0, and the
+    // prefilled in-flight cohort drains away faster than it gets replaced.
+    for (let i = 0; i < N; i++) this.routeSpawnAccum[i] = Math.random();
     this.routeBaseRate = new Float32Array(N);
     this.computeRouteRates();
     this.prefillToSteadyState();

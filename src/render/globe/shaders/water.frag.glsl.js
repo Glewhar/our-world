@@ -348,15 +348,13 @@ void main() {
   }
 
   // ----- Aerial perspective (haze) -----
-  // Same as land.frag.glsl: tint toward the inscattered sky colour by an
-  // air-thickness factor that grows as the view ray slants. Reuses
-  // \`viewDir\` already computed for the specular highlight above.
+  // Same as land.frag.glsl: tint toward the inscattered sky-view LUT
+  // colour, with strength tied to the halo's 1 - exp(-lum * 6) curve so
+  // the two effects agree at the silhouette.
   if (uHazeAmount > 0.0) {
-    vec3 outwardNormal = normalize(vWorldPos);
-    float cosToCamera = max(dot(viewDir, outwardNormal), 0.0);
-    float airThickness = 1.0 / max(cosToCamera, 0.1);
-    float hazeStrength = clamp((airThickness - 1.0) * uHazeAmount, 0.0, 0.85);
     vec3 hazeColor = sampleSkyViewHaze(-viewDir, cameraPosition, sunDir) * uHazeExposure;
+    float lum = dot(hazeColor, vec3(0.2126, 0.7152, 0.0722));
+    float hazeStrength = clamp((1.0 - exp(-lum * 6.0)) * uHazeAmount, 0.0, 0.95);
     col = mix(col, hazeColor, hazeStrength);
   }
 

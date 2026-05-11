@@ -124,6 +124,19 @@ ivec2 healpixIpixToTexel(int ipix, int width) {
   return ivec2(ipix % width, ipix / width);
 }
 
+// Unit-sphere direction → equirectangular UV. Lon = atan2(y,x) maps to U;
+// lat = asin(z) maps to V (V=0 at the north pole, V=1 at the south).
+// Shared by every shader that bilinear-samples one of the equirect bakes
+// (distance field, biome colour, elevation equirect, …).
+vec2 sphereDirToEquirectUv(vec3 d) {
+  float phi = atan(d.y, d.x);
+  float theta = asin(clamp(d.z, -1.0, 1.0));
+  return vec2(
+    (phi + 3.14159265) * (1.0 / 6.28318530),
+    (1.5707963 - theta) * (1.0 / 3.14159265)
+  );
+}
+
 // id-raster unpack helpers — see web/src/world/IdRaster.ts for the GPU
 // layout. The id raster is now RGBA8, body index packed across R/G/B
 // (24 bits, plenty for any Earth bake) with A as a sentinel:

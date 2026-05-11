@@ -101,6 +101,10 @@ export class PlaneHeadsLayer {
     this.material.uniforms.uElevationScale!.value = v;
   }
 
+  setOpacity(v: number): void {
+    this.material.uniforms.uOpacity!.value = v;
+  }
+
   dispose(): void {
     this.geometry.dispose();
     this.material.dispose();

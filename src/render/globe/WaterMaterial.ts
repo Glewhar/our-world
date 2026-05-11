@@ -172,7 +172,7 @@ export function createWaterMaterial(): THREE.ShaderMaterial & {
 
     uSkyView: { value: null },
     uHazeExposure: { value: 3.5 },
-    uHazeAmount: { value: 0.25 },
+    uHazeAmount: { value: 0.7 },
   };
 
   const vertexShader = `${healpixGlsl}\n${wavesGlsl}\n${vertGlsl}`;

@@ -107,6 +107,7 @@ uniform float uSpecularStrength;
 uniform sampler2D uSkyView;
 uniform float uHazeExposure;
 uniform float uHazeAmount;
+uniform float uHazeFalloffM;
 
 in vec3 vWorldPos;
 in vec3 vSphereDir;
@@ -145,17 +146,9 @@ vec3 biomePalette(int code) {
 
 const vec3 LANDFALL_NEUTRAL = vec3(0.55, 0.50, 0.40);
 
-// Sphere direction → equirectangular UV. Matches the bake's
-// half-pixel-offset convention (lon=-180+0.5px at u=0, lat=+90-0.5px at v=0).
-vec2 sphereDirToEquirectUv(vec3 d) {
-  float phi = atan(d.y, d.x);
-  float theta = asin(clamp(d.z, -1.0, 1.0));
-  // wrapS=Repeat handles fragments that round to slightly outside [0,1].
-  return vec2(
-    (phi + 3.14159265) * (1.0 / 6.28318530),
-    (1.5707963 - theta) * (1.0 / 3.14159265)
-  );
-}
+// \`sphereDirToEquirectUv(dir)\` comes from healpix.glsl (concatenated
+// ahead of this source). wrapS=Repeat on the sampled equirect textures
+// handles fragments that round to slightly outside [0,1].
 
 // Compact 3D value-noise for the biome surface variation. Same hash as
 // the cloud shader's \`cn_hash13\` so samples are deterministic per
@@ -421,19 +414,21 @@ void main() {
   vec3 finalColor = mix(night, day, wrap);
 
   // ----- Aerial perspective (haze) -----
-  // Toward the disc centre the view ray is nearly parallel to the surface
-  // normal — looking straight down through thin air. Near the limb the
-  // ray skims through a long slant column. The "air thickness" factor
-  // (1/cos(angle), clamped) drives the mix toward the inscattered sky
-  // colour. Sampling the sky-view LUT in the same direction the
-  // atmosphere shader uses makes the rim haze, sunset warming, and night-
-  // side darkening track automatically.
+  // Tint toward the inscattered sky-view LUT colour. Strength uses the
+  // same 1 - exp(-lum * 6) falloff that drives the atmosphere halo's
+  // alpha (see atmosphere.frag.glsl), so surface haze and rim halo
+  // share one source of truth and can't disagree at the silhouette.
   if (uHazeAmount > 0.0) {
-    vec3 outwardNormal = normalize(vWorldPos);
-    float cosToCamera = max(dot(viewDir, outwardNormal), 0.0);
-    float airThickness = 1.0 / max(cosToCamera, 0.1);
-    float hazeStrength = clamp((airThickness - 1.0) * uHazeAmount, 0.0, 0.85);
     vec3 hazeColor = sampleSkyViewHaze(-viewDir, cameraPosition, sunDir) * uHazeExposure;
+    float lum = dot(hazeColor, vec3(0.2126, 0.7152, 0.0722));
+    // Atmospheric perspective: peaks above the haze layer punch through
+    // it. Sea-level fragments get full haze; mountain peaks get
+    // progressively less. This is what makes the jagged mountain
+    // silhouette survive at the limb instead of being washed flat into
+    // the sphere outline. \`elevM\` is in scope from the elevation-texture
+    // read above (also used by alpine thinning).
+    float elevAtten = exp(-elevM / max(uHazeFalloffM, 1.0));
+    float hazeStrength = clamp((1.0 - exp(-lum * 6.0)) * uHazeAmount * elevAtten, 0.0, 0.95);
     finalColor = mix(finalColor, hazeColor, hazeStrength);
   }
 

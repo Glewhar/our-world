@@ -139,7 +139,8 @@ export function createLandMaterial() {
         uSpecularStrength: { value: 1.0 },
         uSkyView: { value: null },
         uHazeExposure: { value: 3.5 },
-        uHazeAmount: { value: 0.25 },
+        uHazeAmount: { value: 0.7 },
+        uHazeFalloffM: { value: 3000.0 },
     };
     // Three.js ShaderMaterial doesn't process GLSL `#include`, so the helper
     // module is concatenated by hand (vertex AND fragment use HEALPix lookups).

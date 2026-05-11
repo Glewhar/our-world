@@ -299,7 +299,8 @@ export function createLandMaterial(): THREE.ShaderMaterial & {
 
     uSkyView: { value: null },
     uHazeExposure: { value: 3.5 },
-    uHazeAmount: { value: 0.25 },
+    uHazeAmount: { value: 0.7 },
+    uHazeFalloffM: { value: 3000.0 },
   };
 
   // Three.js ShaderMaterial doesn't process GLSL `#include`, so the helper

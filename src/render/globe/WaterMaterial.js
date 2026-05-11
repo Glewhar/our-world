@@ -81,7 +81,7 @@ export function createWaterMaterial() {
         uStrongJetsOnly: { value: 0 },
         uSkyView: { value: null },
         uHazeExposure: { value: 3.5 },
-        uHazeAmount: { value: 0.25 },
+        uHazeAmount: { value: 0.7 },
     };
     const vertexShader = `${healpixGlsl}\n${wavesGlsl}\n${vertGlsl}`;
     const fragmentShader = `${healpixGlsl}\n${wavesGlsl}\n${fragGlsl}`;

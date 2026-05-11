@@ -36,15 +36,6 @@ ivec2 cellTexel(vec3 d) {
   return healpixIpixToTexel(ipix, uAttrTexWidth);
 }
 
-vec2 sphereDirToEquirectUv(vec3 d) {
-  float phi = atan(d.y, d.x);
-  float theta = asin(clamp(d.z, -1.0, 1.0));
-  return vec2(
-    (phi + 3.14159265) * (1.0 / 6.28318530),
-    (1.5707963 - theta) * (1.0 / 3.14159265)
-  );
-}
-
 void main() {
   vec3 dir = normalize(position);
   vSphereDir = dir;

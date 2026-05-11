@@ -21,8 +21,8 @@ export const initialDebugState = {
         ocean: true,
         clouds: true,
         highways: true,
-        airports: true,
-        routeScaffold: true,
+        airports: false,
+        routeScaffold: false,
         trails: true,
         planes: true,
         postFx: true,
@@ -64,7 +64,8 @@ export const initialDebugState = {
             mieScale: 0.4,
             sunDiskSize: 0.18,
             exposure: 3.5,
-            hazeAmount: 0.25,
+            hazeAmount: 0.7,
+            hazeFalloffM: 3000,
         },
         ocean: {
             waveAmplitude: 150,
@@ -90,15 +91,15 @@ export const initialDebugState = {
             coverage: 0.5,
             beer: 1.4,
             henyey: 0.4,
-            advection: 14,
+            advection: 24,
         },
         highways: {
-            majorWidthPx: 3.5,
-            arterialWidthPx: 2.0,
-            localWidthPx: 1.0,
+            majorWidthPx: 4.0,
+            arterialWidthPx: 3.0,
+            localWidthPx: 2.0,
             nightBrightness: 0.6,
-            majorBoost: 1.35,
-            arterialBoost: 1.0,
+            majorBoost: 0.8,
+            arterialBoost: 0.6,
             localBoost: 0.7,
             coreWidth: 0.3,
             coreBoost: 1.2,
@@ -106,7 +107,7 @@ export const initialDebugState = {
             haloFalloff: 1.8,
             dayStrength: 0.7,
             opacityNear: 1.0,
-            opacityFar: 0.4,
+            opacityFar: 0.05,
         },
         postFx: { bloomThreshold: 0.85, bloomStrength: 0.6, vignette: 0.35, gradeTint: '#f3eee0' },
     },
@@ -141,8 +142,6 @@ export function createDebugPanel(state = initialDebugState) {
     // globe stays here; postFx is n/a.
     const layersFolder = pane.addFolder({ title: 'Layers' });
     layersFolder.addBinding(state.layers, 'globe');
-    layersFolder.addBinding(state.layers, 'airports', { label: 'airports' });
-    layersFolder.addBinding(state.layers, 'routeScaffold', { label: 'routes' });
     layersFolder.addBinding(state.layers, 'postFx', { disabled: true, label: 'postFx (n/a)' });
     const planesFolder = pane.addFolder({ title: 'Airplanes' });
     planesFolder.addBinding(state.airplanes, 'speed', {
@@ -273,9 +272,18 @@ export function createDebugPanel(state = initialDebugState) {
     // rim with disc-centre still readable.
     atmMat.addBinding(state.materials.atmosphere, 'hazeAmount', {
         min: 0,
-        max: 1,
+        max: 1.5,
         step: 0.01,
         label: 'haze',
+    });
+    // Haze layer height in metres. Terrain above this exponentially loses
+    // haze so mountain peaks at the limb keep their shading detail. Low =
+    // even hills punch through; high = behaviour reverts toward uniform haze.
+    atmMat.addBinding(state.materials.atmosphere, 'hazeFalloffM', {
+        min: 500,
+        max: 10000,
+        step: 100,
+        label: 'haze layer (m)',
     });
     // Ocean — Gerstner waves. `waveAmplitude` is in metres; the shader
     // multiplies by `uElevationScale` to land in the same visual regime as
@@ -384,7 +392,7 @@ export function createDebugPanel(state = initialDebugState) {
     });
     highwaysMat.addBinding(state.materials.highways, 'majorBoost', {
         min: 1,
-        max: 3,
+        max: 15,
         step: 0.05,
         label: 'major boost',
     });
