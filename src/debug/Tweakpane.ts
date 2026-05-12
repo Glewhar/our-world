@@ -15,7 +15,21 @@ import { Pane, type FolderApi } from 'tweakpane';
 export type DebugState = {
   camera: { autoOrbit: boolean; orbitSpeed: number };
   scene: { background: string; showGrid: boolean };
-  timeOfDay: { t01: number; paused: boolean };
+  timeOfDay: {
+    t01: number;
+    paused: boolean;
+    timeOfYear01: number;
+    yearsElapsed: number;
+    /**
+     * Canonical continuous counter: one unit = one in-game day = one full
+     * clock rotation = one month. `t01`, `timeOfYear01`, and `yearsElapsed`
+     * are *derived* from this every frame by scene-graph.ts, so they can
+     * never drift out of sync. Clock scrub rewrites only the fractional
+     * part of `totalDays` (preserving integer day count) so month/year
+     * don't jump when the user drags the clock.
+     */
+    totalDays: number;
+  };
   /**
    * Single uniform multiplier applied to every metres-based altitude in
    * the project (terrain, water, clouds, plane bow arcs, atmosphere
@@ -121,17 +135,37 @@ export type DebugState = {
       majorWidthPx: number;
       arterialWidthPx: number;
       localWidthPx: number;
+      local2WidthPx: number;
       nightBrightness: number;
       majorBoost: number;
       arterialBoost: number;
       localBoost: number;
+      local2Boost: number;
       coreWidth: number;
       coreBoost: number;
       haloStrength: number;
       haloFalloff: number;
       dayStrength: number;
+      dayCasingPx: number;
+      dayCasingStrength: number;
+      dayFillBrightness: number;
+      dayFillScale: number;
       opacityNear: number;
       opacityFar: number;
+    };
+    cities: {
+      gridDensity: number;
+      aspectJitter: number;
+      rowOffset: number;
+      blockThreshold: number;
+      outlineMin: number;
+      outlineMax: number;
+      nightBrightness: number;
+      tileSparkle: number;
+      dayContrast: number;
+      opacity: number;
+      nightOpacity: number;
+      minPopulation: number;
     };
     postFx: { bloomThreshold: number; bloomStrength: number; vignette: number; gradeTint: string };
   };
@@ -141,7 +175,7 @@ export type DebugState = {
 export const initialDebugState: DebugState = {
   camera: { autoOrbit: false, orbitSpeed: 0.05 },
   scene: { background: '#06080c', showGrid: false },
-  timeOfDay: { t01: 0.5, paused: false },
+  timeOfDay: { t01: 0, paused: false, timeOfYear01: 0, yearsElapsed: 0, totalDays: 0 },
   altitude: { scaleFactor: 5 },
   layers: {
     globe: true,
@@ -163,8 +197,8 @@ export const initialDebugState: DebugState = {
   },
   materials: {
     globe: {
-      ambient: 0.3,
-      nightTint: '#141a29',
+      ambient: 0.22,
+      nightTint: '#152d5a',
       lerpColorFire: '#1a1014',
       lerpColorIce: '#d4ecff',
       lerpColorInfection: '#bb33cc',
@@ -173,7 +207,7 @@ export const initialDebugState: DebugState = {
       lerpStrengthIce: 1.0,
       lerpStrengthInfection: 1.0,
       lerpStrengthPollution: 1.0,
-      biomeStrength: 0.85,
+      biomeStrength: 1.0,
       snowLineStrength: 0.55,
       seasonOffsetC: 0.0,
       alpineStrength: 0.7,
@@ -184,7 +218,7 @@ export const initialDebugState: DebugState = {
       biomeBumpStrength: 0.6,
       biomeNoiseFreq: 12.0,
       biomeSurfaceAmps: [0.8, 0.7, 0.6, 0.5, 0.6, 0.4, 0.9, 0.3, 0.7, 0.4, 0.6, 1.0],
-      specularStrength: 1.0,
+      specularStrength: 1.4,
       biomeSpecAmps: [0.05, 0.1, 0.04, 0.06, 0.06, 0.05, 0.0, 0.4, 0.2, 0.15, 0.12, 0.2],
     },
     atmosphere: {
@@ -224,18 +258,38 @@ export const initialDebugState: DebugState = {
     highways: {
       majorWidthPx: 4.0,
       arterialWidthPx: 3.0,
-      localWidthPx: 2.0,
+      localWidthPx: 1.0,
+      local2WidthPx: 1.0,
       nightBrightness: 0.6,
       majorBoost: 0.8,
-      arterialBoost: 0.6,
-      localBoost: 0.7,
-      coreWidth: 0.3,
+      arterialBoost: 0.45,
+      localBoost: 0.6,
+      local2Boost: 0.2,
+      coreWidth: 0.6,
       coreBoost: 1.2,
       haloStrength: 0.5,
       haloFalloff: 1.8,
-      dayStrength: 0.7,
+      dayStrength: 0.55,
+      dayCasingPx: 1.0,
+      dayCasingStrength: 0.3,
+      dayFillBrightness: 0.4,
+      dayFillScale: 0.3,
       opacityNear: 1.0,
       opacityFar: 0.05,
+    },
+    cities: {
+      gridDensity: 35,
+      aspectJitter: 0.1,
+      rowOffset: 0.5,
+      blockThreshold: 0.1,
+      outlineMin: 0.01,
+      outlineMax: 0.06,
+      nightBrightness: 0.8,
+      tileSparkle: 1.4,
+      dayContrast: 0.6,
+      opacity: 0.65,
+      nightOpacity: 5.0,
+      minPopulation: 0,
     },
     postFx: { bloomThreshold: 0.85, bloomStrength: 0.6, vignette: 0.35, gradeTint: '#f3eee0' },
   },
@@ -320,46 +374,31 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
   // below exposes the new coast / biome-edge / biome-surface knobs that
   // arrived with the distance-field bake — these need live tuning.
   const globeMat = mat.addFolder({ title: 'Globe', expanded: false });
-  globeMat.addBinding(state.materials.globe, 'coastSharpness', {
-    min: 0,
-    max: 100,
-    step: 0.1,
-    label: 'coast sharpness (km)',
+
+  const gEdges = globeMat.addFolder({ title: 'Edges & coastline', expanded: false });
+  gEdges.addBinding(state.materials.globe, 'coastSharpness', {
+    min: 0, max: 100, step: 0.1, label: 'coast sharpness (km)',
   });
-  globeMat.addBinding(state.materials.globe, 'biomeEdgeSharpness', {
-    min: 0,
-    max: 100,
-    step: 0.5,
-    label: 'biome edge fade (km)',
+  gEdges.addBinding(state.materials.globe, 'biomeEdgeSharpness', {
+    min: 0, max: 100, step: 0.5, label: 'biome edge fade (km)',
   });
-  globeMat.addBinding(state.materials.globe, 'biomeSurfaceStrength', {
-    min: 0,
-    max: 1,
-    step: 0.01,
-    label: 'biome surf master',
+
+  const gBiome = globeMat.addFolder({ title: 'Biome surface', expanded: false });
+  gBiome.addBinding(state.materials.globe, 'biomeSurfaceStrength', {
+    min: 0, max: 1, step: 0.01, label: 'master strength',
   });
-  globeMat.addBinding(state.materials.globe, 'biomeColorVar', {
-    min: 0,
-    max: 1,
-    step: 0.01,
-    label: 'biome color var',
+  gBiome.addBinding(state.materials.globe, 'biomeColorVar', {
+    min: 0, max: 1, step: 0.01, label: 'color variation',
   });
-  globeMat.addBinding(state.materials.globe, 'biomeBumpStrength', {
-    min: 0,
-    max: 1,
-    step: 0.01,
-    label: 'biome bump',
+  gBiome.addBinding(state.materials.globe, 'biomeBumpStrength', {
+    min: 0, max: 1, step: 0.01, label: 'bump',
   });
-  globeMat.addBinding(state.materials.globe, 'biomeNoiseFreq', {
-    min: 1,
-    max: 40,
-    step: 0.5,
-    label: 'biome noise freq',
+  gBiome.addBinding(state.materials.globe, 'biomeNoiseFreq', {
+    min: 1, max: 40, step: 0.5, label: 'noise frequency',
   });
   // Per-biome amplitudes — 12 sliders. Tweakpane needs each entry as a
   // distinct binding key, so wrap each index in a small per-entry proxy
   // object whose mutation writes back into the array.
-  const ampsFolder = globeMat.addFolder({ title: 'Per-biome amps', expanded: false });
   const BIOME_LABELS = [
     '0 fallback',
     '1 forest',
@@ -374,6 +413,7 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
     '10 mangroves',
     '11 tundra/alpine',
   ];
+  const ampsFolder = gBiome.addFolder({ title: 'Per-biome amplitude', expanded: false });
   for (let i = 0; i < 12; i++) {
     const proxy = { v: state.materials.globe.biomeSurfaceAmps[i]! };
     ampsFolder
@@ -385,13 +425,11 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
 
   // Land specular — wide-cone Blinn-Phong highlight that tracks the camera.
   // Master strength multiplies the per-biome amps below; 0 = pure Lambert.
-  globeMat.addBinding(state.materials.globe, 'specularStrength', {
-    min: 0,
-    max: 3,
-    step: 0.01,
-    label: 'specular',
+  const gLighting = globeMat.addFolder({ title: 'Lighting', expanded: false });
+  gLighting.addBinding(state.materials.globe, 'specularStrength', {
+    min: 0, max: 3, step: 0.01, label: 'specular',
   });
-  const specAmpsFolder = globeMat.addFolder({ title: 'Per-biome spec', expanded: false });
+  const specAmpsFolder = gLighting.addFolder({ title: 'Per-biome specular', expanded: false });
   for (let i = 0; i < 12; i++) {
     const proxy = { v: state.materials.globe.biomeSpecAmps[i]! };
     specAmpsFolder
@@ -431,72 +469,56 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
     label: 'haze layer (m)',
   });
 
-  // Ocean — Gerstner waves. `waveAmplitude` is in metres; the shader
-  // multiplies by `uElevationScale` to land in the same visual regime as
-  // terrain. 0–600 m covers calm sea through storm swell.
+  // Ocean — Gerstner waves + layered depth gradient + coastal tint +
+  // animated current streamlines.
   const oceanMat = mat.addFolder({ title: 'Ocean', expanded: false });
-  oceanMat.addBinding(state.materials.ocean, 'waveAmplitude', { min: 0, max: 600, step: 5 });
-  oceanMat.addBinding(state.materials.ocean, 'waveSpeed', { min: 0, max: 5, step: 0.05 });
-  oceanMat.addBinding(state.materials.ocean, 'waveSteepness', { min: 0, max: 1, step: 0.01 });
-  oceanMat.addBinding(state.materials.ocean, 'fresnelStrength', { min: 0, max: 3, step: 0.05 });
-  // Exponential depth-falloff scale for the ocean tint. Smaller = sharper /
-  // narrower shelves, larger = softer / wider shelves. The whole transition
-  // happens within ~3× this value, so 200 m → tight shelves, 2000 m → broad.
-  oceanMat.addBinding(state.materials.ocean, 'depthFalloff', {
-    min: 0,
-    max: 100,
-    step: 1,
-    label: 'depth falloff',
+
+  const oWaves = oceanMat.addFolder({ title: 'Waves', expanded: false });
+  oWaves.addBinding(state.materials.ocean, 'waveAmplitude', {
+    min: 0, max: 600, step: 5, label: 'amplitude (m)',
   });
-  // Layered ocean gradient stops. \`deep\` is the open-ocean baseline that
-  // most of the world ocean reads as; \`shelf\` and \`shallow\` blend up
-  // toward the coast via exp ramps; \`abyssal\` blends in only at trench
-  // depths via the smoothstep gate below.
-  oceanMat.addBinding(state.materials.ocean, 'abyssalColor');
-  oceanMat.addBinding(state.materials.ocean, 'deepColor');
-  oceanMat.addBinding(state.materials.ocean, 'shelfColor');
-  oceanMat.addBinding(state.materials.ocean, 'shallowColor');
-  // Trench gate — abyssal blends in over [trenchStart, trenchEnd] m.
-  // Below trenchStart no abyssal; above trenchEnd fully abyssal.
-  oceanMat.addBinding(state.materials.ocean, 'trenchStart', {
-    min: 0,
-    max: 11000,
-    step: 100,
-    label: 'trench start',
+  oWaves.addBinding(state.materials.ocean, 'waveSpeed', {
+    min: 0, max: 5, step: 0.05, label: 'speed',
   });
-  oceanMat.addBinding(state.materials.ocean, 'trenchEnd', {
-    min: 0,
-    max: 12000,
-    step: 100,
-    label: 'trench end',
+  oWaves.addBinding(state.materials.ocean, 'waveSteepness', {
+    min: 0, max: 1, step: 0.01, label: 'steepness',
   });
-  // Coastal sediment / chlorophyll tint over the shallowest band.
-  // Strength 0 disables, 0.25 is the default subtle cast, 1 saturates.
-  oceanMat.addBinding(state.materials.ocean, 'coastalTintColor', { label: 'coastal tint' });
-  oceanMat.addBinding(state.materials.ocean, 'coastalTintStrength', {
-    min: 0,
-    max: 1,
-    step: 0.01,
-    label: 'tint strength',
+  oWaves.addBinding(state.materials.ocean, 'fresnelStrength', {
+    min: 0, max: 3, step: 0.05, label: 'fresnel',
   });
-  oceanMat.addBinding(state.materials.ocean, 'coastalTintFalloff', {
-    min: 0,
-    max: 1500,
-    step: 10,
-    label: 'tint falloff',
+
+  const oDepth = oceanMat.addFolder({ title: 'Depth & color', expanded: false });
+  oDepth.addBinding(state.materials.ocean, 'depthFalloff', {
+    min: 0, max: 100, step: 1, label: 'depth falloff',
   });
-  // Surface current streamlines — animated overlay on the day-side ocean.
-  // 0 = hidden, 1 = subtle default, 3 = obviously highlighted (debug).
-  oceanMat.addBinding(state.materials.ocean, 'currentStrength', {
-    min: 0,
-    max: 3,
-    step: 0.05,
-    label: 'currents',
+  oDepth.addBinding(state.materials.ocean, 'shallowColor', { label: 'shallow' });
+  oDepth.addBinding(state.materials.ocean, 'shelfColor', { label: 'shelf' });
+  oDepth.addBinding(state.materials.ocean, 'deepColor', { label: 'deep' });
+  oDepth.addBinding(state.materials.ocean, 'abyssalColor', { label: 'abyssal' });
+  oDepth.addBinding(state.materials.ocean, 'trenchStart', {
+    min: 0, max: 11000, step: 100, label: 'trench start (m)',
   });
-  oceanMat.addBinding(state.materials.ocean, 'streamlinesEnabled', {
+  oDepth.addBinding(state.materials.ocean, 'trenchEnd', {
+    min: 0, max: 12000, step: 100, label: 'trench end (m)',
+  });
+
+  const oCoast = oceanMat.addFolder({ title: 'Coastal tint', expanded: false });
+  oCoast.addBinding(state.materials.ocean, 'coastalTintColor', { label: 'color' });
+  oCoast.addBinding(state.materials.ocean, 'coastalTintStrength', {
+    min: 0, max: 1, step: 0.01, label: 'strength',
+  });
+  oCoast.addBinding(state.materials.ocean, 'coastalTintFalloff', {
+    min: 0, max: 1500, step: 10, label: 'falloff (m)',
+  });
+
+  const oCurrents = oceanMat.addFolder({ title: 'Currents', expanded: false });
+  oCurrents.addBinding(state.materials.ocean, 'currentStrength', {
+    min: 0, max: 3, step: 0.05, label: 'strength',
+  });
+  oCurrents.addBinding(state.materials.ocean, 'streamlinesEnabled', {
     label: 'streamlines',
   });
-  oceanMat.addBinding(state.materials.ocean, 'strongJetsOnly', {
+  oCurrents.addBinding(state.materials.ocean, 'strongJetsOnly', {
     label: 'jets only',
   });
 
@@ -510,93 +532,119 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
 
   // Highways — merged ribbon mesh tracing every kept road polyline. Width
   // is in *screen pixels* (per kind), so the network stays delicate at
-  // every zoom. Night shows bright core + soft warm halo; day shows a
-  // thin dark warm-grey trace. Three kinds (major / arterial / local) each
-  // have their own pixel width and brightness boost.
+  // every zoom. Grouped sub-folders: Road widths (shared day+night),
+  // Day look (white fill + dark casing), Night look (glowing core + halo),
+  // Zoom fade (opacity by camera distance).
   const highwaysMat = mat.addFolder({ title: 'Highways', expanded: false });
-  highwaysMat.addBinding(state.materials.highways, 'majorWidthPx', {
-    min: 1,
-    max: 8,
-    step: 0.25,
-    label: 'major width (px)',
+  const hwWidths = highwaysMat.addFolder({ title: 'Road widths (px)', expanded: false });
+  hwWidths.addBinding(state.materials.highways, 'majorWidthPx', {
+    min: 1, max: 8, step: 0.25, label: 'major',
   });
-  highwaysMat.addBinding(state.materials.highways, 'arterialWidthPx', {
-    min: 0.5,
-    max: 6,
-    step: 0.25,
-    label: 'arterial width (px)',
+  hwWidths.addBinding(state.materials.highways, 'arterialWidthPx', {
+    min: 0.5, max: 6, step: 0.25, label: 'arterial',
   });
-  highwaysMat.addBinding(state.materials.highways, 'localWidthPx', {
-    min: 0.2,
-    max: 4,
-    step: 0.1,
-    label: 'local width (px)',
+  hwWidths.addBinding(state.materials.highways, 'localWidthPx', {
+    min: 0.2, max: 4, step: 0.1, label: 'local',
   });
-  highwaysMat.addBinding(state.materials.highways, 'nightBrightness', {
-    min: 0,
-    max: 2,
-    step: 0.05,
-    label: 'night brightness',
+  hwWidths.addBinding(state.materials.highways, 'local2WidthPx', {
+    min: 0.2, max: 4, step: 0.1, label: 'local2',
   });
-  highwaysMat.addBinding(state.materials.highways, 'majorBoost', {
-    min: 1,
-    max: 15,
-    step: 0.05,
-    label: 'major boost',
+
+  const hwDay = highwaysMat.addFolder({ title: 'Day look', expanded: false });
+  hwDay.addBinding(state.materials.highways, 'dayStrength', {
+    min: 0, max: 2, step: 0.05, label: 'overall strength',
   });
-  highwaysMat.addBinding(state.materials.highways, 'arterialBoost', {
-    min: 0.2,
-    max: 2,
-    step: 0.05,
-    label: 'arterial boost',
+  hwDay.addBinding(state.materials.highways, 'dayFillScale', {
+    min: 0.2, max: 3, step: 0.05, label: 'fill width',
   });
-  highwaysMat.addBinding(state.materials.highways, 'localBoost', {
-    min: 0.2,
-    max: 1.5,
-    step: 0.05,
-    label: 'local boost',
+  hwDay.addBinding(state.materials.highways, 'dayFillBrightness', {
+    min: 0, max: 1.5, step: 0.05, label: 'fill brightness',
   });
-  highwaysMat.addBinding(state.materials.highways, 'coreWidth', {
-    min: 0.05,
-    max: 0.6,
-    step: 0.01,
-    label: 'core size',
+  hwDay.addBinding(state.materials.highways, 'dayCasingPx', {
+    min: 0, max: 4, step: 0.1, label: 'casing width (px)',
   });
-  highwaysMat.addBinding(state.materials.highways, 'coreBoost', {
-    min: 0.5,
-    max: 4,
-    step: 0.05,
-    label: 'core boost',
+  hwDay.addBinding(state.materials.highways, 'dayCasingStrength', {
+    min: 0, max: 1.5, step: 0.05, label: 'casing strength',
   });
-  highwaysMat.addBinding(state.materials.highways, 'haloStrength', {
-    min: 0,
-    max: 2,
-    step: 0.05,
-    label: 'halo strength',
+
+  const hwNight = highwaysMat.addFolder({ title: 'Night look', expanded: false });
+  hwNight.addBinding(state.materials.highways, 'nightBrightness', {
+    min: 0, max: 2, step: 0.05, label: 'overall brightness',
   });
-  highwaysMat.addBinding(state.materials.highways, 'haloFalloff', {
-    min: 0.5,
-    max: 5,
-    step: 0.05,
-    label: 'halo falloff',
+  hwNight.addBinding(state.materials.highways, 'majorBoost', {
+    min: 1, max: 15, step: 0.05, label: 'major boost',
   });
-  highwaysMat.addBinding(state.materials.highways, 'dayStrength', {
-    min: 0,
-    max: 2,
-    step: 0.05,
-    label: 'day strength',
+  hwNight.addBinding(state.materials.highways, 'arterialBoost', {
+    min: 0.2, max: 2, step: 0.05, label: 'arterial boost',
   });
-  highwaysMat.addBinding(state.materials.highways, 'opacityNear', {
-    min: 0,
-    max: 1,
-    step: 0.01,
-    label: 'opacity (zoom-in)',
+  hwNight.addBinding(state.materials.highways, 'localBoost', {
+    min: 0.2, max: 1.5, step: 0.05, label: 'local boost',
   });
-  highwaysMat.addBinding(state.materials.highways, 'opacityFar', {
-    min: 0,
-    max: 1,
-    step: 0.01,
-    label: 'opacity (zoom-out)',
+  hwNight.addBinding(state.materials.highways, 'local2Boost', {
+    min: 0.2, max: 1.5, step: 0.05, label: 'local2 boost',
+  });
+  hwNight.addBinding(state.materials.highways, 'coreWidth', {
+    min: 0.05, max: 0.6, step: 0.01, label: 'core width',
+  });
+  hwNight.addBinding(state.materials.highways, 'coreBoost', {
+    min: 0.5, max: 4, step: 0.05, label: 'core boost',
+  });
+  hwNight.addBinding(state.materials.highways, 'haloStrength', {
+    min: 0, max: 2, step: 0.05, label: 'halo strength',
+  });
+  hwNight.addBinding(state.materials.highways, 'haloFalloff', {
+    min: 0.5, max: 5, step: 0.05, label: 'halo falloff',
+  });
+
+  const hwFade = highwaysMat.addFolder({ title: 'Zoom fade', expanded: false });
+  hwFade.addBinding(state.materials.highways, 'opacityNear', {
+    min: 0, max: 1, step: 0.01, label: 'alpha zoomed in',
+  });
+  hwFade.addBinding(state.materials.highways, 'opacityFar', {
+    min: 0, max: 1, step: 0.01, label: 'alpha zoomed out',
+  });
+
+  // Cities — far-LOD polygon glow. The PIP test stamps each city's
+  // outline; the block-spray inside is a per-row brick grid with random
+  // x-stretch (aspect jitter) and a running-bond x-offset.
+  const citiesMat = mat.addFolder({ title: 'Cities', expanded: true });
+  const cBricks = citiesMat.addFolder({ title: 'Brick pattern', expanded: true });
+  cBricks.addBinding(state.materials.cities, 'gridDensity', {
+    min: 4, max: 64, step: 1, label: 'cells per half',
+  });
+  cBricks.addBinding(state.materials.cities, 'aspectJitter', {
+    min: 0, max: 3, step: 0.05, label: 'row x-stretch',
+  });
+  cBricks.addBinding(state.materials.cities, 'rowOffset', {
+    min: 0, max: 1, step: 0.01, label: 'running bond',
+  });
+  cBricks.addBinding(state.materials.cities, 'blockThreshold', {
+    min: 0, max: 1, step: 0.01, label: 'block fill thresh',
+  });
+  cBricks.addBinding(state.materials.cities, 'outlineMin', {
+    min: 0, max: 0.2, step: 0.005, label: 'outline min',
+  });
+  cBricks.addBinding(state.materials.cities, 'outlineMax', {
+    min: 0, max: 0.3, step: 0.005, label: 'outline max',
+  });
+  const cLook = citiesMat.addFolder({ title: 'Look', expanded: false });
+  cLook.addBinding(state.materials.cities, 'nightBrightness', {
+    min: 0, max: 4, step: 0.05, label: 'night brightness',
+  });
+  cLook.addBinding(state.materials.cities, 'tileSparkle', {
+    min: 0, max: 3, step: 0.05, label: 'tile sparkle',
+  });
+  cLook.addBinding(state.materials.cities, 'nightOpacity', {
+    min: 0, max: 6, step: 0.05, label: 'night opacity',
+  });
+  cLook.addBinding(state.materials.cities, 'dayContrast', {
+    min: 0, max: 1, step: 0.01, label: 'day contrast',
+  });
+  cLook.addBinding(state.materials.cities, 'opacity', {
+    min: 0, max: 1, step: 0.01, label: 'opacity',
+  });
+  cLook.addBinding(state.materials.cities, 'minPopulation', {
+    min: 0, max: 5_000_000, step: 1000, label: 'min population',
   });
 
   // PostFX — bloom + vignette + grade tint. Not wired: PostFXChain currently

@@ -11,11 +11,14 @@
  * NEVER raycast the mesh itself; the icosphere is displaced by elevation
  * and a mesh raycast would miss the id-raster's true cell boundaries.
  *
- * Time of day:
+ * Time of day / calendar:
  *   `debug.timeOfDay.t01` rotates the sun direction around Z (longitude). At
  *   t01 = 0.5 the sun is at the +X side. The clock auto-advances at
  *   `T01_PER_SECOND` per real second unless `debug.timeOfDay.paused` is true.
- *   The floating bottom-center slider in index.html reads/writes `t01`.
+ *   One full t01 wrap (one in-game day) advances `timeOfYear01` by 1/12, so
+ *   twelve days equal one year. On Dec→Jan wrap, `yearsElapsed` increments.
+ *   This coupling only applies during auto-advance; clock scrub never bumps
+ *   the month. The floating top-left clock in index.html reads/writes `t01`.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -27,9 +30,18 @@ import { HighwaysLayer } from './highways/HighwaysLayer.js';
 import { AirplaneSystem } from './airplanes/AirplaneSystem.js';
 import { loadAirplaneData } from './airplanes/data.js';
 import { SunMoon } from './sky/SunMoon.js';
+import { CitiesLayer } from './cities/CitiesLayer.js';
+import { UrbanDetailLayer } from './urban/UrbanDetailLayer.js';
 import { atmosphereRadiusFromFactor, elevationScaleFromFactor, } from './globe/LandMaterial.js';
 const CAMERA_RADIUS = 3.0;
-const SUN_TILT_RAD = (23.4 * Math.PI) / 180;
+// Maximum solar declination — Earth's axial tilt. The per-frame declination
+// is a sinusoid of `timeOfDay.timeOfYear01`: +MAX at the June solstice,
+// -MAX at the December solstice, 0 at the equinoxes.
+const MAX_SUN_TILT_RAD = (23.4 * Math.PI) / 180;
+// Phase offset so that timeOfYear01=0 ≈ Jan 1, peak (+23.4°) lands at June 21.
+// June 21 is day 172/365 ≈ 0.471; sin peaks when its argument is π/2, so
+// 2π × (0.471 - phase) = π/2 → phase ≈ 0.221.
+const YEAR_PHASE_OFFSET = 0.221;
 // Full day cycle in 1 / T01_PER_SECOND real seconds. 0.04 → 25 sec/day.
 const T01_PER_SECOND = 0.04;
 export function createSceneGraph() {
@@ -45,10 +57,13 @@ export function createSceneGraph() {
     let attachedCanvas = null;
     let webglRenderer = null;
     let postFx = null;
-    const sun = new THREE.DirectionalLight(0xfff4d6, 1.0);
+    // Slightly warm sun. The shader's day term is `base × uSunColor`, so any
+    // channel of `sun.color × sun.intensity` that exceeds 1.0 will overdrive
+    // white biomes (snow) past the white point and tilt them toward the warm
+    // side — keep the product ≤ 1.0 per channel.
+    const sun = new THREE.DirectionalLight(0xfff5e6, 1.0);
     sun.position.set(3, 2, 1.5);
     scene.add(sun);
-    scene.add(new THREE.AmbientLight(0x223046, 0.3));
     const sunDirection = new THREE.Vector3().copy(sun.position).normalize();
     // AtmospherePass requires the WebGLRenderer for LUT precompute, so we
     // defer construction until `attachRenderer`.
@@ -57,6 +72,8 @@ export function createSceneGraph() {
     let globe = null;
     let cloudsPass = null;
     let highways = null;
+    let cities = null;
+    let urbanDetail = null;
     let airplanes = null;
     const sunMoon = new SunMoon();
     scene.add(sunMoon.group);
@@ -86,6 +103,7 @@ export function createSceneGraph() {
         controls.minDistance = 1.2;
         controls.maxDistance = 15;
         controls.target.set(0, 0, 0);
+        controls.enablePan = false;
         // A single Globe mesh covers both land and water. The unified shader does
         // HEALPix lookups per fragment, branching on `id_raster` to colour land
         // vs ocean cells, and per vertex displaces land outward by the continuous
@@ -114,6 +132,21 @@ export function createSceneGraph() {
         highways.setViewportSize(initW, initH);
         highways.mesh.renderOrder = -1;
         scene.add(highways.mesh);
+        // Urban-area layers: far-LOD polygon-shape glow (CitiesLayer) +
+        // near-LOD procedural streets/buildings (UrbanDetailLayer). The two
+        // are zoom-faded by `applyMaterials` — glow is full at globe view
+        // and fades out as the camera approaches; the detail layer is the
+        // mirror.
+        const urbans = w.getUrbanAreas();
+        cities = new CitiesLayer(w, urbans);
+        cities.setSunDirection(sunDirection);
+        // Render before the cloud raymarch so cloud cover occludes city glow
+        // instead of cities shining through. Matches the highways pattern.
+        cities.mesh.renderOrder = -1;
+        scene.add(cities.mesh);
+        urbanDetail = new UrbanDetailLayer(w, urbans);
+        urbanDetail.setSunDirection(sunDirection);
+        scene.add(urbanDetail.group);
         // Airplane visualisation — async because the data is loaded over fetch.
         // Failure is non-fatal; the rest of the scene still renders.
         loadAirplaneData()
@@ -167,21 +200,40 @@ export function createSceneGraph() {
     const lastPickRef = { value: '(click on the globe)' };
     function applyTimeOfDay(debug) {
         const theta = (debug.timeOfDay.t01 - 0.5) * Math.PI * 2;
-        tmpSunDir.set(Math.cos(theta), Math.sin(theta), Math.sin(SUN_TILT_RAD)).normalize();
+        const declRad = MAX_SUN_TILT_RAD *
+            Math.sin((debug.timeOfDay.timeOfYear01 - YEAR_PHASE_OFFSET) * Math.PI * 2);
+        const cosDecl = Math.cos(declRad);
+        tmpSunDir
+            .set(Math.cos(theta) * cosDecl, Math.sin(theta) * cosDecl, Math.sin(declRad))
+            .normalize();
         sun.position.copy(tmpSunDir).multiplyScalar(3);
         globe?.setSunDirection(tmpSunDir);
+        // Push `sun.color × sun.intensity` as `uSunColor` so any tweak to the
+        // directional light flows to the shader. Keep the product ≤ 1.0 per
+        // channel — anything above clamps and tints bright biomes (snow) warm.
+        const sr = sun.color.r * sun.intensity;
+        const sg = sun.color.g * sun.intensity;
+        const sb = sun.color.b * sun.intensity;
+        if (globe) {
+            globe.uniforms.land.uSunColor.value.set(sr, sg, sb);
+            globe.uniforms.water.uSunColor.value.set(sr, sg, sb);
+        }
         atmosphere?.setSunDirection(tmpSunDir);
         cloudsPass?.setSunDirection(tmpSunDir);
         highways?.setSunDirection(tmpSunDir);
+        cities?.setSunDirection(tmpSunDir);
+        urbanDetail?.setSunDirection(tmpSunDir);
         sunMoon.syncFromCamera(camera, tmpSunDir);
     }
     function applyMaterials(debug) {
         const m = debug.materials.globe;
         if (globe) {
-            // Land-tinted Tweakpane bindings drive the land mesh; ocean-tinted
-            // bindings drive the water mesh. Ambient + night tint are shared
-            // visual properties — push the same value to both so the day/night
-            // wrap stays consistent across the split.
+            // Tweakpane "Globe" bindings drive the land mesh; "Ocean" bindings
+            // drive the water mesh. Ambient is shared, but the night tint is
+            // pushed straight to land and scaled down for water — keeps the
+            // ocean near-black at night so the (brighter-based) continents pop
+            // above it, NASA Black Marble style, while one slider still drives
+            // both.
             const land = globe.uniforms.land;
             land.uAmbient.value = m.ambient;
             land.uNightTint.value.set(m.nightTint);
@@ -218,7 +270,7 @@ export function createSceneGraph() {
             const o = debug.materials.ocean;
             const water = globe.uniforms.water;
             water.uAmbient.value = m.ambient;
-            water.uNightTint.value.set(m.nightTint);
+            water.uNightTint.value.set(m.nightTint).multiplyScalar(0.35);
             water.uOceanAbyssal.value.set(o.abyssalColor);
             water.uOceanDeep.value.set(o.deepColor);
             water.uOceanShelf.value.set(o.shelfColor);
@@ -256,16 +308,38 @@ export function createSceneGraph() {
             u.uMajorWidthPx.value = hz.majorWidthPx;
             u.uArterialWidthPx.value = hz.arterialWidthPx;
             u.uLocalWidthPx.value = hz.localWidthPx;
+            u.uLocal2WidthPx.value = hz.local2WidthPx;
             u.uNightBrightness.value = hz.nightBrightness;
             u.uMajorBoost.value = hz.majorBoost;
             u.uArterialBoost.value = hz.arterialBoost;
             u.uLocalBoost.value = hz.localBoost;
+            u.uLocal2Boost.value = hz.local2Boost;
             u.uCoreWidth.value = hz.coreWidth;
             u.uCoreBoost.value = hz.coreBoost;
             u.uHaloStrength.value = hz.haloStrength;
             u.uHaloFalloff.value = hz.haloFalloff;
             u.uDayStrength.value = hz.dayStrength;
+            u.uDayCasingPx.value = hz.dayCasingPx;
+            u.uDayCasingStrength.value = hz.dayCasingStrength;
+            u.uDayFillBrightness.value = hz.dayFillBrightness;
+            u.uDayFillScale.value = hz.dayFillScale;
             u.uOpacity.value = THREE.MathUtils.lerp(hz.opacityNear, hz.opacityFar, tFar);
+        }
+        if (cities) {
+            const ct = debug.materials.cities;
+            const cu = cities.uniforms;
+            cu.uGridDensity.value = ct.gridDensity;
+            cu.uAspectJitter.value = ct.aspectJitter;
+            cu.uRowOffset.value = ct.rowOffset;
+            cu.uBlockThreshold.value = ct.blockThreshold;
+            cu.uOutlineMin.value = ct.outlineMin;
+            cu.uOutlineMax.value = ct.outlineMax;
+            cu.uNightBrightness.value = ct.nightBrightness;
+            cu.uTileSparkle.value = ct.tileSparkle;
+            cu.uDayContrast.value = ct.dayContrast;
+            cu.uMinPopulation.value = ct.minPopulation;
+            cu.uOpacity.value = ct.opacity;
+            cu.uNightOpacity.value = ct.nightOpacity;
         }
         // Altitude exaggeration — drives every metres-based altitude in the
         // project (terrain, water, clouds, cities, plane bow arcs, atmosphere
@@ -280,6 +354,18 @@ export function createSceneGraph() {
         }
         cloudsPass?.setElevationScale(elevScale);
         highways?.setElevationScale(elevScale);
+        cities?.setElevationScale(elevScale);
+        urbanDetail?.setElevationScale(elevScale);
+        // Cities glow renders at every zoom — opacity is set from the
+        // Tweakpane cities folder above. The procedural urban-detail mesh
+        // ramps in close-up on top, no longer a hard cross-fade.
+        const detailNear = 1.0 - THREE.MathUtils.smoothstep(camDist, 1.45, 1.8);
+        urbanDetail?.setOpacity(detailNear);
+        if (urbanDetail) {
+            // Detail layer only engages when sufficiently close — the engage
+            // check inside `update` does the per-frame engage/disengage.
+            urbanDetail.update(camera.position);
+        }
         if (airplanes) {
             airplanes.trails.setElevationScale(elevScale);
             airplanes.scaffold.setElevationScale(elevScale);
@@ -326,6 +412,8 @@ export function createSceneGraph() {
             atmosphere.mesh.visible = debug.layers.atmosphere;
         cloudsPass?.setActive(debug.layers.clouds);
         highways?.setActive(debug.layers.highways);
+        cities?.setActive(debug.layers.highways);
+        urbanDetail?.setActive(debug.layers.highways);
         if (airplanes) {
             airplanes.setLayerActive('airports', false);
             airplanes.setLayerActive('scaffold', false);
@@ -351,9 +439,20 @@ export function createSceneGraph() {
             scene.background.set(debug.scene.background);
         }
         debug.pick.lastPick = lastPickRef.value;
+        // Canonical counter: `totalDays` is the only field auto-advance touches.
+        // t01 / timeOfYear01 / yearsElapsed are *derived* below so they can never
+        // drift out of sync — the year wrap is now a floor() that's mathematically
+        // unmissable, and the sun tilt moves smoothly every frame.
         if (!debug.timeOfDay.paused) {
-            const next = debug.timeOfDay.t01 + deltaSec * T01_PER_SECOND;
-            debug.timeOfDay.t01 = next - Math.floor(next);
+            debug.timeOfDay.totalDays += deltaSec * T01_PER_SECOND;
+        }
+        {
+            const days = debug.timeOfDay.totalDays;
+            debug.timeOfDay.t01 = days - Math.floor(days);
+            const totalYears = days / 12;
+            const years = Math.floor(totalYears);
+            debug.timeOfDay.yearsElapsed = years;
+            debug.timeOfDay.timeOfYear01 = totalYears - years;
         }
         // When paused, freeze every time-driven system (waves, clouds, planes)
         // by feeding them a zero delta. Camera + opacity sliders still apply.
@@ -422,6 +521,10 @@ export function createSceneGraph() {
         cloudsPass = null;
         highways?.dispose();
         highways = null;
+        cities?.dispose();
+        cities = null;
+        urbanDetail?.dispose();
+        urbanDetail = null;
         airplanes?.dispose();
         airplanes = null;
         atmosphere?.dispose();

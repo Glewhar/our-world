@@ -26,7 +26,14 @@ const loading = document.getElementById('loading');
 if (!host) throw new Error('#app host element not found in index.html');
 
 async function boot(): Promise<void> {
-  const { world, sim } = await createWorldRuntime();
+  const loadingBar = document.getElementById('loading-progress-bar');
+  const loadingLabel = document.getElementById('loading-step-label');
+  const setProgress = (loaded: number, total: number, label: string): void => {
+    if (loadingBar) loadingBar.style.width = `${Math.round((loaded / total) * 100)}%`;
+    if (loadingLabel) loadingLabel.textContent = label;
+  };
+
+  const { world, sim } = await createWorldRuntime({ onProgress: setProgress });
   const sceneGraph = createSceneGraph();
   const renderer = new Renderer(host!, sceneGraph);
   sceneGraph.attachWorld(world, renderer.canvas);
@@ -47,6 +54,7 @@ async function boot(): Promise<void> {
   const seasonSlider = document.getElementById('season-slider') as HTMLInputElement | null;
   const seasonReadout = document.getElementById('season-readout');
   const seasonControl = document.getElementById('season-control');
+  const dateReadout = document.getElementById('date-readout');
   const altitudeSlider = document.getElementById('altitude-slider') as HTMLInputElement | null;
   const altitudeReadout = document.getElementById('altitude-readout');
   const toggleClouds = document.getElementById('toggle-clouds') as HTMLInputElement | null;
@@ -148,6 +156,11 @@ async function boot(): Promise<void> {
       let theta = Math.atan2(e.clientX - cx, -(e.clientY - cy));
       if (theta < 0) theta += Math.PI * 2;
       const t01 = theta / (Math.PI * 2);
+      // Rewrite the fractional part of `totalDays` so the derived t01
+      // matches the new dial position next frame — but keep the integer
+      // day count intact so dragging the clock doesn't bump month/year.
+      debug.state.timeOfDay.totalDays =
+        Math.floor(debug.state.timeOfDay.totalDays) + t01;
       debug.state.timeOfDay.t01 = t01;
       refreshClock(t01);
     };
@@ -214,6 +227,19 @@ async function boot(): Promise<void> {
       refreshSeasonReadout(v);
     });
   }
+
+  const START_YEAR = 2067;
+  const MONTH_NAMES = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+                       'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+  const formatDate = (timeOfYear01: number, yearsElapsed: number): string => {
+    const m = Math.min(11, Math.max(0, Math.floor(timeOfYear01 * 12)));
+    return `${MONTH_NAMES[m]} ${START_YEAR + yearsElapsed}`;
+  };
+  const refreshDateReadout = (timeOfYear01: number, yearsElapsed: number): void => {
+    if (dateReadout) dateReadout.textContent = formatDate(timeOfYear01, yearsElapsed);
+  };
+  refreshDateReadout(debug.state.timeOfDay.timeOfYear01, debug.state.timeOfDay.yearsElapsed);
+
   const refreshAltitudeReadout = (v: number): void => {
     if (altitudeReadout) altitudeReadout.textContent = `${v.toFixed(1)}×`;
   };
@@ -240,6 +266,7 @@ async function boot(): Promise<void> {
     if (!timeClockDragging) {
       refreshClock(debug.state.timeOfDay.t01);
     }
+    refreshDateReadout(debug.state.timeOfDay.timeOfYear01, debug.state.timeOfDay.yearsElapsed);
     if (timePause) {
       const want = debug.state.timeOfDay.paused ? '▶' : '⏸';
       if (timePause.textContent !== want) timePause.textContent = want;

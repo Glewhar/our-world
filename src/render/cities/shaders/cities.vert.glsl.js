@@ -2,32 +2,17 @@
 // the source of truth lives here, no separate .glsl file on disk.
 export const source = `// Cities vertex shader.
 //
-// Each instance is a quad sized as a fixed envelope (uMaxRadiusKm × 2.2,
-// scaled into world units by uHalfQuadSizeUnit) anchored tangent to the
-// globe at the city's lat/lon. The fragment shader paints the visible
-// city as a sub-region of that envelope, masked by population radius and
-// coastline.
+// Each instance is a quad anchored tangent to the globe at the urban
+// polygon's centroid. The shared envelope (uHalfQuadSizeKm) is large
+// enough to contain the largest polygon globally; the fragment shader
+// clips per-instance to that city's own bbox via aHalfExtentKm.
 //
-// Radial lift: the land mesh displaces vertices outward by
-// \`max(elevM, 0) * uElevationScale\`. Without matching that lift here,
-// inland cities sit at unit radius while the land surface is above
-// them, and the depth test silently buries them. We sample the same
-// elevation field with the same 9-tap blur and coast-fade taper the
-// land vertex shader uses, then add a small \`uCityRadialBias\` so the
-// quad clears the land surface unambiguously.
+// Radial lift: same recipe as the land mesh vertex shader (9-tap
+// elevation blur + coast fade), with a small uCityRadialBias on top so
+// the quad always clears the land surface unambiguously.
 //
 // The healpix.glsl helper is concatenated before this source by
 // CitiesLayer (Three.js ShaderMaterial doesn't process #include).
-//
-// Per-instance attributes:
-//   aPopulation   — POP_MAX from Natural Earth (Float32)
-//   aLatLon       — (lat°, lon°) — used to compute the surface normal
-//                   precisely (instanceMatrix's translation column also
-//                   carries it implicitly, but recomputing from lat/lon
-//                   keeps numerical agreement with the HEALPix lookup
-//                   the fragment shader uses for coastline masking)
-//   aPatternSeed  — stable hash of (lat, lon) so each city has its own
-//                   block pattern that doesn't change frame-to-frame
 
 precision highp float;
 precision highp int;
@@ -46,12 +31,16 @@ uniform float uCityRadialBias;
 in float aPopulation;
 in vec2 aLatLon;
 in float aPatternSeed;
+in vec2 aPolyOffsetCount;
+in vec2 aHalfExtentKm;
 
 out vec2 vQuadUV;
 out vec3 vSurfaceNormal;
 out vec3 vWorldPos;
 out float vPopulation;
 out float vPatternSeed;
+flat out vec2 vPolyOffsetCount;
+flat out vec2 vHalfExtentKm;
 
 const float DEG = 0.017453292519943295;
 
@@ -64,6 +53,8 @@ void main() {
   vQuadUV = uv;
   vPopulation = aPopulation;
   vPatternSeed = aPatternSeed;
+  vPolyOffsetCount = aPolyOffsetCount;
+  vHalfExtentKm = aHalfExtentKm;
 
   float lat = aLatLon.x * DEG;
   float lon = aLatLon.y * DEG;
@@ -90,37 +81,27 @@ void main() {
   vec3 d7 = normalize(dir - (t1 - t2) * eps * diag);
   vec3 d8 = normalize(dir - (t1 + t2) * eps * diag);
 
-  ivec2 tx0 = cellTexel(d0);
-  ivec2 tx1 = cellTexel(d1);
-  ivec2 tx2 = cellTexel(d2);
-  ivec2 tx3 = cellTexel(d3);
-  ivec2 tx4 = cellTexel(d4);
-  ivec2 tx5 = cellTexel(d5);
-  ivec2 tx6 = cellTexel(d6);
-  ivec2 tx7 = cellTexel(d7);
-  ivec2 tx8 = cellTexel(d8);
-
   float elev = (
-    texelFetch(uElevationMeters, tx0, 0).r +
-    texelFetch(uElevationMeters, tx1, 0).r +
-    texelFetch(uElevationMeters, tx2, 0).r +
-    texelFetch(uElevationMeters, tx3, 0).r +
-    texelFetch(uElevationMeters, tx4, 0).r +
-    texelFetch(uElevationMeters, tx5, 0).r +
-    texelFetch(uElevationMeters, tx6, 0).r +
-    texelFetch(uElevationMeters, tx7, 0).r +
-    texelFetch(uElevationMeters, tx8, 0).r
+    texelFetch(uElevationMeters, cellTexel(d0), 0).r +
+    texelFetch(uElevationMeters, cellTexel(d1), 0).r +
+    texelFetch(uElevationMeters, cellTexel(d2), 0).r +
+    texelFetch(uElevationMeters, cellTexel(d3), 0).r +
+    texelFetch(uElevationMeters, cellTexel(d4), 0).r +
+    texelFetch(uElevationMeters, cellTexel(d5), 0).r +
+    texelFetch(uElevationMeters, cellTexel(d6), 0).r +
+    texelFetch(uElevationMeters, cellTexel(d7), 0).r +
+    texelFetch(uElevationMeters, cellTexel(d8), 0).r
   ) / 9.0;
 
   int oceanCount = 0;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx1, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx2, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx3, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx4, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx5, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx6, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx7, 0))) oceanCount++;
-  if (isOceanIdTexel(texelFetch(uIdRaster, tx8, 0))) oceanCount++;
+  if (isOceanIdTexel(texelFetch(uIdRaster, cellTexel(d1), 0))) oceanCount++;
+  if (isOceanIdTexel(texelFetch(uIdRaster, cellTexel(d2), 0))) oceanCount++;
+  if (isOceanIdTexel(texelFetch(uIdRaster, cellTexel(d3), 0))) oceanCount++;
+  if (isOceanIdTexel(texelFetch(uIdRaster, cellTexel(d4), 0))) oceanCount++;
+  if (isOceanIdTexel(texelFetch(uIdRaster, cellTexel(d5), 0))) oceanCount++;
+  if (isOceanIdTexel(texelFetch(uIdRaster, cellTexel(d6), 0))) oceanCount++;
+  if (isOceanIdTexel(texelFetch(uIdRaster, cellTexel(d7), 0))) oceanCount++;
+  if (isOceanIdTexel(texelFetch(uIdRaster, cellTexel(d8), 0))) oceanCount++;
   float coastFade = 1.0 - float(oceanCount) / 8.0;
   coastFade *= coastFade;
 

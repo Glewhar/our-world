@@ -100,9 +100,14 @@ export function atmosphereRadiusFromFactor(factor) {
 }
 export function createLandMaterial() {
     const uniforms = {
+        // Lighting uniforms are placeholders only — `scene-graph.applyTimeOfDay`
+        // and `applyMaterials` overwrite them every frame from the directional
+        // light + Tweakpane state. The values here just keep the first frame
+        // from rendering pitch-black before the first `update()` call.
         uSunDirection: { value: new THREE.Vector3(1, 0, 0.3).normalize() },
-        uNightTint: { value: new THREE.Color(0.08, 0.1, 0.16) },
-        uAmbient: { value: 0.3 },
+        uSunColor: { value: new THREE.Vector3(1, 1, 1) },
+        uNightTint: { value: new THREE.Color(0, 0, 0) },
+        uAmbient: { value: 0.2 },
         uIdRaster: { value: null },
         uAttrStatic: { value: null },
         uAttrClimate: { value: null },

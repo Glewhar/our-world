@@ -49,9 +49,12 @@ export const DEFAULT_DEPTH_FALLOFF_M = 50;
 export const DEFAULT_CURRENT_STRENGTH = 1.0;
 export function createWaterMaterial() {
     const uniforms = {
+        // Lighting uniforms are placeholders only — `scene-graph.applyTimeOfDay`
+        // and `applyMaterials` overwrite them every frame. See LandMaterial.
         uSunDirection: { value: new THREE.Vector3(1, 0, 0.3).normalize() },
-        uNightTint: { value: new THREE.Color(0.04, 0.05, 0.09) },
-        uAmbient: { value: 0.18 },
+        uSunColor: { value: new THREE.Vector3(1, 1, 1) },
+        uNightTint: { value: new THREE.Color(0, 0, 0) },
+        uAmbient: { value: 0.2 },
         uIdRaster: { value: null },
         uElevationMeters: { value: null },
         uWaterLevelMeters: { value: null },

@@ -21,6 +21,7 @@ in vec3 vSurfaceNormal;
 in vec3 vWorldPos;
 in float vKind;
 in float vU;
+in float vFillFrac;
 
 uniform vec3 uSunDirection;
 
@@ -33,11 +34,14 @@ uniform float uNightBrightness;
 uniform float uMajorBoost;
 uniform float uArterialBoost;
 uniform float uLocalBoost;
+uniform float uLocal2Boost;
 uniform float uCoreWidth;
 uniform float uCoreBoost;
 uniform float uHaloStrength;
 uniform float uHaloFalloff;
 uniform float uDayStrength;
+uniform float uDayCasingStrength;
+uniform float uDayFillBrightness;
 uniform float uOpacity;
 
 out vec4 fragColor;
@@ -58,11 +62,12 @@ void main() {
   float core = 1.0 - smoothstep(0.0, max(uCoreWidth, 0.001), u01);
   float halo = pow(max(1.0 - u01, 0.0), max(uHaloFalloff, 0.001));
 
-  // Per-kind brightness boost. vKind: 0=major, 1=arterial, 2=local.
+  // Per-kind brightness boost. vKind: 0=major, 1=arterial, 2=local, 3=local2.
   float kindFactor =
     (vKind < 0.5) ? uMajorBoost :
     (vKind < 1.5) ? uArterialBoost :
-                    uLocalBoost;
+    (vKind < 2.5) ? uLocalBoost :
+                    uLocal2Boost;
 
   // ---- Night --------------------------------------------------------
   vec3 warmTungsten = vec3(1.0, 0.85, 0.55);
@@ -71,11 +76,19 @@ void main() {
   float nightAlpha = clamp(nightProfile, 0.0, 1.0);
 
   // ---- Day ---------------------------------------------------------
-  // Dark warm-grey thin trace. Sharp center + soft edges = looks like a
-  // pen-stroke outline on the land tone.
-  vec3 dayCol = vec3(0.18, 0.16, 0.14);
-  float dayProfile = core * 0.7 + halo * 0.5;
-  float dayAlpha = clamp(dayProfile * uDayStrength, 0.0, 1.0);
+  // Cartographic casing: the ribbon was widened in the vertex shader by
+  // uDayCasingPx pixels per side. The inner fraction (|vU| < vFillFrac)
+  // is the bright fill — i.e. the road itself. The outer rim
+  // (vFillFrac < |vU| < 1) is the dark casing painted in the extra
+  // pixels. When uDayCasingPx = 0, vFillFrac = 1 and the casing region
+  // vanishes (bright fill across the whole road, no outline).
+  vec3 casingCol = vec3(0.18, 0.16, 0.14);
+  vec3 fillCol   = vec3(0.96, 0.94, 0.88) * clamp(uDayFillBrightness, 0.0, 1.5);
+  float fillEdge = clamp(vFillFrac, 0.0, 1.0);
+  float fillMask = 1.0 - smoothstep(max(fillEdge - 0.05, 0.0), fillEdge, u01);
+  float casingMask = (1.0 - fillMask) * (1.0 - smoothstep(0.92, 1.0, u01));
+  vec3 dayCol = mix(casingCol, fillCol, fillMask);
+  float dayAlpha = clamp((fillMask + casingMask * uDayCasingStrength) * uDayStrength, 0.0, 1.0);
 
   // Day/night wrap (same shape as the cities + land terminator).
   float wrap = smoothstep(-0.05, 0.15, dot(vSurfaceNormal, normalize(uSunDirection)));

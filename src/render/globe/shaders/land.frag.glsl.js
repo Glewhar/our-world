@@ -41,6 +41,7 @@ precision highp int;
 precision highp sampler2D;
 
 uniform vec3 uSunDirection;
+uniform vec3 uSunColor;
 uniform vec3 uNightTint;
 uniform float uAmbient;
 
@@ -398,7 +399,10 @@ void main() {
   vec3 specTint = mix(vec3(1.0, 0.97, 0.92), vec3(0.95, 0.97, 1.05), snowMix);
   vec3 specContrib = specTint * spec * smoothness * sunMask * uSpecularStrength;
 
-  vec3 day = base * (uAmbient + (1.0 - uAmbient) * max(ndotl, 0.0)) + specContrib;
+  // \`specContrib\` already carries its own tint via \`specTint\` (cool on
+  // snow, warm-neutral elsewhere). Multiplying by \`uSunColor\` here would
+  // double-tint and warm-shift snow's highlight into gold; add it raw.
+  vec3 day = base * uAmbient + base * uSunColor * max(ndotl, 0.0) + specContrib;
   vec3 night = base * uNightTint;
 
   // ----- Coast alpha -----

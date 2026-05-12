@@ -43,3 +43,31 @@ export function xyzToLatLon(v: THREE.Vector3): { lat: number; lon: number } {
     lon: Math.atan2(v.y, v.x) * RAD,
   };
 }
+
+/**
+ * Local 2D tangent basis on the unit sphere at the given lat/lon.
+ *
+ * `centre` is the unit-sphere position of the basepoint; `tangentX` /
+ * `tangentY` are the two orthonormal axes that span the tangent plane.
+ * The same construction the cities vertex shader uses, lifted to TS so
+ * the urban-detail layer can project polygon vertices CPU-side into
+ * each city's local frame.
+ *
+ * Convention: `tangentX` ≈ east (`+lon`), `tangentY` ≈ north (`+lat`),
+ * except very near the poles where `worldUp` flips to keep the cross
+ * product well-defined. Both axes are unit length.
+ */
+export function tangentBasisAt(
+  latDeg: number,
+  lonDeg: number,
+): { centre: THREE.Vector3; tangentX: THREE.Vector3; tangentY: THREE.Vector3 } {
+  const centre = latLonToXyz(latDeg, lonDeg);
+  // Same pole-safe basis the cities vert shader builds: pick a worldUp
+  // that isn't parallel to the surface normal, then orthonormalise.
+  const worldUp = Math.abs(centre.z) < 0.99
+    ? new THREE.Vector3(0, 0, 1)
+    : new THREE.Vector3(1, 0, 0);
+  const tangentX = new THREE.Vector3().crossVectors(worldUp, centre).normalize();
+  const tangentY = new THREE.Vector3().crossVectors(centre, tangentX);
+  return { centre, tangentX, tangentY };
+}

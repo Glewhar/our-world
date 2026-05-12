@@ -12,9 +12,10 @@
  * a signed unit world-space perpendicular (`aPerp`). The vertex shader
  * projects the centerline to clip space, finds the screen-space
  * direction of `aPerp`, and offsets in clip space by the desired pixel
- * count. Per-vertex `aKind` (0=major, 1=arterial, 2=local) drives the
- * width and brightness boost. Cross-ribbon coordinate is reconstructed
- * in the vertex shader from `gl_VertexID` parity (even=+side, odd=-side).
+ * count. Per-vertex `aKind` (0=major, 1=arterial, 2=local, 3=local2)
+ * drives the width and brightness boost. Cross-ribbon coordinate is
+ * reconstructed in the vertex shader from `gl_VertexID` parity
+ * (even=+side, odd=-side).
  */
 
 import * as THREE from 'three';
@@ -48,17 +49,28 @@ const DEFAULT_UNIFORM_VALUES = {
   majorWidthPx: 3.5,
   arterialWidthPx: 2.0,
   localWidthPx: 1.0,
+  // local2 is NE's untyped bucket — noisier and denser than `local`,
+  // so render slimmer so it reads as a quiet substrate beneath the
+  // classified tiers.
+  local2WidthPx: 0.8,
   nightBrightness: 0.6,
   majorBoost: 1.35,
   arterialBoost: 1.0,
   // Local tier is mostly regional country roads, not bright urban
   // arterials — render them dimmer so they read as a quieter background.
   localBoost: 0.7,
+  // local2 is the dimmest of all — it's the catch-all `Unknown` bucket
+  // from Natural Earth, dominant in Asia / South America / Africa.
+  local2Boost: 0.5,
   coreWidth: 0.3,
   coreBoost: 1.2,
   haloStrength: 0.5,
   haloFalloff: 1.8,
   dayStrength: 0.7,
+  dayCasingPx: 1.0,
+  dayCasingStrength: 0.85,
+  dayFillBrightness: 0.95,
+  dayFillScale: 1.0,
   // Zoom-faded by scene-graph each frame: opacityNear at camera distance
   // ≤ 1.5, lerping toward opacityFar at distance ≥ 15.
   opacityNear: 1.0,
@@ -86,16 +98,22 @@ export type HighwaysUniforms = {
   uMajorWidthPx: { value: number };
   uArterialWidthPx: { value: number };
   uLocalWidthPx: { value: number };
+  uLocal2WidthPx: { value: number };
 
   uNightBrightness: { value: number };
   uMajorBoost: { value: number };
   uArterialBoost: { value: number };
   uLocalBoost: { value: number };
+  uLocal2Boost: { value: number };
   uCoreWidth: { value: number };
   uCoreBoost: { value: number };
   uHaloStrength: { value: number };
   uHaloFalloff: { value: number };
   uDayStrength: { value: number };
+  uDayCasingPx: { value: number };
+  uDayCasingStrength: { value: number };
+  uDayFillBrightness: { value: number };
+  uDayFillScale: { value: number };
   uOpacity: { value: number };
 };
 
@@ -137,16 +155,22 @@ export class HighwaysLayer {
       uMajorWidthPx: { value: DEFAULT_UNIFORM_VALUES.majorWidthPx },
       uArterialWidthPx: { value: DEFAULT_UNIFORM_VALUES.arterialWidthPx },
       uLocalWidthPx: { value: DEFAULT_UNIFORM_VALUES.localWidthPx },
+      uLocal2WidthPx: { value: DEFAULT_UNIFORM_VALUES.local2WidthPx },
 
       uNightBrightness: { value: DEFAULT_UNIFORM_VALUES.nightBrightness },
       uMajorBoost: { value: DEFAULT_UNIFORM_VALUES.majorBoost },
       uArterialBoost: { value: DEFAULT_UNIFORM_VALUES.arterialBoost },
       uLocalBoost: { value: DEFAULT_UNIFORM_VALUES.localBoost },
+      uLocal2Boost: { value: DEFAULT_UNIFORM_VALUES.local2Boost },
       uCoreWidth: { value: DEFAULT_UNIFORM_VALUES.coreWidth },
       uCoreBoost: { value: DEFAULT_UNIFORM_VALUES.coreBoost },
       uHaloStrength: { value: DEFAULT_UNIFORM_VALUES.haloStrength },
       uHaloFalloff: { value: DEFAULT_UNIFORM_VALUES.haloFalloff },
       uDayStrength: { value: DEFAULT_UNIFORM_VALUES.dayStrength },
+      uDayCasingPx: { value: DEFAULT_UNIFORM_VALUES.dayCasingPx },
+      uDayCasingStrength: { value: DEFAULT_UNIFORM_VALUES.dayCasingStrength },
+      uDayFillBrightness: { value: DEFAULT_UNIFORM_VALUES.dayFillBrightness },
+      uDayFillScale: { value: DEFAULT_UNIFORM_VALUES.dayFillScale },
       uOpacity: { value: DEFAULT_UNIFORM_VALUES.opacityNear },
     };
 
@@ -212,8 +236,8 @@ export class HighwaysLayer {
  *              Magnitude is irrelevant — only the direction matters; the
  *              vertex shader uses it as a tiny world-space nudge to find
  *              the screen-space ribbon direction.
- *   aKind    — 0.0 = major, 1.0 = arterial, 2.0 = local. Picks the width
- *              uniform and feeds the per-kind brightness boost.
+ *   aKind    — 0.0=major, 1.0=arterial, 2.0=local, 3.0=local2. Picks the
+ *              width uniform and feeds the per-kind brightness boost.
  *
  * Cross-ribbon coordinate (`vU` in the vertex shader) is reconstructed
  * from `gl_VertexID` parity: even-indexed vertex = +1 side, odd = -1 side.
@@ -255,7 +279,10 @@ function buildRibbonGeometry(roads: readonly RoadRecord[]): THREE.BufferGeometry
     const n = verts.length;
     if (n < 2) continue;
     const kindFloat =
-      r.kind === 'major' ? 0.0 : r.kind === 'arterial' ? 1.0 : /* local */ 2.0;
+      r.kind === 'major' ? 0.0
+      : r.kind === 'arterial' ? 1.0
+      : r.kind === 'local' ? 2.0
+      : /* local2 */ 3.0;
 
     const baseV = vi;
 

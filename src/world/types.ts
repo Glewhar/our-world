@@ -45,7 +45,7 @@ export type WorldManifest = {
     cities: ArtifactRef;
     /**
      * Road polylines (Natural Earth ne_10m_roads, all paved types kept,
-     * tiered into major / arterial / local). JSON list (see `RoadsFile`).
+     * tiered into major / arterial / local / local2). JSON list (see `RoadsFile`).
      * Lines are not polygons, so they live outside the HEALPix rasterizer
      * pipeline; the artifact is a standalone JSON consumed by the render
      * layer's HighwaysLayer. Format: `json`. Empty list ([]) on fixture bakes.
@@ -106,12 +106,12 @@ export type CityRecord = {
 };
 
 /**
- * Roads artifact (`roads.json`). Sorted: major before arterial before local,
- * longer lines first within each kind so the densest network draws earliest.
- * Empty list on fixture bakes.
+ * Roads artifact (`roads.json`). Sorted: major before arterial before
+ * local before local2, longer lines first within each kind so the
+ * densest network draws earliest. Empty list on fixture bakes.
  */
 export type RoadsFile = {
-  version: 2;
+  version: 3;
   source: string; // e.g. "natural_earth_10m_roads_v5.1.1"
   generated_at: string; // ISO8601
   count: number;
@@ -119,9 +119,55 @@ export type RoadsFile = {
 };
 
 export type RoadRecord = {
-  kind: 'major' | 'arterial' | 'local';
+  /**
+   * Tier label, from densest/most-important to thinnest:
+   *   major   — NE "Major Highway"
+   *   arterial — NE "Secondary Highway" / "Beltway" / "Bypass"
+   *   local   — NE "Road" (regional connectors)
+   *   local2  — NE "Unknown" (untyped — bulk of Asia's secondary net)
+   */
+  kind: 'major' | 'arterial' | 'local' | 'local2';
   /** Polyline vertices as [lat, lon] pairs (degrees), already simplified. */
   vertices: [number, number][];
+};
+
+/**
+ * Urban-areas artifact (`urban_areas.json`). The top-N urban polygon
+ * outlines (Natural Earth ne_10m_urban_areas, spatially joined to
+ * populated_places for population) that drive the procedural in-browser
+ * streets-and-buildings layer. Sorted by `pop` descending; `id` is the
+ * sequential rank (0-based). Empty list on fixture bakes.
+ *
+ * This artifact sits OUTSIDE `WorldManifest.artifacts` — the runtime
+ * fetches it by URL convention as a sibling of `world_manifest.json` so
+ * older bakes that predate the artifact still validate against C1.
+ */
+export type UrbanAreasFile = {
+  version: 1;
+  source: string; // e.g. "natural_earth_10m_urban_areas_v5.1.1"
+  generated_at: string; // ISO8601
+  count: number;
+  urban_areas: UrbanAreaRecord[];
+};
+
+export type UrbanAreaRecord = {
+  /** Sequential rank in the sorted list (0-based). Stable across re-bakes. */
+  id: number;
+  /** Centroid latitude in degrees. */
+  lat: number;
+  /** Centroid longitude in degrees. */
+  lon: number;
+  /** Population from the nearest populated_places match. */
+  pop: number;
+  /** City display name (best-effort from the nearest match). */
+  name: string;
+  country: string;
+  /**
+   * Simplified outer-ring vertices as `[lat, lon]` pairs (degrees). First
+   * vertex is NOT repeated at the end — the consumer closes the ring.
+   * Typical length ≈ 40 verts after the ~200 m Douglas–Peucker simplify.
+   */
+  polygon: [number, number][];
 };
 
 export type GraphRef = {
@@ -269,6 +315,15 @@ export interface WorldRuntime {
   // at boot. Sorted major-first then by length descending within each
   // kind. Empty array on fixture bakes.
   getRoads(): readonly RoadRecord[];
+
+  /**
+   * Top-N urban-area outlines (Natural Earth ne_10m_urban_areas, spatially
+   * joined to populated_places for a population field). Fetched as a
+   * sibling of the manifest at `urban_areas.json.gz` and degrades to an
+   * empty array when the bake didn't produce the file (legacy bakes).
+   * Consumed by the procedural in-browser streets-and-buildings layer.
+   */
+  getUrbanAreas(): readonly UrbanAreaRecord[];
 
   // Aggregates (refreshed by Sim @ 10 Hz)
   getAggregates(): WorldAggregates;

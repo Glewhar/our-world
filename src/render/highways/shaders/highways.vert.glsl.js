@@ -4,7 +4,7 @@ export const source = `// Highways vertex shader.
 //
 // Each vertex carries a centerline position on the unit sphere plus a
 // signed unit perpendicular (\`aPerp\`) and a kind flag (\`aKind\`,
-// 0=major, 1=arterial, 2=local). The shader lifts the centerline by the
+// 0=major, 1=arterial, 2=local, 3=local2). The shader lifts the centerline by the
 // local elevation (9-tap blur), then applies a *screen-space* offset of
 // half the kind's pixel width along the projected ribbon direction. This
 // is the standard Mapbox / Apple Maps trick: the line keeps a constant
@@ -33,6 +33,9 @@ uniform vec2 uViewportSize;
 uniform float uMajorWidthPx;
 uniform float uArterialWidthPx;
 uniform float uLocalWidthPx;
+uniform float uLocal2WidthPx;
+uniform float uDayCasingPx;
+uniform float uDayFillScale;
 
 in vec3 aPerp;
 in float aKind;
@@ -41,6 +44,7 @@ out vec3 vSurfaceNormal;
 out vec3 vWorldPos;
 out float vKind;
 out float vU;
+out float vFillFrac;
 
 ivec2 cellTexel(vec3 d) {
   int ipix = healpixZPhiToPix(uHealpixNside, uHealpixOrdering, d.z, atan(d.y, d.x));
@@ -129,13 +133,22 @@ void main() {
   vec2 pxPerp = pxLen > 1.0e-6 ? pxDiff / pxLen : vec2(0.0);
 
   // Pick the visible width in pixels for this road's kind.
-  // aKind: 0=major, 1=arterial, 2=local.
+  // aKind: 0=major, 1=arterial, 2=local, 3=local2.
   float widthPx =
     (aKind < 0.5) ? uMajorWidthPx :
     (aKind < 1.5) ? uArterialWidthPx :
-                    uLocalWidthPx;
-  // Half-width is the offset magnitude; aPerp's sign already chose the side.
-  float halfWidthPx = max(widthPx * 0.5, 0.5);
+    (aKind < 2.5) ? uLocalWidthPx :
+                    uLocal2WidthPx;
+  // Cartographic casing: widen the ribbon by uDayCasingPx pixels on each
+  // side beyond the road's nominal width. The inner |vU| < vFillFrac
+  // region is the bright fill; the outer rim is the dark casing.
+  float casingPx = max(uDayCasingPx, 0.0);
+  float halfWidthPx = max(widthPx * 0.5 + casingPx, 0.5);
+  // Day fill width = the road's nominal width × uDayFillScale, clamped so
+  // it never exceeds the ribbon. Night ignores vFillFrac entirely, so this
+  // knob is day-only.
+  float fillPx = max(widthPx * uDayFillScale, 0.0);
+  vFillFrac = clamp(fillPx / max(widthPx + 2.0 * casingPx, 1.0e-3), 0.0, 1.0);
 
   vec2 pxOffset = pxPerp * halfWidthPx;
   vec2 ndcOffset = pxOffset * 2.0 / uViewportSize;

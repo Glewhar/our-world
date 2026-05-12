@@ -23,6 +23,7 @@ import { source as fragGlsl } from './shaders/land.frag.glsl.js';
 
 export type LandUniforms = {
   uSunDirection: { value: THREE.Vector3 };
+  uSunColor: { value: THREE.Vector3 };
   uNightTint: { value: THREE.Color };
   uAmbient: { value: number };
 
@@ -159,6 +160,13 @@ export type LandUniforms = {
    * blue limb without crushing disc-centre colour.
    */
   uHazeAmount: { value: number };
+  /**
+   * Aerial-perspective falloff distance in metres. Larger values keep the
+   * haze tint visible from farther away; smaller values clamp it close
+   * to the limb. The land shader samples this when blending the
+   * sky-view LUT into the lit surface.
+   */
+  uHazeFalloffM: { value: number };
 };
 
 /**
@@ -251,9 +259,14 @@ export function createLandMaterial(): THREE.ShaderMaterial & {
   _landUniforms: LandUniforms;
 } {
   const uniforms: LandUniforms = {
+    // Lighting uniforms are placeholders only — `scene-graph.applyTimeOfDay`
+    // and `applyMaterials` overwrite them every frame from the directional
+    // light + Tweakpane state. The values here just keep the first frame
+    // from rendering pitch-black before the first `update()` call.
     uSunDirection: { value: new THREE.Vector3(1, 0, 0.3).normalize() },
-    uNightTint: { value: new THREE.Color(0.08, 0.1, 0.16) },
-    uAmbient: { value: 0.3 },
+    uSunColor: { value: new THREE.Vector3(1, 1, 1) },
+    uNightTint: { value: new THREE.Color(0, 0, 0) },
+    uAmbient: { value: 0.2 },
 
     uIdRaster: { value: null },
     uAttrStatic: { value: null },

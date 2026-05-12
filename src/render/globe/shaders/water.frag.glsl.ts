@@ -26,6 +26,7 @@ precision highp float;
 precision highp int;
 
 uniform vec3 uSunDirection;
+uniform vec3 uSunColor;
 uniform vec3 uNightTint;
 uniform float uAmbient;
 
@@ -321,7 +322,7 @@ void main() {
   // Wrap-lambert day/night blend matching Land + the previous water look.
   float ndotl = dot(n, sunDir);
   float wrap = smoothstep(-0.2, 0.6, ndotl);
-  vec3 day = base * (uAmbient + (1.0 - uAmbient) * max(ndotl, 0.0));
+  vec3 day = base * uAmbient + base * uSunColor * max(ndotl, 0.0);
   vec3 night = base * uNightTint;
   vec3 col = mix(night, day, wrap);
 

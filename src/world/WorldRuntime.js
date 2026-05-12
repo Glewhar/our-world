@@ -45,47 +45,63 @@ export async function createWorldRuntime(opts = {}) {
     // Page-relative default so the build runs at any deploy path; the
     // derived `baseUrl` below stays relative too, so sibling fetches work.
     const manifestUrl = opts.manifestUrl ?? 'world/earth_v1/world_manifest.json';
-    const manifest = await loadManifest(manifestUrl);
+    // 9 steps: 1 manifest + 8 parallel assets.
+    const TOTAL_STEPS = 9;
+    let loadedCount = 0;
+    const step = (label) => (result) => {
+        opts.onProgress?.(++loadedCount, TOTAL_STEPS, label);
+        return result;
+    };
+    const manifest = await loadManifest(manifestUrl).then(step('manifest'));
     const baseUrl = manifestUrl.slice(0, manifestUrl.lastIndexOf('/'));
     const { nside, ordering } = manifest.healpix;
-    const [idRaster, attributes, windField, oceanCurrents, cities, roads, distanceField] = await Promise.all([
-        IdRaster.load(`${baseUrl}/${manifest.artifacts.id_raster.path}`, nside, ordering),
+    const [idRaster, attributes, windField, oceanCurrents, cities, roads, urbanAreas, distanceField] = await Promise.all([
+        IdRaster.load(`${baseUrl}/${manifest.artifacts.id_raster.path}`, nside, ordering)
+            .then(step('id raster')),
         AttributeTextures.load({
             attribute_static: manifest.artifacts.attribute_static,
             attribute_climate_init: manifest.artifacts.attribute_climate_init,
             attribute_dynamic_init: manifest.artifacts.attribute_dynamic_init,
             elevation_meters: manifest.artifacts.elevation_meters,
             water_level_meters: manifest.artifacts.water_level_meters,
-        }, baseUrl, nside),
+        }, baseUrl, nside).then(step('terrain textures')),
         // wind_field is allowed to be a zero-byte placeholder on older bakes,
         // in which case the loader returns null and consumers degrade.
-        manifest.graphs.wind_field.size_bytes > 32
+        (manifest.graphs.wind_field.size_bytes > 32
             ? WindFieldTexture.load(`${baseUrl}/${manifest.graphs.wind_field.path}`)
-            : Promise.resolve(null),
+            : Promise.resolve(null)).then(step('wind field')),
         // ocean_currents has the same placeholder semantic. Same threshold.
-        manifest.graphs.ocean_currents.size_bytes > 32
+        (manifest.graphs.ocean_currents.size_bytes > 32
             ? OceanCurrentsTexture.load(`${baseUrl}/${manifest.graphs.ocean_currents.path}`)
-            : Promise.resolve(null),
+            : Promise.resolve(null)).then(step('ocean currents')),
         // cities.json — empty array on fixture bakes; ~7,300 entries on real
         // natural-earth bakes. Failure to fetch (e.g., legacy bake without the
         // file) degrades to an empty list so the runtime still boots.
-        loadCitiesArtifact(`${baseUrl}/${manifest.artifacts.cities.path}`),
+        loadCitiesArtifact(`${baseUrl}/${manifest.artifacts.cities.path}`)
+            .then(step('cities')),
         // roads.json — same shape as cities. Empty on fixture / legacy bakes.
         // Manifests written before the highways layer existed don't have a
         // `roads` artifact ref at all; degrade to an empty list so the runtime
         // still boots. Once the user re-bakes (or runs the manifest stage)
         // the new ref appears and the layer populates.
-        manifest.artifacts.roads
+        (manifest.artifacts.roads
             ? loadRoadsArtifact(`${baseUrl}/${manifest.artifacts.roads.path}`)
-            : Promise.resolve([]),
+            : Promise.resolve([])).then(step('roads')),
+        // urban_areas.json — top-N city polygon outlines fetched by URL
+        // convention (NOT referenced from `manifest.artifacts`). Bakes from
+        // before the urban-areas stage existed don't ship the file at all;
+        // the loader catches the 404 and returns an empty list so the
+        // procedural detail layer simply renders nothing.
+        loadUrbanAreasArtifact(`${baseUrl}/urban_areas.json`)
+            .then(step('urban areas')),
         // distance_field — older bakes predate the artifact; the cli's
         // back-fill writes a zero-byte placeholder. Same threshold as
         // wind_field. When null, the land shader treats every pixel as
         // "deep land, far from any boundary" and the visuals revert to
         // the pre-feature look.
-        manifest.artifacts.distance_field.size_bytes > 32
+        (manifest.artifacts.distance_field.size_bytes > 32
             ? DistanceFieldTexture.load(`${baseUrl}/${manifest.artifacts.distance_field.path}`)
-            : Promise.resolve(null),
+            : Promise.resolve(null)).then(step('terrain detail')),
     ]);
     const registry = new BodyRegistry(manifest.bodies);
     const bridge = new WorkerBridge();
@@ -140,6 +156,7 @@ export async function createWorldRuntime(opts = {}) {
         getDistanceFieldTexture: () => (distanceField ? distanceField.texture : null),
         getCities: () => cities,
         getRoads: () => roads,
+        getUrbanAreas: () => urbanAreas,
         getAggregates: () => ZERO_AGGREGATES,
         onAttributeChanged: (cb) => {
             attrListeners.add(cb);
@@ -229,6 +246,26 @@ async function loadRoadsArtifact(url) {
     }
     catch (err) {
         console.warn(`[roads] load error from ${url}:`, err);
+        return [];
+    }
+}
+/**
+ * Fetch + parse `urban_areas.json`. Same shape as cities/roads: returns
+ * an empty array on any failure (404, parse error, missing field) so a
+ * legacy bake without the artifact still boots — the procedural urban
+ * detail layer just renders nothing in that case.
+ */
+async function loadUrbanAreasArtifact(url) {
+    try {
+        const file = await fetchMaybeGzJson(url);
+        if (!Array.isArray(file?.urban_areas)) {
+            console.warn(`[urban_areas] missing 'urban_areas' array in ${url}`);
+            return [];
+        }
+        return file.urban_areas;
+    }
+    catch (err) {
+        console.warn(`[urban_areas] load error from ${url}:`, err);
         return [];
     }
 }

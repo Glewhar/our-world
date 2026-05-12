@@ -21,6 +21,8 @@ export type {
   CityRecord,
   RoadsFile,
   RoadRecord,
+  UrbanAreasFile,
+  UrbanAreaRecord,
   PickResult,
   TopologyChange,
   WorldAggregates,
