@@ -94,14 +94,14 @@ function latLonToUnit(out, latDeg, lonDeg) {
 }
 /**
  * Hemisphere-visibility threshold for bucket meshes: a bucket is shown
- * when `dot(bucketCentroidDir, cameraDir) > HEMISPHERE_THRESHOLD`. -0.2
- * keeps buckets visible whose centroid is up to ~12° onto the back-of-
- * globe side of the limb, so silhouette buckets never pop as the camera
- * orbits. Three's frustum culling can't help — back-hemisphere buckets
- * are inside the FOV cone but occluded by the globe in front; this
- * CPU-side test is what actually drops their draw call + vertex stage.
+ * when `dot(bucketCentroidDir, cameraDir) > HEMISPHERE_THRESHOLD`. 0.0
+ * is strict front-hemisphere — the bucket's centroid must lie on the
+ * camera-facing half of the sphere. Three's frustum culling can't help
+ * here: back-hemisphere buckets are inside the FOV cone but occluded
+ * by the globe in front; this CPU-side test is what actually drops
+ * their draw call + vertex stage.
  */
-const HEMISPHERE_THRESHOLD = -0.2;
+const HEMISPHERE_THRESHOLD = 0.0;
 export class HighwaysLayer {
     group;
     uniforms;

@@ -90,15 +90,14 @@ const DEFAULT_UNIFORM_VALUES = {
 
 /**
  * Hemisphere-visibility threshold for bucket meshes: a bucket is shown
- * when `dot(bucketCentroidDir, cameraDir) > HEMISPHERE_THRESHOLD`. -0.2
- * keeps buckets visible whose centroid is up to ~12° onto the back-of-
- * globe side of the limb, so the silhouette buckets never pop as the
- * camera orbits. Three.js's frustum culling can't help here — the back
- * hemisphere is still inside the camera FOV cone, just occluded by the
- * globe in front; this CPU-side test is what actually drops those
- * buckets' draw calls + vertex shading.
+ * when `dot(bucketCentroidDir, cameraDir) > HEMISPHERE_THRESHOLD`. 0.0
+ * is strict front-hemisphere — the bucket's centroid must lie on the
+ * camera-facing half of the sphere. Three's frustum culling can't help
+ * here: the back hemisphere is still inside the camera FOV cone, just
+ * occluded by the globe in front; this CPU-side test is what actually
+ * drops those buckets' draw calls + vertex shading.
  */
-const HEMISPHERE_THRESHOLD = -0.2;
+const HEMISPHERE_THRESHOLD = 0.0;
 
 type Bucket = {
   mesh: THREE.Mesh;
