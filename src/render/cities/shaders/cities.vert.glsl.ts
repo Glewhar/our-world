@@ -1,15 +1,18 @@
 // Inlined from cities.vert.glsl. Edit the GLSL inside the template literal —
 // the source of truth lives here, no separate .glsl file on disk.
-export const source = `// Cities vertex shader.
+export const source = `// Cities vertex shader — triangulated polygon mesh.
 //
-// Each instance is a quad anchored tangent to the globe at the urban
-// polygon's centroid. The shared envelope (uHalfQuadSizeKm) is large
-// enough to contain the largest polygon globally; the fragment shader
-// clips per-instance to that city's own bbox via aHalfExtentKm.
+// Each polygon vertex carries its own unit-sphere position plus the
+// per-vertex tangent-frame (x_km, y_km) coordinate \`aLocalKm\` (computed
+// at construction in CitiesLayer.ts). The fragment shader uses
+// \`vLocalKm\` directly to drive the block-spray hashing — no shared
+// quad envelope, no per-fragment point-in-polygon test.
 //
-// Radial lift: same recipe as the land mesh vertex shader (9-tap
-// elevation blur + coast fade), with a small uCityRadialBias on top so
-// the quad always clears the land surface unambiguously.
+// Radial lift: same 9-tap blur recipe as the land mesh, using each
+// vertex's own surface direction. Polygon vertices in a single city
+// span ≲ 20 km so all verts in one polygon end up with near-identical
+// lifts (and the polygon is still rendered as a flat triangulation in
+// the tangent plane, which is correct for a near-sea-level city patch).
 //
 // The healpix.glsl helper is concatenated before this source by
 // CitiesLayer (Three.js ShaderMaterial doesn't process #include).
@@ -17,8 +20,6 @@ export const source = `// Cities vertex shader.
 precision highp float;
 precision highp int;
 precision highp sampler2D;
-
-uniform float uHalfQuadSizeUnit;
 
 uniform sampler2D uElevationMeters;
 uniform sampler2D uIdRaster;
@@ -28,21 +29,16 @@ uniform int uAttrTexWidth;
 uniform float uElevationScale;
 uniform float uCityRadialBias;
 
-in float aPopulation;
-in vec2 aLatLon;
-in float aPatternSeed;
-in vec2 aPolyOffsetCount;
+in vec2 aLocalKm;
 in vec2 aHalfExtentKm;
+in float aPopulation;
+in float aPatternSeed;
 
-out vec2 vQuadUV;
-out vec3 vSurfaceNormal;
+out vec2 vLocalKm;
+flat out vec2 vHalfExtentKm;
 out vec3 vWorldPos;
 out float vPopulation;
 out float vPatternSeed;
-flat out vec2 vPolyOffsetCount;
-flat out vec2 vHalfExtentKm;
-
-const float DEG = 0.017453292519943295;
 
 ivec2 cellTexel(vec3 d) {
   int ipix = healpixZPhiToPix(uHealpixNside, uHealpixOrdering, d.z, atan(d.y, d.x));
@@ -50,21 +46,16 @@ ivec2 cellTexel(vec3 d) {
 }
 
 void main() {
-  vQuadUV = uv;
+  vLocalKm = aLocalKm;
+  vHalfExtentKm = aHalfExtentKm;
   vPopulation = aPopulation;
   vPatternSeed = aPatternSeed;
-  vPolyOffsetCount = aPolyOffsetCount;
-  vHalfExtentKm = aHalfExtentKm;
 
-  float lat = aLatLon.x * DEG;
-  float lon = aLatLon.y * DEG;
-  float cosLat = cos(lat);
-  vec3 centre = vec3(cosLat * cos(lon), cosLat * sin(lon), sin(lat));
-  vSurfaceNormal = normalize(centre);
+  vec3 dir = normalize(position);
 
-  // 9-tap elevation blur (mirrors land.vert.glsl). eps ≈ 3 HEALPix cells
-  // at nside=1024.
-  vec3 dir = vSurfaceNormal;
+  // 9-tap elevation blur — averages the cell-centre + 8 neighbours,
+  // matching land.vert.glsl's recipe so cities sit flush with the
+  // displaced land mesh.
   vec3 axisUp = abs(dir.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
   vec3 t1 = normalize(cross(axisUp, dir));
   vec3 t2 = cross(dir, t1);
@@ -107,15 +98,7 @@ void main() {
 
   float landDisplace = max(elev, 0.0) * uElevationScale * coastFade;
   float radial = 1.0 + landDisplace + uCityRadialBias;
-
-  vec3 worldUp = abs(vSurfaceNormal.z) < 0.99 ? vec3(0.0, 0.0, 1.0)
-                                              : vec3(1.0, 0.0, 0.0);
-  vec3 tangentX = normalize(cross(worldUp, vSurfaceNormal));
-  vec3 tangentY = cross(vSurfaceNormal, tangentX);
-
-  vec3 liftedCentre = centre * radial;
-  vec2 local = (uv - 0.5) * 2.0 * uHalfQuadSizeUnit;
-  vec3 worldPos = liftedCentre + tangentX * local.x + tangentY * local.y;
+  vec3 worldPos = dir * radial;
   vWorldPos = worldPos;
 
   gl_Position = projectionMatrix * modelViewMatrix * vec4(worldPos, 1.0);

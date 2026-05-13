@@ -26,8 +26,8 @@
  * refreshes `uInvViewProj` + `uCameraPos` so the fragment can
  * reconstruct the view ray; `renderHalfRes(renderer, camera)` MUST be
  * called once per frame BEFORE the main scene render so the composite
- * mesh has fresh half-res cloud data; `setSize(w, h)` keeps the
- * half-res target sized to half the canvas.
+ * mesh has fresh cloud data; `setSize(w, h)` keeps the offscreen
+ * target sized to `1/CLOUD_RES_DIVISOR` per axis of the canvas.
  */
 
 import * as THREE from 'three';
@@ -126,8 +126,8 @@ export class VolumetricCloudPass {
         uAttrTexWidth: { value: 4 * nside },
         // Same metres → unit-sphere scale Land/Water use. Drives the cloud
         // shell altitude so the cloud base sits at exactly CLOUD_BASE_M
-        // (3000 m) above the rendered sea-level radius. MUST stay in sync
-        // with LandMaterial / WaterMaterial.
+        // (see clouds.frag.glsl.ts) above the rendered sea-level radius.
+        // MUST stay in sync with LandMaterial / WaterMaterial.
         uElevationScale: { value: DEFAULT_ELEVATION_SCALE },
       },
       // Rendering into the half-res target — we want raw color writes, no

@@ -1,12 +1,14 @@
 // Inlined from cities.frag.glsl. Edit the GLSL inside the template literal —
 // the source of truth lives here, no separate .glsl file on disk.
-export const source = `// Cities fragment shader — far-LOD polygon-shape glow.
+export const source = `// Cities fragment shader — triangulated polygon mesh.
 //
-// Discard fragments outside the per-instance bounding box, then run a
-// classic even-odd point-in-polygon test against the polygon vertices
-// packed in uPolyAtlas (RG32F, vertex (x,y) in tangent-frame km). If the
-// fragment is inside the polygon, paint an organic block-spray + warm
-// tungsten night palette modulated by the city's population.
+// The geometry IS the polygon now (triangulated CPU-side, see
+// CitiesLayer.ts), so there's no point-in-polygon loop and no
+// per-instance bbox reject — every shaded fragment is already inside
+// its city's polygon. The fragment paints the organic block-spray +
+// warm tungsten night palette using the interpolated tangent-frame
+// km coordinate, normalised by the city's half-extent for the
+// radial-density falloff.
 //
 // Coastline-clipped via the same HEALPix id raster the land/water
 // meshes use, so a coastal polygon never paints onto ocean cells.
@@ -15,13 +17,11 @@ precision highp float;
 precision highp int;
 precision highp sampler2D;
 
-in vec2 vQuadUV;
-in vec3 vSurfaceNormal;
+in vec2 vLocalKm;
+flat in vec2 vHalfExtentKm;
 in vec3 vWorldPos;
 in float vPopulation;
 in float vPatternSeed;
-flat in vec2 vPolyOffsetCount;
-flat in vec2 vHalfExtentKm;
 
 uniform vec3 uSunDirection;
 
@@ -29,10 +29,6 @@ uniform sampler2D uIdRaster;
 uniform int uHealpixNside;
 uniform int uHealpixOrdering;
 uniform int uAttrTexWidth;
-
-uniform float uHalfQuadSizeKm;
-uniform sampler2D uPolyAtlas;
-uniform int uPolyAtlasWidth;
 
 uniform float uMinPopulation;
 
@@ -60,45 +56,15 @@ float hash11(float n) {
   return fract(sin(n) * 43758.5453123);
 }
 
-vec2 fetchPolyVert(int idx) {
-  int row = idx / uPolyAtlasWidth;
-  int col = idx - row * uPolyAtlasWidth;
-  return texelFetch(uPolyAtlas, ivec2(col, row), 0).xy;
-}
-
-// Even-odd PIP. Walk the polygon's vertex run in the atlas and count
-// crossings of a horizontal ray cast to the right from (x, y). Inside
-// when the count is odd.
-bool pointInPolygon(vec2 p, int offset, int count) {
-  bool inside = false;
-  vec2 prev = fetchPolyVert(offset + count - 1);
-  for (int i = 0; i < count; i++) {
-    vec2 cur = fetchPolyVert(offset + i);
-    bool crosses = ((cur.y > p.y) != (prev.y > p.y)) &&
-      (p.x < (prev.x - cur.x) * (p.y - cur.y) / (prev.y - cur.y) + cur.x);
-    if (crosses) inside = !inside;
-    prev = cur;
-  }
-  return inside;
-}
-
 void main() {
   if (vPopulation < uMinPopulation) discard;
 
-  // Quad-local coordinates in km, recovered from the shared envelope size.
-  vec2 localKm = (vQuadUV - 0.5) * 2.0 * uHalfQuadSizeKm;
+  vec2 localKm = vLocalKm;
 
-  // Cheap per-instance bbox reject before the PIP loop.
-  if (abs(localKm.x) > vHalfExtentKm.x || abs(localKm.y) > vHalfExtentKm.y) discard;
-
-  int polyOffset = int(vPolyOffsetCount.x);
-  int polyCount  = int(vPolyOffsetCount.y);
-  if (polyCount < 3) discard;
-  if (!pointInPolygon(localKm, polyOffset, polyCount)) discard;
-
-  // Normalised intra-bbox coord in [-1, 1]. Per-instance grid cells stay
-  // square in km, so a wide polygon shows more blocks horizontally.
-  vec2 local = localKm / vHalfExtentKm;
+  // Normalised intra-polygon coord. Reaches ~1 at the polygon's bbox
+  // edge in either axis; the radial-density term below uses length(local)
+  // so the layer fades toward the polygon's outer extents.
+  vec2 local = localKm / max(vHalfExtentKm, vec2(1.0));
 
   // Cell grid in km. Per-row x-stretch + half-cell running-bond offset
   // turn the uniform squares into irregular brickwork. uAspectJitter=0
@@ -153,13 +119,15 @@ void main() {
 
   float popLight = clamp(log(max(vPopulation, 100.0)) / log(2.0e7), 0.35, 1.0);
   vec3 nightFill = vec3(1.0, 0.85, 0.55) * blockBright * popLight * uNightBrightness;
-  // Tile sparkle is night-only — boost just the inner core of each tile so
-  // the city reads as a constellation of bright windows on a dark mass.
   nightFill *= (1.0 + uTileSparkle * sparkle);
   vec3 nightOutline = vec3(0.04, 0.03, 0.02);
   vec3 nightCol = mix(nightFill, nightOutline, outline);
 
-  float wrap = smoothstep(-0.05, 0.15, dot(vSurfaceNormal, normalize(uSunDirection)));
+  // Surface normal at this fragment is just the unit direction from the
+  // globe centre — the polygon hugs the unit sphere, so this matches
+  // the land mesh's lighting frame within fractions of a degree.
+  vec3 surfaceNormal = sphereDir;
+  float wrap = smoothstep(-0.05, 0.15, dot(surfaceNormal, normalize(uSunDirection)));
   vec3 col = mix(nightCol, dayCol, wrap);
 
   float popOpacity = clamp(log(max(vPopulation, 100.0)) / log(2.0e7), 0.25, 1.0);

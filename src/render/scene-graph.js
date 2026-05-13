@@ -106,6 +106,7 @@ export function createSceneGraph() {
     const raycaster = new THREE.Raycaster();
     const tmpVec2 = new THREE.Vector2();
     const tmpSunDir = new THREE.Vector3();
+    const tmpCameraDir = new THREE.Vector3();
     function attachRenderer(r) {
         webglRenderer = r;
         postFx = new PostFXChain(r, scene, camera);
@@ -154,8 +155,10 @@ export function createSceneGraph() {
         highways = new HighwaysLayer(w, w.getRoads());
         highways.setSunDirection(sunDirection);
         highways.setViewportSize(initW, initH);
-        highways.mesh.renderOrder = -1;
-        scene.add(highways.mesh);
+        // The layer is now a Group of per-bucket meshes; renderOrder lives on
+        // each bucket's Mesh (set inside the layer) so transparent sort still
+        // honours it. The Group itself is just a container.
+        scene.add(highways.group);
         // Urban-area layers: far-LOD polygon-shape glow (CitiesLayer) +
         // near-LOD procedural streets/buildings (UrbanDetailLayer). The two
         // are zoom-faded by `applyMaterials` — glow is full at globe view
@@ -166,8 +169,8 @@ export function createSceneGraph() {
         cities.setSunDirection(sunDirection);
         // Render before the cloud raymarch so cloud cover occludes city glow
         // instead of cities shining through. Matches the highways pattern.
-        cities.mesh.renderOrder = -1;
-        scene.add(cities.mesh);
+        // renderOrder is set on each bucket Mesh inside the layer.
+        scene.add(cities.group);
         urbanDetail = new UrbanDetailLayer(w, urbans);
         urbanDetail.setSunDirection(sunDirection);
         scene.add(urbanDetail.group);
@@ -381,6 +384,14 @@ export function createSceneGraph() {
         highways?.setElevationScale(elevScale);
         cities?.setElevationScale(elevScale);
         urbanDetail?.setElevationScale(elevScale);
+        // Hemisphere visibility — flip per-bucket .visible based on which
+        // side of the globe each bucket sits on relative to the camera.
+        // Three's frustum cull doesn't help with back-of-globe occlusion;
+        // this is what actually drops those buckets' draw calls + vertex
+        // stage work. Cheap (one dot product per bucket per frame).
+        tmpCameraDir.copy(camera.position).normalize();
+        highways?.update(tmpCameraDir);
+        cities?.update(tmpCameraDir);
         // Cities glow renders at every zoom — opacity is set from the
         // Tweakpane cities folder above. The procedural urban-detail mesh
         // ramps in close-up on top, no longer a hard cross-fade.
