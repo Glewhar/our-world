@@ -22,10 +22,12 @@ in vec3 vWorldPos;
 in float vKind;
 in float vU;
 in float vFillFrac;
+in float vRoadSeed;
 
 uniform vec3 uSunDirection;
 
 uniform sampler2D uIdRaster;
+uniform sampler2D uWastelandTex;
 uniform int uHealpixNside;
 uniform int uHealpixOrdering;
 uniform int uAttrTexWidth;
@@ -46,6 +48,13 @@ uniform float uOpacity;
 
 out vec4 fragColor;
 
+float seedToThreshold(float seed) {
+  float h = fract(sin(seed * 12.9898 + 78.233) * 43758.5453);
+  // Skewed toward the low end so most roads only reappear once wasteland
+  // is mostly gone — stretches the recovery tail without slowing decay.
+  return mix(0.0, 0.5, h);
+}
+
 void main() {
   // Coastline clip — sample the HEALPix id raster at the centerline
   // surface point. Same mask the land shader uses.
@@ -54,6 +63,12 @@ void main() {
   int ipx = healpixZPhiToPix(uHealpixNside, uHealpixOrdering, sphereDir.z, phi);
   ivec2 tx = healpixIpixToTexel(ipx, uAttrTexWidth);
   if (isOceanIdTexel(texelFetch(uIdRaster, tx, 0))) discard;
+
+  // Wasteland kill — per-polyline threshold sweeps as wasteland decays
+  // (sampled per-fragment so road segments near the impact discard
+  // while distant segments of the same polyline keep drawing).
+  float wasteland = texelFetch(uWastelandTex, tx, 0).r;
+  if (wasteland > seedToThreshold(vRoadSeed)) discard;
 
   // Cross-ribbon distance, 0 at center, 1 at edge.
   float u01 = clamp(abs(vU), 0.0, 1.0);

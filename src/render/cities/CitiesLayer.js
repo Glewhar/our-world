@@ -79,6 +79,7 @@ export class CitiesLayer {
         this.uniforms = {
             uSunDirection: { value: new THREE.Vector3(1, 0, 0.3).normalize() },
             uIdRaster: { value: world.getIdRaster() },
+            uWastelandTex: { value: world.getWastelandTexture() },
             uHealpixNside: { value: nside },
             uHealpixOrdering: { value: ordering === 'ring' ? 0 : 1 },
             uAttrTexWidth: { value: 4 * nside },

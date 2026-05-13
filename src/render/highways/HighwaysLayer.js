@@ -94,6 +94,16 @@ function latLonToUnit(out, latDeg, lonDeg) {
     return out.set(cosLat * Math.cos(lon), cosLat * Math.sin(lon), Math.sin(lat));
 }
 /**
+ * Stable [0, 1) hash of a lat/lon pair — used as a per-polyline seed so
+ * wasteland recovery thresholds are reproducible across page reloads.
+ * Two polylines starting at distinct first vertices land on distinct
+ * seeds; the GLSL `seedToThreshold` then maps that into [0.05, 0.95].
+ */
+function hashLatLonToUnit(latDeg, lonDeg) {
+    const v = Math.sin(latDeg * 12.9898 + lonDeg * 78.233) * 43758.5453;
+    return v - Math.floor(v);
+}
+/**
  * Hemisphere-visibility threshold for bucket meshes: a bucket is shown
  * when `dot(bucketCentroidDir, cameraDir) > HEMISPHERE_THRESHOLD`. 0.0
  * is strict front-hemisphere — the bucket's centroid must lie on the
@@ -117,6 +127,7 @@ export class HighwaysLayer {
         this.uniforms = {
             uSunDirection: { value: new THREE.Vector3(1, 0, 0.3).normalize() },
             uIdRaster: { value: world.getIdRaster() },
+            uWastelandTex: { value: world.getWastelandTexture() },
             uHealpixNside: { value: nside },
             uHealpixOrdering: { value: ordering === 'ring' ? 0 : 1 },
             uAttrTexWidth: { value: 4 * nside },
@@ -308,6 +319,11 @@ function buildRibbonGeometry(roads, liftCtx) {
     // the shader multiplies by uElevationScale so the altitude slider
     // still works without rebake.
     const lifts = new Float32Array(totalVerts);
+    // Per-polyline seed in [0, 1]; the fragment shader hashes it to a
+    // wasteland-threshold so roads pop back at different decay points.
+    // Same value for every vertex of a polyline so the threshold doesn't
+    // alias along the ribbon's length.
+    const roadSeeds = new Float32Array(totalVerts);
     // Use a 32-bit index buffer — 16-bit caps at 65k vertices and a real
     // bake easily exceeds that even after bucketing.
     const indices = new Uint32Array(totalTris * 3);
@@ -335,6 +351,10 @@ function buildRibbonGeometry(roads, liftCtx) {
             : r.kind === 'arterial' ? 1.0
                 : r.kind === 'local' ? 2.0
                     : /* local2 */ 3.0;
+        // Stable per-polyline seed from the first vertex's lat/lon — same
+        // value every page load (no Math.random), so wasteland recovery
+        // patterns are reproducible run-to-run.
+        const roadSeed = hashLatLonToUnit(verts[0][0], verts[0][1]);
         const baseV = vi;
         for (let i = 0; i < n; i++) {
             latLonToUnit(pCur, verts[i][0], verts[i][1]);
@@ -386,6 +406,7 @@ function buildRibbonGeometry(roads, liftCtx) {
             perps[vi * 3 + 2] = perp.z;
             kinds[vi] = kindFloat;
             lifts[vi] = liftM;
+            roadSeeds[vi] = roadSeed;
             vi++;
             // -perp side (same centerline, opposite perp). Even index = +perp,
             // odd index = -perp — the vertex shader reads gl_VertexID parity to
@@ -398,6 +419,7 @@ function buildRibbonGeometry(roads, liftCtx) {
             perps[vi * 3 + 2] = -perp.z;
             kinds[vi] = kindFloat;
             lifts[vi] = liftM;
+            roadSeeds[vi] = roadSeed;
             vi++;
         }
         // Triangulate consecutive rungs into two-triangle quads.
@@ -419,6 +441,7 @@ function buildRibbonGeometry(roads, liftCtx) {
     geom.setAttribute('aPerp', new THREE.BufferAttribute(perps, 3));
     geom.setAttribute('aKind', new THREE.BufferAttribute(kinds, 1));
     geom.setAttribute('aLiftMeters', new THREE.BufferAttribute(lifts, 1));
+    geom.setAttribute('aRoadSeed', new THREE.BufferAttribute(roadSeeds, 1));
     geom.setIndex(new THREE.BufferAttribute(indices, 1));
     // Bounding sphere over this bucket's centerline positions, slightly
     // inflated to cover the elevation lift + radial bias and the

@@ -26,6 +26,7 @@ in float vPatternSeed;
 uniform vec3 uSunDirection;
 
 uniform sampler2D uIdRaster;
+uniform sampler2D uWastelandTex;
 uniform int uHealpixNside;
 uniform int uHealpixOrdering;
 uniform int uAttrTexWidth;
@@ -56,8 +57,26 @@ float hash11(float n) {
   return fract(sin(n) * 43758.5453123);
 }
 
+float seedToThreshold(float seed) {
+  float h = fract(sin(seed * 12.9898 + 78.233) * 43758.5453);
+  // Skewed toward the low end so most features only reappear once wasteland
+  // is mostly gone. Kept in lockstep with highways.frag.glsl.ts so cities
+  // and roads recover at the same pace.
+  return mix(0.0, 0.5, h);
+}
+
 void main() {
   if (vPopulation < uMinPopulation) discard;
+
+  // HEALPix texel for this fragment — reused below for the coastline mask.
+  vec3 sphereDir = normalize(vWorldPos);
+  int ipx = healpixZPhiToPix(uHealpixNside, uHealpixOrdering, sphereDir.z, atan(sphereDir.y, sphereDir.x));
+  ivec2 tx = healpixIpixToTexel(ipx, uAttrTexWidth);
+
+  // Wasteland kill — per-city threshold sweeps as wasteland decays, so
+  // cities pop back one-by-one rather than fading in unison.
+  float wasteland = texelFetch(uWastelandTex, tx, 0).r;
+  if (wasteland > seedToThreshold(vPatternSeed)) discard;
 
   vec2 localKm = vLocalKm;
 
@@ -106,10 +125,7 @@ void main() {
 
   float blockBright = mix(0.55, 1.0, h2);
 
-  // Coastline mask via the HEALPix id raster.
-  vec3 sphereDir = normalize(vWorldPos);
-  int ipx = healpixZPhiToPix(uHealpixNside, uHealpixOrdering, sphereDir.z, atan(sphereDir.y, sphereDir.x));
-  ivec2 tx = healpixIpixToTexel(ipx, uAttrTexWidth);
+  // Coastline mask via the HEALPix id raster (uses tx from the top).
   float landMask = isOceanIdTexel(texelFetch(uIdRaster, tx, 0)) ? 0.0 : 1.0;
 
   float dayFill = mix(0.20, 0.35, blockBright);

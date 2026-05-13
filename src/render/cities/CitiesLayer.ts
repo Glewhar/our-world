@@ -51,6 +51,7 @@ export type CitiesUniforms = {
   uSunDirection: { value: THREE.Vector3 };
 
   uIdRaster: { value: THREE.DataTexture | null };
+  uWastelandTex: { value: THREE.DataTexture | null };
   uHealpixNside: { value: number };
   uHealpixOrdering: { value: number };
   uAttrTexWidth: { value: number };
@@ -125,6 +126,7 @@ export class CitiesLayer {
       uSunDirection: { value: new THREE.Vector3(1, 0, 0.3).normalize() },
 
       uIdRaster: { value: world.getIdRaster() },
+      uWastelandTex: { value: world.getWastelandTexture() },
       uHealpixNside: { value: nside },
       uHealpixOrdering: { value: ordering === 'ring' ? 0 : 1 },
       uAttrTexWidth: { value: 4 * nside },

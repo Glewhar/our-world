@@ -38,15 +38,18 @@ uniform float uDayFillScale;
 in vec3 aPerp;
 in float aKind;
 in float aLiftMeters;
+in float aRoadSeed;
 
 out vec3 vSurfaceNormal;
 out vec3 vWorldPos;
 out float vKind;
 out float vU;
 out float vFillFrac;
+out float vRoadSeed;
 
 void main() {
   vKind = aKind;
+  vRoadSeed = aRoadSeed;
 
   // Centerline direction. position is on the unit sphere by construction.
   vec3 centerline = position;
