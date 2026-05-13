@@ -149,9 +149,9 @@ export class NuclearExplosion {
 
     const loader = new THREE.TextureLoader();
     this._textures = [
-      loader.load('sprites/fire_desat.png'),
-      loader.load('sprites/smoke_blur.png'),
-      loader.load('sprites/debris.png'),
+      loader.load(new URL('./sprites/fire_desat.png', import.meta.url).href),
+      loader.load(new URL('./sprites/smoke_blur.png', import.meta.url).href),
+      loader.load(new URL('./sprites/debris.png', import.meta.url).href),
     ];
 
     // Initial point multiplier guess; updated via setViewportHeight().
