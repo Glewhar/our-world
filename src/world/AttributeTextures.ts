@@ -222,6 +222,19 @@ export class AttributeTextures {
     if (tex) tex.needsUpdate = true;
   }
 
+  /**
+   * Decode the continuous elevation half-float at a given HEALPix cell.
+   * Returns metres above sea level (positive) or below (negative — wells
+   * and sub-sea-level basins). The elevation buffer is R16F little-endian;
+   * 2 bytes per cell.
+   */
+  getElevationMetersAtCell(ipix: number): number {
+    const byteIdx = ipix * 2;
+    const lo = this.elevMetersBytes[byteIdx] ?? 0;
+    const hi = this.elevMetersBytes[byteIdx + 1] ?? 0;
+    return halfToFloat((hi << 8) | lo);
+  }
+
   getValue(attr: AttributeKey, latDeg: number, lonDeg: number, ipix: number): number {
     const spec = CHANNEL_MAP[attr];
     if (!spec) return 0;

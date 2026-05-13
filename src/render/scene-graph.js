@@ -38,6 +38,7 @@
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { xyzToLatLon } from '../world/coordinates.js';
 import { Globe } from './globe/Globe.js';
 import { AtmospherePass } from './atmosphere/AtmospherePass.js';
 import { PostFXChain } from './postfx/PostFXChain.js';
@@ -309,8 +310,9 @@ export function createSceneGraph() {
             water.uFresnelStrength.value = o.fresnelStrength;
             water.uDepthFalloff.value = o.depthFalloff;
             water.uCurrentStrength.value = o.currentStrength;
-            water.uStreamlinesEnabled.value = o.streamlinesEnabled ? 1 : 0;
-            water.uStrongJetsOnly.value = o.strongJetsOnly ? 1 : 0;
+            water.uCurrentTintEnabled.value = o.currentTintEnabled ? 1 : 0;
+            water.uShowMediumCurrents.value = o.showMediumCurrents ? 1 : 0;
+            water.uShimmerCurrentDrift.value = o.shimmerCurrentDrift;
         }
         if (cloudsPass) {
             const c = debug.materials.clouds;
@@ -486,6 +488,33 @@ export function createSceneGraph() {
         // Nuclear explosion: tick with simDelta so pausing the sim freezes
         // the blast (consistent with every other time-driven layer). Dormant
         // when no detonation is active — `update` is an early-out then.
+        const n = debug.nuclear;
+        nuclearExplosion.setLiveTuning({
+            worldScale: n.worldScale,
+            timeScale: n.timeScale,
+            spriteScale: n.spriteScale,
+            windStrength: n.windStrength,
+            windDelay: n.windDelay,
+            windRamp: n.windRamp,
+            windJitter: n.windJitter,
+        });
+        nuclearExplosion.setDetonateTuning({
+            enables: {
+                fire: n.enableFire,
+                smoke: n.enableSmoke,
+                mushroom: n.enableMushroom,
+                mushroomFire: n.enableMushroomFire,
+                columnFire: n.enableColumnFire,
+                columnSmoke: n.enableColumnSmoke,
+                debris: n.enableDebris,
+            },
+            mushroomHeightScale: n.mushroomHeightScale,
+            columnHeightScale: n.columnHeightScale,
+            fireColorStart: new THREE.Color(n.fireColorStart).getHex(),
+            fireColorEnd: new THREE.Color(n.fireColorEnd).getHex(),
+            smokeColorStart: new THREE.Color(n.smokeColorStart).getHex(),
+            smokeColorEnd: new THREE.Color(n.smokeColorEnd).getHex(),
+        });
         nuclearExplosion.update(simDelta);
         if (airplanes) {
             airplanes.setSpeed(debug.airplanes.speed);
@@ -529,7 +558,20 @@ export function createSceneGraph() {
         nuclearExplosion.setViewportHeight(height);
     }
     function detonateAt(direction) {
-        nuclearExplosion.detonate(direction);
+        // Lift the blast group off the unit sphere so it sits on top of the
+        // displaced land mesh. Without this, tall terrain (Himalayas, Andes)
+        // pokes through and clips the fireball. Wind sampled once at the same
+        // lat/lon — projected into the explosion's local frame inside detonate.
+        let radius = 1.0;
+        let wind = null;
+        if (world && globe) {
+            const dir = direction.clone().normalize();
+            const { lat, lon } = xyzToLatLon(dir);
+            const elevM = Math.max(0, world.getElevationMetersAt(lat, lon));
+            radius += elevM * globe.uniforms.land.uElevationScale.value;
+            wind = world.getWindAt(lat, lon);
+        }
+        nuclearExplosion.detonate(direction, radius, wind);
     }
     function dispose() {
         if (pointerHandler && attachedCanvas) {

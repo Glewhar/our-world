@@ -76,19 +76,26 @@ export type WaterUniforms = {
   uWaveSpeed: { value: number };
   uWaveSteepness: { value: number };
   uFresnelStrength: { value: number };
+  /** Scale on the per-fragment static offset added to the ripple-noise
+   * sample point. The offset is `current_m/s × this`, added ONCE (not
+   * multiplied by time), so jet regions read as a shifted shimmer
+   * texture vs. calm seas while staying coherent over long runs.
+   * 0 = no current influence; default ≈ 17 = clearly distinct jet
+   * texture; high values push jets onto an unrelated noise patch. */
+  uShimmerCurrentDrift: { value: number };
 
-  // Surface ocean current visualisation — animated streamlines on the
-  // water surface. `uOceanCurrents` is the RG16F equirectangular m/s
+  // Surface ocean current speed tint — additive cast where currents are
+  // fast enough. `uOceanCurrents` is the RG16F equirectangular m/s
   // texture (null until the bake ships real bytes). `uCurrentStrength`
   // is the Tweakpane intensity slider; 0 disables, 1 is the default.
   uOceanCurrents: { value: THREE.DataTexture | null };
   uCurrentStrength: { value: number };
-  /** Master on/off for the streamline overlay (0 = hidden, 1 = visible). */
-  uStreamlinesEnabled: { value: number };
-  /** When 1, the speed gate restricts streamlines to the major jets
-   * (Gulf Stream / Kuroshio / ACC) only. 0 = gentle gate showing
-   * most surface currents. */
-  uStrongJetsOnly: { value: number };
+  /** Master on/off for the current-speed colour tint (0 = hidden, 1 = visible). */
+  uCurrentTintEnabled: { value: number };
+  /** When 0, only the major boundary jets (Gulf Stream / Kuroshio / ACC)
+   * pass the speed gate. When 1, the gate is lowered so medium-speed
+   * currents also show up in the tint. */
+  uShowMediumCurrents: { value: number };
 
   /**
    * Sky-view LUT shared with the atmosphere pass — see `LandUniforms.uSkyView`.
@@ -118,6 +125,13 @@ export const DEFAULT_WAVE_AMPLITUDE_M = 150;
 export const DEFAULT_WAVE_SPEED = 1.0;
 export const DEFAULT_WAVE_STEEPNESS = 0.5;
 export const DEFAULT_FRESNEL_STRENGTH = 1.0;
+// Shimmer-drift coupling to the current vector. The current m/s vector
+// is multiplied by this factor and added once to the ripple-noise sample
+// point — so jets read as a visibly distinct shimmer pattern from calm
+// seas. The default is high (≈17) because the noise feature size at
+// K=110 is small in noise-space and you need a sizeable offset to
+// notice the jet patch is different.
+export const DEFAULT_SHIMMER_CURRENT_DRIFT = 17;
 
 // Depth-falloff scale for the exponential ocean tint. depthT = exp(-depth / k).
 // 25 gives very tight shelves — depthT drops to ~0.02 by 100 m of depth, so
@@ -125,10 +139,10 @@ export const DEFAULT_FRESNEL_STRENGTH = 1.0;
 // reads as deep. Tunable in Tweakpane (Materials → Ocean → depth falloff).
 export const DEFAULT_DEPTH_FALLOFF_M = 50;
 
-// Default ocean-current visualisation strength. 0 hides streamlines, 1 is
-// "subtle but visible" — the streamlines are a low-contrast additive
-// overlay on the day-side ocean, dimmed in shallow water and gated to
-// cells where the current speed exceeds ~5 cm/s. Tunable from Tweakpane.
+// Default master scale for the current-speed tint. 0 hides the tint,
+// 1 is "subtle but visible" — a low-contrast cool cast on the day-side
+// ocean, faded toward shore and gated by speed so only the major jets
+// (Gulf Stream / Kuroshio / ACC) light up at default settings.
 export const DEFAULT_CURRENT_STRENGTH = 1.0;
 
 export function createWaterMaterial(): THREE.ShaderMaterial & {
@@ -153,14 +167,14 @@ export function createWaterMaterial(): THREE.ShaderMaterial & {
     uElevationScale: { value: DEFAULT_ELEVATION_SCALE },
     uWaterRadialBias: { value: DEFAULT_WATER_RADIAL_BIAS },
 
-    uOceanAbyssal: { value: new THREE.Color('#03081a') },
-    uOceanDeep: { value: new THREE.Color('#143e7a') },
-    uOceanShelf: { value: new THREE.Color('#1a6b95') },
-    uOceanShallow: { value: new THREE.Color('#3da6c2') },
-    uOceanTrenchStart: { value: 4500 },
-    uOceanTrenchEnd: { value: 8000 },
-    uCoastalTintColor: { value: new THREE.Color('#2d8c80') },
-    uCoastalTintStrength: { value: 0.4 },
+    uOceanAbyssal: { value: new THREE.Color('#192551') },
+    uOceanDeep: { value: new THREE.Color('#5b7cb7') },
+    uOceanShelf: { value: new THREE.Color('#296aa7') },
+    uOceanShallow: { value: new THREE.Color('#7bdbfa') },
+    uOceanTrenchStart: { value: 2200 },
+    uOceanTrenchEnd: { value: 7700 },
+    uCoastalTintColor: { value: new THREE.Color('#ffffff') },
+    uCoastalTintStrength: { value: 0.08 },
     uCoastalTintFalloff: { value: 400 },
     uDepthFalloff: { value: DEFAULT_DEPTH_FALLOFF_M },
 
@@ -169,10 +183,11 @@ export function createWaterMaterial(): THREE.ShaderMaterial & {
     uWaveSpeed: { value: DEFAULT_WAVE_SPEED },
     uWaveSteepness: { value: DEFAULT_WAVE_STEEPNESS },
     uFresnelStrength: { value: DEFAULT_FRESNEL_STRENGTH },
+    uShimmerCurrentDrift: { value: DEFAULT_SHIMMER_CURRENT_DRIFT },
     uOceanCurrents: { value: null },
     uCurrentStrength: { value: DEFAULT_CURRENT_STRENGTH },
-    uStreamlinesEnabled: { value: 1 },
-    uStrongJetsOnly: { value: 0 },
+    uCurrentTintEnabled: { value: 1 },
+    uShowMediumCurrents: { value: 0 },
 
     uSkyView: { value: null },
     uHazeExposure: { value: 3.5 },

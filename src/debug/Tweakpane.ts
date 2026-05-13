@@ -142,8 +142,9 @@ export type DebugState = {
       coastalTintStrength: number;
       coastalTintFalloff: number;
       currentStrength: number;
-      streamlinesEnabled: boolean;
-      strongJetsOnly: boolean;
+      currentTintEnabled: boolean;
+      showMediumCurrents: boolean;
+      shimmerCurrentDrift: number;
     };
     clouds: {
       density: number;
@@ -189,6 +190,32 @@ export type DebugState = {
       minPopulation: number;
     };
     postFx: { bloomThreshold: number; bloomStrength: number; vignette: number; gradeTint: string };
+  };
+  nuclear: {
+    // Size & timing (live).
+    worldScale: number;
+    timeScale: number;
+    spriteScale: number;
+    windStrength: number;
+    windDelay: number;
+    windRamp: number;
+    windJitter: number;
+    // Sub-effect toggles (re-detonate).
+    enableFire: boolean;
+    enableSmoke: boolean;
+    enableMushroom: boolean;
+    enableMushroomFire: boolean;
+    enableColumnFire: boolean;
+    enableColumnSmoke: boolean;
+    enableDebris: boolean;
+    // Shape (re-detonate).
+    mushroomHeightScale: number;
+    columnHeightScale: number;
+    // Colours (re-detonate).
+    fireColorStart: string;
+    fireColorEnd: string;
+    smokeColorStart: string;
+    smokeColorEnd: string;
   };
   pick: { lastPick: string };
 };
@@ -256,18 +283,19 @@ export const initialDebugState: DebugState = {
       waveSteepness: 0.5,
       fresnelStrength: 1.0,
       depthFalloff: 50,
-      abyssalColor: '#03081a',
-      deepColor: '#143e7a',
-      shelfColor: '#1a6b95',
-      shallowColor: '#3da6c2',
-      trenchStart: 4500,
-      trenchEnd: 8000,
-      coastalTintColor: '#2d8c80',
-      coastalTintStrength: 0.4,
+      abyssalColor: '#192551',
+      deepColor: '#5b7cb7',
+      shelfColor: '#296aa7',
+      shallowColor: '#7bdbfa',
+      trenchStart: 2200,
+      trenchEnd: 7700,
+      coastalTintColor: '#ffffff',
+      coastalTintStrength: 0.08,
       coastalTintFalloff: 400,
       currentStrength: 1.0,
-      streamlinesEnabled: true,
-      strongJetsOnly: false,
+      currentTintEnabled: true,
+      showMediumCurrents: false,
+      shimmerCurrentDrift: 17,
     },
     clouds: {
       density: 0.1,
@@ -313,6 +341,28 @@ export const initialDebugState: DebugState = {
       minPopulation: 0,
     },
     postFx: { bloomThreshold: 0.85, bloomStrength: 0.6, vignette: 0.35, gradeTint: '#f3eee0' },
+  },
+  nuclear: {
+    worldScale: 0.003,
+    timeScale: 1.3,
+    spriteScale: 4.0,
+    windStrength: 2.0,
+    windDelay: 4.0,
+    windRamp: 8.0,
+    windJitter: 1.0,
+    enableFire: true,
+    enableSmoke: true,
+    enableMushroom: true,
+    enableMushroomFire: true,
+    enableColumnFire: true,
+    enableColumnSmoke: true,
+    enableDebris: true,
+    mushroomHeightScale: 1.0,
+    columnHeightScale: 1.0,
+    fireColorStart: '#a73a1e',
+    fireColorEnd: '#932601',
+    smokeColorStart: '#646464',
+    smokeColorEnd: '#808080',
   },
   pick: { lastPick: '(click on the globe)' },
 };
@@ -491,7 +541,7 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
   });
 
   // Ocean — Gerstner waves + layered depth gradient + coastal tint +
-  // animated current streamlines.
+  // current-speed tint + shimmer-noise warp by current direction.
   const oceanMat = mat.addFolder({ title: 'Ocean', expanded: false });
 
   const oWaves = oceanMat.addFolder({ title: 'Waves', expanded: false });
@@ -536,11 +586,14 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
   oCurrents.addBinding(state.materials.ocean, 'currentStrength', {
     min: 0, max: 3, step: 0.05, label: 'strength',
   });
-  oCurrents.addBinding(state.materials.ocean, 'streamlinesEnabled', {
-    label: 'streamlines',
+  oCurrents.addBinding(state.materials.ocean, 'currentTintEnabled', {
+    label: 'tint',
   });
-  oCurrents.addBinding(state.materials.ocean, 'strongJetsOnly', {
-    label: 'jets only',
+  oCurrents.addBinding(state.materials.ocean, 'showMediumCurrents', {
+    label: 'show medium',
+  });
+  oCurrents.addBinding(state.materials.ocean, 'shimmerCurrentDrift', {
+    min: 0, max: 40, step: 0.05, label: 'shimmer drift',
   });
 
   // Clouds — volumetric raymarch in the [1.012, 1.025] shell.
@@ -677,6 +730,57 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
   postMat.addBinding(state.materials.postFx, 'bloomStrength', { min: 0, max: 3, step: 0.01 });
   postMat.addBinding(state.materials.postFx, 'vignette', { min: 0, max: 1.5, step: 0.01 });
   postMat.addBinding(state.materials.postFx, 'gradeTint');
+
+  // Nuclear explosion knobs. "Size & timing" live-applies every frame;
+  // the other groups only take effect on the next detonation because they
+  // alter the configs the particle list is built from.
+  const nukeFolder = pane.addFolder({ title: 'Nuclear', expanded: false });
+
+  const nSize = nukeFolder.addFolder({ title: 'Size & timing', expanded: true });
+  nSize.addBinding(state.nuclear, 'worldScale', {
+    min: 0.001, max: 0.010, step: 0.0001, label: 'size',
+  });
+  nSize.addBinding(state.nuclear, 'timeScale', {
+    min: 0.1, max: 3, step: 0.05, label: 'time speed',
+  });
+  nSize.addBinding(state.nuclear, 'spriteScale', {
+    min: 0.25, max: 12, step: 0.05, label: 'sprite size',
+  });
+  nSize.addBinding(state.nuclear, 'windStrength', {
+    min: 0, max: 4, step: 0.01, label: 'wind strength',
+  });
+  nSize.addBinding(state.nuclear, 'windDelay', {
+    min: 0, max: 10, step: 0.1, label: 'wind delay (s)',
+  });
+  nSize.addBinding(state.nuclear, 'windRamp', {
+    min: 0, max: 10, step: 0.1, label: 'wind ramp (s)',
+  });
+  nSize.addBinding(state.nuclear, 'windJitter', {
+    min: 0, max: 1, step: 0.01, label: 'wind jitter',
+  });
+
+  const nSubs = nukeFolder.addFolder({ title: 'Sub-effects (redetonate)', expanded: false });
+  nSubs.addBinding(state.nuclear, 'enableFire', { label: 'fire' });
+  nSubs.addBinding(state.nuclear, 'enableSmoke', { label: 'smoke' });
+  nSubs.addBinding(state.nuclear, 'enableMushroom', { label: 'mushroom cap' });
+  nSubs.addBinding(state.nuclear, 'enableMushroomFire', { label: 'cap fire' });
+  nSubs.addBinding(state.nuclear, 'enableColumnFire', { label: 'column fire' });
+  nSubs.addBinding(state.nuclear, 'enableColumnSmoke', { label: 'column smoke' });
+  nSubs.addBinding(state.nuclear, 'enableDebris', { label: 'debris' });
+
+  const nShape = nukeFolder.addFolder({ title: 'Shape (redetonate)', expanded: false });
+  nShape.addBinding(state.nuclear, 'mushroomHeightScale', {
+    min: 0.25, max: 3, step: 0.05, label: 'mushroom height',
+  });
+  nShape.addBinding(state.nuclear, 'columnHeightScale', {
+    min: 0.25, max: 3, step: 0.05, label: 'column height',
+  });
+
+  const nCols = nukeFolder.addFolder({ title: 'Colours (redetonate)', expanded: false });
+  nCols.addBinding(state.nuclear, 'fireColorStart', { label: 'fire start' });
+  nCols.addBinding(state.nuclear, 'fireColorEnd', { label: 'fire end' });
+  nCols.addBinding(state.nuclear, 'smokeColorStart', { label: 'smoke start' });
+  nCols.addBinding(state.nuclear, 'smokeColorEnd', { label: 'smoke end' });
 
   const pickFolder = pane.addFolder({ title: 'Pick', expanded: true });
   pickFolder.addBinding(state.pick, 'lastPick', { readonly: true, multiline: true, rows: 8 });

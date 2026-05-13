@@ -262,6 +262,22 @@ export interface WorldRuntime {
   // Attribute queries (CPU side, sparse)
   getAttribute(attr: AttributeKey, lat: number, lon: number): number;
 
+  /**
+   * Continuous elevation in metres at the given lat/lon (positive above
+   * sea level). Resolves the HEALPix cell and decodes the half-float from
+   * the same buffer the elevation texture is built from — cheap, no GPU
+   * readback. Used by surface-anchored effects (e.g. nuclear blasts) so
+   * they sit on the displaced land mesh instead of at the unit sphere.
+   */
+  getElevationMetersAt(lat: number, lon: number): number;
+
+  /**
+   * Surface wind vector at the given lat/lon in m/s. `u` is eastward,
+   * `v` is northward, both in the lat-tangent frame at the queried
+   * point. Returns null on bakes that didn't ship the wind field.
+   */
+  getWindAt(lat: number, lon: number): { u: number; v: number } | null;
+
   // Shader bindings (GPU side, hot path)
   getIdRaster(): THREE.DataTexture;
   getAttributeTexture(a: AttributeKey): THREE.DataTexture;

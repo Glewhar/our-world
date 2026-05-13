@@ -100,6 +100,21 @@ export class NuclearExplosion {
     _tmpCameraLocal = new THREE.Vector3();
     _tmpDrag = new THREE.Vector3();
     _tmpVel = new THREE.Vector3();
+    _tmpWind = new THREE.Vector3();
+    _viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 1080;
+    _liveScale = EXPLOSION_WORLD_SCALE;
+    _timeScale = 1;
+    _spriteScale = 1;
+    _windStrength = 0;
+    _windDelay = 0;
+    _windRamp = 1;
+    _windJitter = 0.3;
+    _windLocal = new THREE.Vector3(0, 0, 0);
+    // Elapsed blast-time (deltaSec × timeScale) since detonate. Used to gate
+    // wind drift: it's in the same time domain as the particle splines, so
+    // halving `timeScale` doubles the real-time delay automatically.
+    _blastTime = 0;
+    _detonateTuning = null;
     constructor(camera) {
         this._camera = camera;
         const loader = new THREE.TextureLoader();
@@ -144,6 +159,9 @@ export class NuclearExplosion {
         this._geometry.setAttribute('type', new THREE.Int32BufferAttribute([], 1));
         this._points = new THREE.Points(this._geometry, this._material);
         this._points.frustumCulled = false;
+        // Draw after the atmosphere shell (renderOrder=1) so the blue rim haze
+        // doesn't paint over the fireball at glancing angles.
+        this._points.renderOrder = 2;
         this.group = new THREE.Group();
         this.group.add(this._points);
         this.group.scale.setScalar(EXPLOSION_WORLD_SCALE);
@@ -157,22 +175,68 @@ export class NuclearExplosion {
     // constructor — sprite size must scale with position scale to keep
     // the mushroom-vs-fireball proportions intact.
     setViewportHeight(heightPx) {
-        const pm = (heightPx / (2 * Math.tan((CAMERA_FOV_DEG * Math.PI) / 360))) *
-            EXPLOSION_WORLD_SCALE;
+        this._viewportHeight = heightPx;
+        this._updatePointMultiplier();
+    }
+    setLiveTuning(t) {
+        this._timeScale = t.timeScale;
+        this._spriteScale = t.spriteScale;
+        this._windStrength = t.windStrength;
+        this._windDelay = t.windDelay;
+        // Guard against zero ramp — that would divide-by-zero inside the ramp
+        // calc; treat sub-millisecond ramps as instantaneous (ramp = full once
+        // the delay clears).
+        this._windRamp = Math.max(0.001, t.windRamp);
+        this._windJitter = Math.max(0, Math.min(1, t.windJitter));
+        if (t.worldScale !== this._liveScale) {
+            this._liveScale = t.worldScale;
+            this.group.scale.setScalar(t.worldScale);
+            this._updatePointMultiplier();
+        }
+    }
+    setDetonateTuning(t) {
+        this._detonateTuning = t;
+    }
+    _updatePointMultiplier() {
+        const pm = (this._viewportHeight / (2 * Math.tan((CAMERA_FOV_DEG * Math.PI) / 360))) *
+            this._liveScale;
         this._material.uniforms.pointMultiplier.value = pm;
     }
-    detonate(direction) {
+    detonate(direction, radius = PLANET_RADIUS, wind = null) {
         const dir = direction.clone().normalize();
-        this.group.position.copy(dir).multiplyScalar(PLANET_RADIUS);
+        this.group.position.copy(dir).multiplyScalar(radius);
         this.group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
         this.group.updateMatrixWorld(true);
+        // Project the world-frame wind vector (east·u + north·v on a Z-up
+        // sphere) into the explosion's local frame so per-frame drift can be
+        // added straight to local particle positions. Stored once at detonate
+        // time — the local basis doesn't move after that.
+        if (wind && (wind.u !== 0 || wind.v !== 0)) {
+            const latRad = Math.asin(Math.max(-1, Math.min(1, dir.z)));
+            const lonRad = Math.atan2(dir.y, dir.x);
+            const sinLat = Math.sin(latRad);
+            const cosLat = Math.cos(latRad);
+            const sinLon = Math.sin(lonRad);
+            const cosLon = Math.cos(lonRad);
+            const east = new THREE.Vector3(-sinLon, cosLon, 0);
+            const north = new THREE.Vector3(-sinLat * cosLon, -sinLat * sinLon, cosLat);
+            const worldDrift = east.multiplyScalar(wind.u).addScaledVector(north, wind.v);
+            const invQ = this.group.quaternion.clone().invert();
+            this._windLocal.copy(worldDrift).applyQuaternion(invQ);
+        }
+        else {
+            this._windLocal.set(0, 0, 0);
+        }
+        this._blastTime = 0;
         this._reset();
         this._running = true;
     }
     update(deltaSec) {
         if (!this._running)
             return;
-        this._updateParticles(deltaSec);
+        const dt = deltaSec * this._timeScale;
+        this._blastTime += dt;
+        this._updateParticles(dt);
         this._updateGeometry();
         if (this._particles.length === 0) {
             this._running = false;
@@ -186,13 +250,44 @@ export class NuclearExplosion {
     }
     _reset() {
         this._particles = [];
-        for (const cfg of PARTICLES_TO_GENERATE) {
+        for (const baseCfg of PARTICLES_TO_GENERATE) {
+            const cfg = this._applyDetonateTuning(baseCfg);
             if (!cfg.enabled)
                 continue;
+            // Rebuild splines per type — colour / maxValues may have been overridden.
+            this._splinesByType.set(cfg.particleType, buildSplines(cfg));
             for (let i = 0; i < cfg.count; i++) {
                 this._particles.push(this._createParticle(cfg));
             }
         }
+    }
+    _applyDetonateTuning(base) {
+        const t = this._detonateTuning;
+        if (!t)
+            return base;
+        const enabled = t.enables[base.name] ?? base.enabled;
+        let startColour = base.startColour;
+        let endColour = base.endColour;
+        if (base.name === 'fire' || base.name === 'mushroomFire' || base.name === 'columnFire') {
+            startColour = t.fireColorStart;
+            endColour = t.fireColorEnd;
+        }
+        else if (base.name === 'smoke' || base.name === 'mushroom' || base.name === 'columnSmoke') {
+            startColour = t.smokeColorStart;
+            endColour = t.smokeColorEnd;
+        }
+        let maxValues = base.maxValues;
+        if (base.name === 'mushroom' || base.name === 'mushroomFire') {
+            if (maxValues.height !== undefined) {
+                maxValues = { ...maxValues, height: maxValues.height * t.mushroomHeightScale };
+            }
+        }
+        else if (base.name === 'columnFire' || base.name === 'columnSmoke') {
+            if (maxValues.height !== undefined) {
+                maxValues = { ...maxValues, height: maxValues.height * t.columnHeightScale };
+            }
+        }
+        return { ...base, enabled, startColour, endColour, maxValues };
     }
     _createParticle(cfg) {
         // Random outward direction in the XZ plane (mod by radiusModifier so
@@ -231,6 +326,7 @@ export class NuclearExplosion {
             maxLife: life,
             rotation: 2 * Math.random() * Math.PI,
             rotationModifier: randomBetween(-1, 1),
+            windJitter: Math.random(),
         };
     }
     _updateParticles(deltaSec) {
@@ -238,6 +334,26 @@ export class NuclearExplosion {
         for (const p of this._particles)
             p.life -= deltaSec;
         this._particles = this._particles.filter((p) => p.life > 0);
+        // Wind drift is gated on a global blast clock so it kicks in at the
+        // same in-blast moment regardless of `timeScale`. The delay is in
+        // blast-seconds (already scaled by timeScale via `_blastTime`); after
+        // the delay clears, we ramp in linearly over `_windRamp` blast-seconds.
+        // Height factor uses the mushroom's natural Y span (~16) as the
+        // reference so the ground fan barely moves and the cap drifts fully.
+        const windActive = this._windStrength !== 0 &&
+            (this._windLocal.x !== 0 || this._windLocal.y !== 0 || this._windLocal.z !== 0);
+        const elapsedAfterDelay = this._blastTime - this._windDelay;
+        // Per-particle jitter spreads the start of wind over a fraction of the
+        // ramp so the cloud front softens instead of all particles starting on
+        // the same frame. Fraction is live-tunable (0..1).
+        const jitterSpan = this._windRamp * this._windJitter;
+        const windRef = 16;
+        // Local-frame Y of the planet center. The group sits at world distance
+        // PLANET_RADIUS from origin with local +Y aligned to the outward radial,
+        // so the planet center is at local (0, -R/scale, 0). Used to re-pin
+        // wind-drifted particles to their current altitude above the sphere
+        // instead of letting them slide off into the tangent plane.
+        const planetCenterLocalY = -PLANET_RADIUS / this._liveScale;
         for (const p of this._particles) {
             const t = 1 - p.life / p.maxLife;
             const splines = this._splinesByType.get(p.particleType);
@@ -252,6 +368,43 @@ export class NuclearExplosion {
             p.rotation += dt * p.rotationModifier;
             this._tmpVel.copy(p.velocity).multiplyScalar(dt);
             p.position.add(this._tmpVel);
+            if (windActive && elapsedAfterDelay > 0) {
+                // Per-particle delay: jitter shifts each particle's effective start
+                // by 0..30% of the ramp. Smoothstep ease-in (t² × (3 − 2t)) on top
+                // so velocity doesn't snap at the end.
+                const elapsedForParticle = elapsedAfterDelay - p.windJitter * jitterSpan;
+                if (elapsedForParticle > 0) {
+                    const linear = Math.min(1, elapsedForParticle / this._windRamp);
+                    const blastRamp = linear * linear * (3 - 2 * linear);
+                    // Universal floor (0.3) + height bonus (0.7) so ground-level smoke
+                    // and fire drift too — not just the mushroom cap. Cap still gets
+                    // full wind because its y reaches the windRef height.
+                    const heightNorm = Math.max(0, Math.min(1, p.position.y / windRef));
+                    const heightFactor = 0.3 + 0.7 * heightNorm;
+                    const scale = deltaSec * this._windStrength * heightFactor * blastRamp;
+                    this._tmpWind.copy(this._windLocal).multiplyScalar(scale);
+                    // Curvature correction (Option C): snapshot the particle's
+                    // distance from planet center before wind, drift in the tangent
+                    // plane, then rescale the offset-from-center vector back to the
+                    // original length. Net effect: lateral motion is preserved but
+                    // the particle hugs the sphere instead of flying off tangentially.
+                    const dxB = p.position.x;
+                    const dyB = p.position.y - planetCenterLocalY;
+                    const dzB = p.position.z;
+                    const radialBeforeSq = dxB * dxB + dyB * dyB + dzB * dzB;
+                    p.position.add(this._tmpWind);
+                    const dxA = p.position.x;
+                    const dyA = p.position.y - planetCenterLocalY;
+                    const dzA = p.position.z;
+                    const radialAfterSq = dxA * dxA + dyA * dyA + dzA * dzA;
+                    if (radialAfterSq > 1e-9) {
+                        const k = Math.sqrt(radialBeforeSq / radialAfterSq);
+                        p.position.x = dxA * k;
+                        p.position.y = dyA * k + planetCenterLocalY;
+                        p.position.z = dzA * k;
+                    }
+                }
+            }
             // Drag: subtract 10% × dt of velocity, clamped so it never reverses sign.
             this._tmpDrag.copy(p.velocity).multiplyScalar(0.1 * dt);
             this._tmpDrag.x =
@@ -287,7 +440,7 @@ export class NuclearExplosion {
             positions[i * 3 + 0] = p.position.x;
             positions[i * 3 + 1] = p.position.y;
             positions[i * 3 + 2] = p.position.z;
-            sizes[i] = p.currentSize;
+            sizes[i] = p.currentSize * this._spriteScale;
             colours[i * 4 + 0] = p.colour.r;
             colours[i * 4 + 1] = p.colour.g;
             colours[i * 4 + 2] = p.colour.b;

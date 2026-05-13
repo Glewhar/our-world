@@ -2,22 +2,35 @@
 // the source of truth lives here, no separate .glsl file on disk.
 export const source = `// Water fragment shader — paints the water shell over ocean cells.
 //
-// Lighting normal is built in three layers:
-//   1. The un-displaced sphere direction \`vSphereDir\` is the base.
-//   2. \`waterWaves()\` (water_waves.glsl) adds a 4-Gerstner-wave swell —
-//      the big "ocean rises and falls" silhouette you see at orbital zoom.
-//   3. \`detailRippleNormal()\` adds a 3-octave value-noise gradient — the
-//      fine shimmer that catches sun glint at every scale and is what
-//      makes water look like water rather than displaced terrain.
+// Lighting normal is built in three layers, all summed and re-normalized:
+//   1. \`waterWaves()\` (water_waves.glsl) — the analytic perturbed normal
+//      of a 4-Gerstner-wave swell. Same uniform field everywhere on the
+//      globe; this is the big "ocean rises and falls" silhouette.
+//   2. \`detailRippleNormal()\` fine layer — 3-octave value-noise gradient
+//      at K=110. The shimmer that catches sun glint and makes water look
+//      like water rather than displaced terrain.
+//   3. \`detailRippleNormal()\` big layer — 2-octave value-noise gradient
+//      at K=50, ramped in over deep water only, so open ocean reads
+//      visibly different from coastal water.
 //
-// Both wave layers are attenuated by \`coastFade\` (a smoothstep over water
+// All three layers are attenuated by \`coastFade\` (a smoothstep over water
 // depth = waterSurface - landElev), so coastlines stay calm and only the
 // open ocean ripples at full strength.
 //
-// Depth tint mixes \`uOceanDeep\` → \`uOceanShallow\` over the first ~4 km of
-// water. Specular cone is tight (pow 220) so the glint reads as crisp
-// sparkles on the wave crests; Schlick Fresnel adds a sky-tinted rim at
-// grazing angles, gated to the day side via the wrap term.
+// Per-fragment surface currents influence the ripple shimmer by warping
+// the noise sample point (see \`uShimmerCurrentDrift\` below) — the noise
+// in jet regions is sampled from a shifted patch of the field, so flow
+// regions read visually distinct from calm seas. The warp is a one-shot
+// static offset, NOT a time-multiplied scroll, so neighbouring fragments
+// stay coherent over long runs.
+//
+// Depth tint is a 4-stop gradient (abyssal / deep / shelf / shallow)
+// blended by exponential depth falloffs plus a coastal sediment cast.
+// Specular cone is tight (pow 220) so the glint reads as crisp sparkles
+// on the wave crests; Schlick Fresnel adds a sky-tinted rim at grazing
+// angles, gated to the day side via the wrap term. Speed-based current
+// tint (\`currentSpeedTint\`) overlays a subtle cool cast where flow speed
+// exceeds the gate.
 //
 // No discard. The land mesh discards ocean cells, and where land elevation
 // is taller than the water surface it draws front-most by depth test.
@@ -66,14 +79,23 @@ uniform float uWaveAmplitude;
 uniform float uWaveSpeed;
 uniform float uWaveSteepness;
 uniform float uFresnelStrength;
+// Per-fragment static offset to the ripple-noise sample point, scaled
+// by the local current vector (m/s). Added ONCE inside
+// \`detailRippleNormal\` — never multiplied by time — so the noise pattern
+// in flow regions is shifted relative to calm seas without diverging
+// neighbour-by-neighbour as time progresses. A larger value pushes the
+// sample further off the calm-sea patch so jets read as a more
+// distinct shimmer texture.
+uniform float uShimmerCurrentDrift;
 
-// Ocean current visualisation. RG16F equirectangular m/s (u east, v north).
-// Land cells store (0, 0) so length() gates rendering. Strength is the
-// Tweakpane intensity; 0 hides the overlay, 1 is the default subtle look.
+// Ocean current speed tint. Source data is RG16F equirectangular m/s
+// (u = east, v = north); see \`uOceanCurrents\` and \`sampleCurrentLatLon\`
+// below. \`uCurrentStrength\` is the master Tweakpane scale, the two
+// boolean-as-float toggles gate which speed band shows up.
 uniform sampler2D uOceanCurrents;
 uniform float uCurrentStrength;
-uniform float uStreamlinesEnabled;
-uniform float uStrongJetsOnly;
+uniform float uCurrentTintEnabled;
+uniform float uShowMediumCurrents;
 
 // Aerial perspective — shared sky-view LUT with the atmosphere pass. See
 // land.frag.glsl for the longer explanation; same uniforms, same lookup.
@@ -158,10 +180,11 @@ vec3 sampleSkyViewHaze(vec3 dir, vec3 camPos, vec3 sunDir) {
   return texture(uSkyView, vec2(az / 6.28318530, vCoord)).rgb;
 }
 
-// Sample the ocean-current vector (m/s, lat-tangent frame: u east, v north)
-// at a sphere direction. Equirect mapping mirrors the wind field sampler
-// in the cloud shader: u = (lon + π) / 2π, v = 0.5 - lat / π. Land cells
-// return (0, 0) so callers can use \`length(c) > 0\` as an ocean gate.
+// Sample the ocean-current vector (m/s, lat-tangent frame: u east,
+// v north) at a sphere direction. Equirect mapping mirrors the wind-
+// field sampler in the cloud shader: u = (lon + π) / 2π, v = 0.5 - lat / π.
+// Land cells store (0, 0) in the baked texture so callers can use
+// \`length(c) > 0\` as an ocean gate.
 vec2 sampleCurrentLatLon(vec3 dir) {
   const float PI_ = 3.14159265359;
   float lat = asin(clamp(dir.z, -1.0, 1.0));
@@ -170,36 +193,43 @@ vec2 sampleCurrentLatLon(vec3 dir) {
   return texture(uOceanCurrents, uv).rg;
 }
 
-// Streamline overlay: computes a low-contrast brightness-add at the
-// current fragment, animated to flow along the local current direction.
-// Cheap LIC-flavoured technique:
-//   - sample 3D FBM at a position drifted FORWARD along the current by
-//     accumulated time (so the noise pattern moves WITH the flow);
-//   - shape it into narrow ridges via a smoothstep on the noise value;
-//   - gate by speed (kills noise in calm interiors and on land where
-//     current is exactly 0) and by \`coastFade\` (so the literal
-//     coastline stays clean).
+// Lift a (east, north) m/s pair into a 3D tangent vector at \`dir\` on the
+// unit sphere. Near the poles, fall back to a fixed east axis so the
+// frame stays defined.
+vec3 currentToWorld3D(vec3 dir, vec2 cur_en) {
+  vec3 zUp = vec3(0.0, 0.0, 1.0);
+  vec3 eastAxis = (abs(dir.z) > 0.999)
+    ? vec3(1.0, 0.0, 0.0)
+    : normalize(cross(zUp, dir));
+  vec3 northAxis = cross(dir, eastAxis);
+  return cur_en.x * eastAxis + cur_en.y * northAxis;
+}
+
+// Current-speed tint: a cool-blue additive cast scaled by local current
+// speed, gated tightly so only fast flows light up. Static — no animated
+// noise, no FBM blobs (those previously read as cloud-like patches over
+// the ocean). The point is "where are the fast currents", not "how do
+// they move"; directional motion is handled separately by the shimmer
+// drift through the noise sample warp.
 //
 // Returns an RGB additive term; ready to scale by \`uCurrentStrength\`
 // and the day-side \`wrap\` factor at the call site.
-vec3 streamlineOverlay(vec3 dir, float coastFade, float wrap) {
+vec3 currentSpeedTint(vec3 dir, float coastFade, float wrap) {
   vec2 cur = sampleCurrentLatLon(dir);
   float speed = length(cur);
   if (speed < 0.02) return vec3(0.0);
 
-  // Speed gate: gentle (most surface currents) vs strong-jets-only
-  // (Gulf Stream / Kuroshio / ACC). Toggle in Tweakpane.
+  // Speed gate. OFF (default) = only major boundary jets (Gulf Stream,
+  // Kuroshio, ACC) pass the smoothstep(0.65, 0.95) gate. ON expands to
+  // include medium-speed currents via smoothstep(0.40, 0.80).
   float speedVis = mix(
     smoothstep(0.65, 0.95, speed),
     smoothstep(0.40, 0.80, speed),
-    uStrongJetsOnly
+    uShowMediumCurrents
   );
 
-  // Speed heatmap: cool-blue tint scaled by speed. Doesn't show direction
-  // but makes "where currents are" unambiguous — Gulf Stream / Kuroshio /
-  // ACC pop as bright bands rather than fluffy patches.
   vec3 tintColor = vec3(0.02, 0.05, 0.06);
-  return tintColor * speedVis * coastFade * wrap * uStreamlinesEnabled;
+  return tintColor * speedVis * coastFade * wrap * uCurrentTintEnabled;
 }
 
 // Tilt the outward normal by the gradient of an animated FBM, expressed
@@ -207,9 +237,12 @@ vec3 streamlineOverlay(vec3 dir, float coastFade, float wrap) {
 // unit-radius units (small — typical 0.005–0.025). \`K\` is the base wave-
 // number — larger K = smaller, finer ripples; smaller K = larger, slower-
 // rolling ripples. \`driftAxis\` rotates the scroll direction so two layers
-// don't lock into the same flow. 3 FBM lookups per call (one reference,
-// two tangent finite-diff samples); each FBM is 3 octaves of value noise.
-vec3 detailRippleNormal(vec3 dir, float t, float strength, float K, vec3 driftAxis, int octaves) {
+// don't lock into the same flow. \`staticOffset\` is added to the sample
+// point once (NOT multiplied by t) — use it for per-fragment warping
+// that must stay globally coherent over time (e.g. current-direction
+// warp). 3 FBM lookups per call (one reference, two tangent finite-diff
+// samples); each FBM is 3 octaves of value noise.
+vec3 detailRippleNormal(vec3 dir, float t, float strength, float K, vec3 driftAxis, vec3 staticOffset, int octaves) {
   vec3 tup = abs(dir.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
   vec3 tx = normalize(cross(tup, dir));
   vec3 ty = cross(dir, tx);
@@ -217,7 +250,12 @@ vec3 detailRippleNormal(vec3 dir, float t, float strength, float K, vec3 driftAx
   // eps in pre-K units; the gradient divides by eps so the result is
   // the spatial derivative of the noise field at this scale.
   float eps = 0.0008;
-  vec3 drift = driftAxis * t;
+  // \`driftAxis * t\` is the time-scroll. If it varies per fragment, the
+  // sample points of neighbouring fragments diverge linearly with time
+  // and the surface dissolves into hash noise after a minute or two.
+  // Callers therefore pass a globally-uniform \`driftAxis\` and put any
+  // per-fragment variation into \`staticOffset\`, which is added once.
+  vec3 drift = driftAxis * t + staticOffset;
 
   float n0 = wn_fbm(dir * K + drift, octaves);
   float nx = wn_fbm((dir + tx * eps) * K + drift, octaves);
@@ -262,6 +300,17 @@ void main() {
   // \`uFresnelStrength\` (Tweakpane) scales the result on top.
   float fresnelMix = mix(0.3, 0.1, coastFade);
 
+  // Sample local current for a static (non-accumulating) warp of the
+  // ripple-noise sample point. The current vector is added once as a
+  // \`staticOffset\` to detailRippleNormal — NOT multiplied by time —
+  // so neighbouring fragments stay coherent over long runs. Visually:
+  // jets read as a distinct shimmer pattern from calm seas (the noise
+  // is sampled from a shifted patch), but the texture itself doesn't
+  // dissolve into per-fragment hash noise as time progresses.
+  vec2 curEN = sampleCurrentLatLon(vSphereDir);
+  vec3 curVec3D = currentToWorld3D(vSphereDir, curEN);
+  vec3 shimmerOffset = curVec3D * uShimmerCurrentDrift;
+
   // Layer 1: low-frequency Gerstner swell — analytic perturbed normal.
   float waveRadialM_;
   vec3 waveTangent_;
@@ -291,6 +340,7 @@ void main() {
     0.020 * fineRippleFade,
     110.0,
     vec3(0.31, 0.17, -0.23),
+    shimmerOffset,
     3
   );
 
@@ -308,6 +358,7 @@ void main() {
     0.028 * bigRippleMix,
     50.0,
     vec3(-0.19, 0.27, 0.41),
+    shimmerOffset * 0.8,
     2
   );
 
@@ -341,11 +392,11 @@ void main() {
   vec3 skyTint = vec3(0.55, 0.70, 0.95);
   col += skyTint * fresnel * fresnelMix * uFresnelStrength * 0.25 * wrap;
 
-  // Surface current streamline overlay — additive, day-side only, faded
-  // toward shore so the literal coastline stays clean. The overlay is
-  // gated on \`uCurrentStrength\`; Tweakpane drops it to 0 to disable.
+  // Current-speed tint — additive cool cast, day-side only, faded toward
+  // shore so the literal coastline stays clean. Master \`uCurrentStrength\`
+  // scales the result; Tweakpane drops it to 0 to disable.
   if (uCurrentStrength > 0.0) {
-    col += streamlineOverlay(vSphereDir, coastFade, wrap) * uCurrentStrength;
+    col += currentSpeedTint(vSphereDir, coastFade, wrap) * uCurrentStrength;
   }
 
   // ----- Aerial perspective (haze) -----

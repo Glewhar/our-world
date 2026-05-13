@@ -1,8 +1,9 @@
 /**
  * Ocean currents texture loader. Fetches `ocean_currents.bin`, parses
  * the 32-byte header, and uploads the body as a Three `DataTexture` of
- * format `RGFormat` + `HalfFloatType`. Consumed by the water shader for
- * surface streamline visualisation.
+ * format `RGFormat` + `HalfFloatType`. Consumed by the water shader to
+ * drive two surface effects: a speed-based colour tint (`currentSpeedTint`)
+ * and a static warp of the ripple-noise sample point (`uShimmerCurrentDrift`).
  *
  * Byte layout is identical to `wind_field.bin` (see
  * [`WindFieldTexture.ts`](./WindFieldTexture.ts)) — only the 4-byte

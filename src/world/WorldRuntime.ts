@@ -214,6 +214,15 @@ export async function createWorldRuntime(
       return attributes.getValue(attr, lat, lon, cellIndex);
     },
 
+    getElevationMetersAt: (lat, lon) => {
+      const z = Math.sin(lat * DEG);
+      const phi = lon * DEG;
+      const cellIndex = zPhiToPix(nside, ordering, z, phi);
+      return attributes.getElevationMetersAtCell(cellIndex);
+    },
+
+    getWindAt: (lat, lon) => (windField ? windField.sample(lat, lon) : null),
+
     getIdRaster: () => idRaster.toDataTexture(),
     getAttributeTexture: (a) => attributes.getTexture(a),
     getElevationMetersTexture: () => attributes.getElevationMetersTexture(),
