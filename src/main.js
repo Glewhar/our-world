@@ -13,6 +13,7 @@
  * On boot failure (manifest missing, schema invalid, asset 404): the overlay
  * stays up and shows the error text instead of the spinner.
  */
+import * as THREE from 'three';
 import { Renderer } from './render/Renderer.js';
 import { createSceneGraph } from './render/scene-graph.js';
 import { createWorldRuntime } from './world/index.js';
@@ -36,9 +37,11 @@ async function boot() {
     const renderer = new Renderer(host, sceneGraph);
     sceneGraph.attachWorld(world, renderer.canvas);
     const debug = createDebugPanel(initialDebugState);
-    // Floating bottom-center time control (slider + pause button) and the
-    // top-right Tweakpane toggle. Both are static elements declared in
-    // index.html; here we bind them to debug state.
+    // Floating top-left time card (pause button + 24-hour clock dial +
+    // HH:MM readout + date label) and the top-right Tweakpane toggle. All
+    // are static elements declared in index.html; here we bind them to
+    // debug state. The clock dial drags `totalDays`' fractional part —
+    // see the clock-scrub pointer handler below.
     const timeClock = document.getElementById('time-clock');
     const timeClockSvg = document.getElementById('time-clock-svg');
     const timeClockHand = document.getElementById('time-clock-hand');
@@ -47,12 +50,12 @@ async function boot() {
     const timePause = document.getElementById('time-pause');
     const paneToggle = document.getElementById('tweakpane-toggle');
     const paneHost = document.getElementById('tweakpane-host');
+    const explodeButton = document.getElementById('explode-button');
+    const regionSelect = document.getElementById('region-select');
     const seasonSlider = document.getElementById('season-slider');
     const seasonReadout = document.getElementById('season-readout');
     const seasonControl = document.getElementById('season-control');
     const dateReadout = document.getElementById('date-readout');
-    const altitudeSlider = document.getElementById('altitude-slider');
-    const altitudeReadout = document.getElementById('altitude-readout');
     const toggleClouds = document.getElementById('toggle-clouds');
     const toggleOcean = document.getElementById('toggle-ocean');
     const toggleAtmosphere = document.getElementById('toggle-atmosphere');
@@ -196,6 +199,28 @@ async function boot() {
             paneHost.classList.toggle('open');
         });
     }
+    // Smoke-test "Explode" button — detonate at a random point inside the
+    // selected region's lat/lon bounding box. Sin(lat) sampling so a tall
+    // box doesn't oversample mid-latitudes vs. the edges (cos(lat) area
+    // weighting on the sphere).
+    const REGION_BOXES = {
+        USA: { latMin: 25, latMax: 49, lonMin: -125, lonMax: -67 },
+        Europe: { latMin: 36, latMax: 71, lonMin: -10, lonMax: 40 },
+        China: { latMin: 18, latMax: 53, lonMin: 73, lonMax: 135 },
+    };
+    if (explodeButton) {
+        explodeButton.addEventListener('click', () => {
+            const region = regionSelect?.value ?? 'USA';
+            const box = REGION_BOXES[region] ?? REGION_BOXES.USA;
+            const sinMin = Math.sin((box.latMin * Math.PI) / 180);
+            const sinMax = Math.sin((box.latMax * Math.PI) / 180);
+            const latRad = Math.asin(sinMin + Math.random() * (sinMax - sinMin));
+            const lonRad = ((box.lonMin + Math.random() * (box.lonMax - box.lonMin)) * Math.PI) / 180;
+            const cosLat = Math.cos(latRad);
+            const dir = new THREE.Vector3(cosLat * Math.cos(lonRad), cosLat * Math.sin(lonRad), Math.sin(latRad));
+            sceneGraph.detonateAt(dir);
+        });
+    }
     // Make Tweakpane checkbox rows fully clickable, like the floating layer-toggle
     // rows. Tweakpane's native label only wraps the small toggle visual on the
     // right; this forwards row-level clicks to the underlying input.
@@ -228,6 +253,10 @@ async function boot() {
             refreshSeasonReadout(v);
         });
     }
+    // Calendar readout under the clock dial. Reads the derived `timeOfYear01`
+    // (→ month index 0..11) and `yearsElapsed` (→ display year offset from
+    // START_YEAR) — both produced from `totalDays` each frame by scene-graph.ts.
+    // See DebugState.timeOfDay in debug/Tweakpane.ts for the data contract.
     const START_YEAR = 2067;
     const MONTH_NAMES = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
         'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -240,19 +269,6 @@ async function boot() {
             dateReadout.textContent = formatDate(timeOfYear01, yearsElapsed);
     };
     refreshDateReadout(debug.state.timeOfDay.timeOfYear01, debug.state.timeOfDay.yearsElapsed);
-    const refreshAltitudeReadout = (v) => {
-        if (altitudeReadout)
-            altitudeReadout.textContent = `${v.toFixed(1)}×`;
-    };
-    if (altitudeSlider) {
-        altitudeSlider.value = String(debug.state.altitude.scaleFactor);
-        refreshAltitudeReadout(debug.state.altitude.scaleFactor);
-        altitudeSlider.addEventListener('input', () => {
-            const v = parseFloat(altitudeSlider.value);
-            debug.state.altitude.scaleFactor = v;
-            refreshAltitudeReadout(v);
-        });
-    }
     let prev = performance.now();
     let raf = requestAnimationFrame(function frame(now) {
         const deltaMs = Math.min(100, now - prev);
@@ -260,9 +276,10 @@ async function boot() {
         prev = now;
         sim.tick(deltaMs);
         renderer.tick(deltaSec, debug.state);
-        // Reflect t01 (which auto-advances or moves via Tweakpane/scene) on the
-        // floating slider, and keep the pause icon in sync if the Tweakpane
-        // checkbox flipped paused.
+        // Refresh the top-left time card from the derived state that
+        // scene-graph.ts just wrote: clock hand + HH:MM (unless the user is
+        // mid-drag), the JAN 2067 / FEB 2067 / … date label, and the pause
+        // icon if Tweakpane's checkbox flipped `paused` from the side panel.
         if (!timeClockDragging) {
             refreshClock(debug.state.timeOfDay.t01);
         }
@@ -277,13 +294,6 @@ async function boot() {
             if (parseFloat(seasonSlider.value) !== v) {
                 seasonSlider.value = String(v);
                 refreshSeasonReadout(v);
-            }
-        }
-        if (altitudeSlider && document.activeElement !== altitudeSlider) {
-            const v = debug.state.altitude.scaleFactor;
-            if (parseFloat(altitudeSlider.value) !== v) {
-                altitudeSlider.value = String(v);
-                refreshAltitudeReadout(v);
             }
         }
         if (togglePlanes) {
@@ -317,6 +327,14 @@ async function boot() {
                 lon: lonDeg,
                 radius_km: radiusKm,
             }));
+        },
+        detonateAt(latDeg, lonDeg) {
+            // Z-up convention: +Z = north pole, equator in the XY plane.
+            const latRad = (latDeg * Math.PI) / 180;
+            const lonRad = (lonDeg * Math.PI) / 180;
+            const cosLat = Math.cos(latRad);
+            const dir = new THREE.Vector3(cosLat * Math.cos(lonRad), cosLat * Math.sin(lonRad), Math.sin(latRad));
+            sceneGraph.detonateAt(dir);
         },
     };
 }

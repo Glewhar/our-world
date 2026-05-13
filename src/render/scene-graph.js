@@ -11,14 +11,30 @@
  * NEVER raycast the mesh itself; the icosphere is displaced by elevation
  * and a mesh raycast would miss the id-raster's true cell boundaries.
  *
- * Time of day / calendar:
- *   `debug.timeOfDay.t01` rotates the sun direction around Z (longitude). At
- *   t01 = 0.5 the sun is at the +X side. The clock auto-advances at
- *   `T01_PER_SECOND` per real second unless `debug.timeOfDay.paused` is true.
- *   One full t01 wrap (one in-game day) advances `timeOfYear01` by 1/12, so
- *   twelve days equal one year. On Dec→Jan wrap, `yearsElapsed` increments.
- *   This coupling only applies during auto-advance; clock scrub never bumps
- *   the month. The floating top-left clock in index.html reads/writes `t01`.
+ * Time / calendar:
+ *   For the data contract — which fields exist, which are canonical vs
+ *   derived, and the day/month/year rate — see `DebugState.timeOfDay`
+ *   in debug/Tweakpane.ts. This file is responsible for the writes:
+ *
+ *     1. Each unpaused frame, the tick loop advances `totalDays` by
+ *        `deltaSec * T01_PER_SECOND`. T01_PER_SECOND = 0.04 → 25 sec
+ *        per in-game day, 5 min per in-game year.
+ *     2. Immediately after, in the SAME tick, t01 / timeOfYear01 /
+ *        yearsElapsed are recomputed from `totalDays` so they stay
+ *        consistent for downstream consumers (applyTimeOfDay, the
+ *        top-left clock + date readout in main.ts, future game logic).
+ *        The year wrap is `Math.floor(totalDays / 12)` — mathematically
+ *        unmissable, no float drift.
+ *     3. `applyTimeOfDay` then reads the derived fields to set the sun:
+ *        longitude θ from `t01` (Math.cos/sin), declination from
+ *        `timeOfYear01` (a sinusoid modulated by MAX_SUN_TILT_RAD and
+ *        YEAR_PHASE_OFFSET so timeOfYear01 ≈ 0 → January → southern
+ *        hemisphere summer).
+ *
+ *   The top-left clock in index.html drives `t01` via drag; main.ts
+ *   translates that drag into a rewrite of `totalDays`'s fractional
+ *   part (preserving the integer day count) so scrubbing the dial
+ *   never bumps the month or year.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -32,6 +48,7 @@ import { loadAirplaneData } from './airplanes/data.js';
 import { SunMoon } from './sky/SunMoon.js';
 import { CitiesLayer } from './cities/CitiesLayer.js';
 import { UrbanDetailLayer } from './urban/UrbanDetailLayer.js';
+import { NuclearExplosion } from './effects/nuclear/NuclearExplosion.js';
 import { atmosphereRadiusFromFactor, elevationScaleFromFactor, } from './globe/LandMaterial.js';
 const CAMERA_RADIUS = 3.0;
 // Maximum solar declination — Earth's axial tilt. The per-frame declination
@@ -42,7 +59,9 @@ const MAX_SUN_TILT_RAD = (23.4 * Math.PI) / 180;
 // June 21 is day 172/365 ≈ 0.471; sin peaks when its argument is π/2, so
 // 2π × (0.471 - phase) = π/2 → phase ≈ 0.221.
 const YEAR_PHASE_OFFSET = 0.221;
-// Full day cycle in 1 / T01_PER_SECOND real seconds. 0.04 → 25 sec/day.
+// Rate at which `totalDays` advances per real second while unpaused.
+// 0.04 → one in-game day every 25 sec → one in-game year every 5 min.
+// Bumping this scales the whole calendar (day, month, year) proportionally.
 const T01_PER_SECOND = 0.04;
 export function createSceneGraph() {
     const scene = new THREE.Scene();
@@ -77,8 +96,12 @@ export function createSceneGraph() {
     let airplanes = null;
     const sunMoon = new SunMoon();
     scene.add(sunMoon.group);
+    // Nuclear-explosion particle effect — one Points mesh, dormant until
+    // `detonateAt(direction)` re-seeds and orients the local frame along
+    // the outward radial.
+    const nuclearExplosion = new NuclearExplosion(camera);
+    scene.add(nuclearExplosion.group);
     let pointerHandler = null;
-    let orbitAngle = 0;
     const raycaster = new THREE.Raycaster();
     const tmpVec2 = new THREE.Vector2();
     const tmpSunDir = new THREE.Vector3();
@@ -422,38 +445,29 @@ export function createSceneGraph() {
         }
     }
     function update(deltaSec, debug) {
-        if (debug.camera.autoOrbit) {
-            if (controls)
-                controls.enabled = false;
-            orbitAngle += deltaSec * debug.camera.orbitSpeed * Math.PI * 2;
-            camera.position.set(Math.cos(orbitAngle) * CAMERA_RADIUS, Math.sin(orbitAngle) * CAMERA_RADIUS, CAMERA_RADIUS * 0.5);
-            camera.lookAt(0, 0, 0);
-        }
-        else {
-            if (controls) {
-                controls.enabled = true;
-                controls.update();
-            }
+        if (controls) {
+            controls.autoRotate = debug.camera.autoOrbit && !debug.timeOfDay.paused;
+            controls.autoRotateSpeed = debug.camera.orbitSpeed * 60;
+            controls.update(deltaSec);
         }
         if (scene.background instanceof THREE.Color) {
             scene.background.set(debug.scene.background);
         }
         debug.pick.lastPick = lastPickRef.value;
-        // Canonical counter: `totalDays` is the only field auto-advance touches.
-        // t01 / timeOfYear01 / yearsElapsed are *derived* below so they can never
-        // drift out of sync — the year wrap is now a floor() that's mathematically
-        // unmissable, and the sun tilt moves smoothly every frame.
+        // Time / calendar tick. See the "Time / calendar" header at the top of
+        // this file for the design. `totalDays` is the only field the tick
+        // writes directly; the three derived fields are recomputed every frame
+        // (even when paused) so downstream consumers always see consistent
+        // values — including right after a clock scrub.
         if (!debug.timeOfDay.paused) {
             debug.timeOfDay.totalDays += deltaSec * T01_PER_SECOND;
         }
-        {
-            const days = debug.timeOfDay.totalDays;
-            debug.timeOfDay.t01 = days - Math.floor(days);
-            const totalYears = days / 12;
-            const years = Math.floor(totalYears);
-            debug.timeOfDay.yearsElapsed = years;
-            debug.timeOfDay.timeOfYear01 = totalYears - years;
-        }
+        const days = debug.timeOfDay.totalDays;
+        debug.timeOfDay.t01 = days - Math.floor(days);
+        const totalYears = days / 12;
+        const years = Math.floor(totalYears);
+        debug.timeOfDay.yearsElapsed = years;
+        debug.timeOfDay.timeOfYear01 = totalYears - years;
         // When paused, freeze every time-driven system (waves, clouds, planes)
         // by feeding them a zero delta. Camera + opacity sliders still apply.
         const simDelta = debug.timeOfDay.paused ? 0 : deltaSec;
@@ -469,6 +483,10 @@ export function createSceneGraph() {
         atmosphere?.syncFromCamera(camera);
         cloudsPass?.syncFromCamera(camera);
         cloudsPass?.update(simDelta);
+        // Nuclear explosion: tick with simDelta so pausing the sim freezes
+        // the blast (consistent with every other time-driven layer). Dormant
+        // when no detonation is active — `update` is an early-out then.
+        nuclearExplosion.update(simDelta);
         if (airplanes) {
             airplanes.setSpeed(debug.airplanes.speed);
             airplanes.setTargetInFlight(debug.airplanes.targetInFlight);
@@ -508,6 +526,10 @@ export function createSceneGraph() {
         cloudsPass?.setSize(width, height);
         airplanes?.setViewport(width, height);
         highways?.setViewportSize(width, height);
+        nuclearExplosion.setViewportHeight(height);
+    }
+    function detonateAt(direction) {
+        nuclearExplosion.detonate(direction);
     }
     function dispose() {
         if (pointerHandler && attachedCanvas) {
@@ -529,6 +551,7 @@ export function createSceneGraph() {
         airplanes = null;
         atmosphere?.dispose();
         atmosphere = null;
+        nuclearExplosion.dispose();
         sunMoon.dispose();
         controls?.dispose();
         controls = null;
@@ -536,5 +559,5 @@ export function createSceneGraph() {
         postFx = null;
         webglRenderer = null;
     }
-    return { scene, camera, attachRenderer, attachWorld, update, render, resize, dispose };
+    return { scene, camera, attachRenderer, attachWorld, update, render, resize, detonateAt, dispose };
 }

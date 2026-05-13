@@ -291,106 +291,6 @@
         box-shadow: 0 0 10px var(--season-color);
       }
 
-      /* Floating left-center vertical altitude-scale slider. Range 1..10×
-         drives debug.state.altitude.scaleFactor — a global stretch toward
-         orbit applied to every metres-based altitude (terrain, water,
-         clouds, plane arcs, atmosphere shell). Sits to the right
-         of the season thermostat as a paired control. */
-      #altitude-control {
-        position: fixed;
-        left: 88px;
-        top: 50%;
-        transform: translateY(-50%);
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 10px;
-        padding: 12px 10px;
-        background: rgba(10, 14, 22, 0.65);
-        backdrop-filter: blur(8px);
-        -webkit-backdrop-filter: blur(8px);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 18px;
-        z-index: 5;
-        width: 56px;
-      }
-      #altitude-readout {
-        font-size: 12px;
-        font-weight: 600;
-        letter-spacing: 0.02em;
-        color: #e6ecf6;
-        font-variant-numeric: tabular-nums;
-        text-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
-        min-height: 14px;
-      }
-      #altitude-label {
-        font-size: 9px;
-        font-weight: 700;
-        letter-spacing: 0.18em;
-        color: rgba(230, 236, 246, 0.55);
-      }
-      #altitude-slider-wrap {
-        position: relative;
-        width: 28px;
-        height: 240px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      }
-      #altitude-slider-wrap::before,
-      #altitude-slider-wrap::after {
-        content: '';
-        position: absolute;
-        left: -2px;
-        right: -2px;
-        height: 1px;
-        background: rgba(230, 236, 246, 0.18);
-      }
-      #altitude-slider-wrap::before {
-        top: 0;
-      }
-      #altitude-slider-wrap::after {
-        bottom: 0;
-      }
-      #altitude-slider {
-        appearance: none;
-        -webkit-appearance: none;
-        width: 240px;
-        height: 8px;
-        transform: rotate(-90deg);
-        background: linear-gradient(
-          to right,
-          #2a3a52 0%,
-          #4a6b8c 30%,
-          #7faecd 60%,
-          #b9d6e8 85%,
-          #ffffff 100%
-        );
-        border-radius: 999px;
-        outline: none;
-        cursor: pointer;
-        margin: 0;
-      }
-      #altitude-slider::-webkit-slider-thumb {
-        appearance: none;
-        -webkit-appearance: none;
-        width: 14px;
-        height: 24px;
-        border-radius: 5px;
-        background: #e6ecf6;
-        border: 2px solid rgba(0, 0, 0, 0.55);
-        cursor: pointer;
-        box-shadow: 0 0 10px rgba(230, 236, 246, 0.7);
-      }
-      #altitude-slider::-moz-range-thumb {
-        width: 14px;
-        height: 24px;
-        border-radius: 5px;
-        background: #e6ecf6;
-        border: 2px solid rgba(0, 0, 0, 0.55);
-        cursor: pointer;
-        box-shadow: 0 0 10px rgba(230, 236, 246, 0.7);
-      }
 
       /* Floating bottom-left layer toggles (clouds / ocean / atmosphere). */
       #layer-toggles {
@@ -531,6 +431,61 @@
       }
       #tweakpane-toggle:hover {
         background: rgba(255, 255, 255, 0.12);
+      }
+      /* Floating "Explode" smoke-test controls — region dropdown + button,
+         sitting just left of the tweakpane toggle, reusing the same
+         dark-glass tokens. */
+      #explode-controls {
+        position: fixed;
+        top: 16px;
+        right: 64px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        z-index: 7;
+      }
+      #explode-button,
+      #region-select {
+        height: 36px;
+        background: rgba(10, 14, 22, 0.65);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        color: #e6ecf6;
+        cursor: pointer;
+        font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+        font-size: 13px;
+        line-height: 1;
+        transition: background 0.15s ease;
+      }
+      #explode-button {
+        padding: 0 14px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+      }
+      #explode-button:hover,
+      #region-select:hover {
+        background: rgba(255, 255, 255, 0.12);
+      }
+      #region-select {
+        padding: 0 28px 0 12px;
+        appearance: none;
+        -webkit-appearance: none;
+        background-image:
+          url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%23e6ecf6' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+        background-repeat: no-repeat;
+        background-position: right 10px center;
+      }
+      #region-select:focus {
+        outline: none;
+        border-color: rgba(255, 255, 255, 0.22);
+      }
+      #region-select option {
+        background: #0a0e16;
+        color: #e6ecf6;
       }
       #tweakpane-host {
         position: fixed;
@@ -740,13 +695,7 @@
       </div>
       <div id="season-label">TEMPERATURE</div>
     </div>
-    <div id="altitude-control">
-      <div id="altitude-readout">5.0×</div>
-      <div id="altitude-slider-wrap">
-        <input id="altitude-slider" type="range" min="1" max="10" step="0.1" value="5" aria-label="Altitude scale" />
-      </div>
-      <div id="altitude-label">SCALE</div>
-    </div>
+
     <div id="layer-toggles">
       <label class="layer-toggle clouds" for="toggle-clouds">
         <span class="layer-icon" aria-hidden="true">
@@ -817,6 +766,14 @@
         <input id="toggle-planes" type="checkbox" checked />
         <span class="toggle-track"><span class="toggle-thumb"></span></span>
       </label>
+    </div>
+    <div id="explode-controls">
+      <select id="region-select" aria-label="Detonation region">
+        <option value="USA">USA</option>
+        <option value="Europe">Europe</option>
+        <option value="China">China</option>
+      </select>
+      <button id="explode-button" type="button" aria-label="Detonate in selected region">💥 Explode</button>
     </div>
     <button id="tweakpane-toggle" type="button" aria-label="Toggle controls">≡</button>
     <div id="tweakpane-host"></div>

@@ -11,10 +11,10 @@
  */
 import { Pane } from 'tweakpane';
 export const initialDebugState = {
-    camera: { autoOrbit: false, orbitSpeed: 0.05 },
+    camera: { autoOrbit: true, orbitSpeed: 0.005 },
     scene: { background: '#06080c', showGrid: false },
     timeOfDay: { t01: 0, paused: false, timeOfYear01: 0, yearsElapsed: 0, totalDays: 0 },
-    altitude: { scaleFactor: 5 },
+    altitude: { scaleFactor: 3 },
     layers: {
         globe: true,
         atmosphere: true,
@@ -143,19 +143,20 @@ export function createDebugPanel(state = initialDebugState) {
         : new Pane({ title: 'earth-destroyer', expanded: true });
     const cameraFolder = pane.addFolder({ title: 'Camera' });
     cameraFolder.addBinding(state.camera, 'autoOrbit');
+    // 0.4 = realistic Earth orbital angular speed relative to the sun
     cameraFolder.addBinding(state.camera, 'orbitSpeed', { min: 0, max: 0.5, step: 0.001 });
     const sceneFolder = pane.addFolder({ title: 'Scene' });
     sceneFolder.addBinding(state.scene, 'background');
     sceneFolder.addBinding(state.scene, 'showGrid', { disabled: true, label: 'showGrid (n/a)' });
+    const altitudeFolder = pane.addFolder({ title: 'Altitude', expanded: false });
+    altitudeFolder.addBinding(state.altitude, 'scaleFactor', {
+        min: 1, max: 10, step: 0.1, label: 'scale (×)',
+    });
     // Time of day: the floating bottom-center slider drives `t01` and the
     // pause button toggles `paused`. Tweakpane mirrors the pause toggle so
     // it can also be flipped from here.
     const todFolder = pane.addFolder({ title: 'Time of day' });
     todFolder.addBinding(state.timeOfDay, 'paused', { label: 'pause' });
-    // Altitude scale is driven by the floating left-center vertical slider
-    // (#altitude-control in index.html), next to the season thermostat — same
-    // pattern as season, which is also pulled out of the panel. The slider
-    // mutates state.altitude.scaleFactor directly; nothing else to bind here.
     // Clouds / ocean / atmosphere / cities / planes (combined planes+trails)
     // live on the floating bottom toggle bar (#layer-toggles in index.html).
     // Airports + routes remain here as the fine-grained airline-overlay knobs;

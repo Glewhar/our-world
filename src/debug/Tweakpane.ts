@@ -15,18 +15,39 @@ import { Pane, type FolderApi } from 'tweakpane';
 export type DebugState = {
   camera: { autoOrbit: boolean; orbitSpeed: number };
   scene: { background: string; showGrid: boolean };
+  /**
+   * Time-of-day and calendar state.
+   *
+   *   The game runs on a single canonical counter, `totalDays`. Every
+   *   other temporal field here is *derived* from it once per frame by
+   *   scene-graph.ts. Game-mechanic code should READ the derived fields
+   *   but only WRITE `totalDays` (or, for a clock scrub, the fractional
+   *   part of it — see main.ts).
+   *
+   *   One unit of `totalDays` = one in-game day = one full clock rotation
+   *                           = one in-game month.
+   *   Twelve units            = one in-game year.
+   *
+   *   At T01_PER_SECOND = 0.04 (in scene-graph.ts), one in-game day takes
+   *   25 real seconds and one in-game year takes 5 real minutes.
+   *
+   *   "How long has it been since event X?" — snapshot `totalDays` at X
+   *   and diff against the current value; the result is in in-game days.
+   */
   timeOfDay: {
+    /** Fractional day, 0..1. DERIVED. Drives sun longitude: 0.5 = noon at +X, 0 = midnight. */
     t01: number;
+    /** Pauses auto-advance of `totalDays`. Camera + UI keep working; sim-driven systems freeze. */
     paused: boolean;
+    /** Fractional year, 0..1. DERIVED. Drives sun declination via applyTimeOfDay (axial tilt). */
     timeOfYear01: number;
+    /** Integer years since boot. DERIVED. Display year = START_YEAR (2067, in main.ts) + this. */
     yearsElapsed: number;
     /**
-     * Canonical continuous counter: one unit = one in-game day = one full
-     * clock rotation = one month. `t01`, `timeOfYear01`, and `yearsElapsed`
-     * are *derived* from this every frame by scene-graph.ts, so they can
-     * never drift out of sync. Clock scrub rewrites only the fractional
-     * part of `totalDays` (preserving integer day count) so month/year
-     * don't jump when the user drags the clock.
+     * Canonical continuous counter — the SOURCE OF TRUTH for all temporal
+     * state. Auto-advance writes this every unpaused frame; clock scrub
+     * rewrites only its fractional part so the integer day count
+     * (and therefore month/year) doesn't jump when the user drags the dial.
      */
     totalDays: number;
   };
@@ -176,7 +197,7 @@ export const initialDebugState: DebugState = {
   camera: { autoOrbit: false, orbitSpeed: 0.05 },
   scene: { background: '#06080c', showGrid: false },
   timeOfDay: { t01: 0, paused: false, timeOfYear01: 0, yearsElapsed: 0, totalDays: 0 },
-  altitude: { scaleFactor: 5 },
+  altitude: { scaleFactor: 3 },
   layers: {
     globe: true,
     atmosphere: true,
@@ -319,16 +340,16 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
   sceneFolder.addBinding(state.scene, 'background');
   sceneFolder.addBinding(state.scene, 'showGrid', { disabled: true, label: 'showGrid (n/a)' });
 
+  const altitudeFolder = pane.addFolder({ title: 'Altitude', expanded: false });
+  altitudeFolder.addBinding(state.altitude, 'scaleFactor', {
+    min: 1, max: 10, step: 0.1, label: 'scale (×)',
+  });
+
   // Time of day: the floating bottom-center slider drives `t01` and the
   // pause button toggles `paused`. Tweakpane mirrors the pause toggle so
   // it can also be flipped from here.
   const todFolder = pane.addFolder({ title: 'Time of day' });
   todFolder.addBinding(state.timeOfDay, 'paused', { label: 'pause' });
-
-  // Altitude scale is driven by the floating left-center vertical slider
-  // (#altitude-control in index.html), next to the season thermostat — same
-  // pattern as season, which is also pulled out of the panel. The slider
-  // mutates state.altitude.scaleFactor directly; nothing else to bind here.
 
   // Clouds / ocean / atmosphere / cities / planes (combined planes+trails)
   // live on the floating bottom toggle bar (#layer-toggles in index.html).
