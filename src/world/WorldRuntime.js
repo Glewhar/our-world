@@ -152,6 +152,8 @@ export async function createWorldRuntime(opts = {}) {
             const cellIndex = zPhiToPix(nside, ordering, z, phi);
             return attributes.getElevationMetersAtCell(cellIndex);
         },
+        getElevationMetersAtCell: (ipix) => attributes.getElevationMetersAtCell(ipix),
+        getBodyIndexAtCell: (ipix) => idRaster.bodyIndexAtCell(ipix),
         getWindAt: (lat, lon) => (windField ? windField.sample(lat, lon) : null),
         getIdRaster: () => idRaster.toDataTexture(),
         getAttributeTexture: (a) => attributes.getTexture(a),
@@ -161,6 +163,8 @@ export async function createWorldRuntime(opts = {}) {
         getWindFieldTexture: () => (windField ? windField.texture : null),
         getOceanCurrentsTexture: () => (oceanCurrents ? oceanCurrents.texture : null),
         getDistanceFieldTexture: () => (distanceField ? distanceField.texture : null),
+        getWastelandTexture: () => attributes.getWastelandTexture(),
+        applyWastelandFrame: (cells, values) => attributes.applyWastelandFrame(cells, values),
         getCities: () => cities,
         getRoads: () => roads,
         getUrbanAreas: () => urbanAreas,

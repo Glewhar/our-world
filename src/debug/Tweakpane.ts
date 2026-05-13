@@ -191,6 +191,26 @@ export type DebugState = {
     };
     postFx: { bloomThreshold: number; bloomStrength: number; vignette: number; gradeTint: string };
   };
+  /**
+   * Scenario-system state. Wired to the ScenarioRegistry / land shader
+   * each frame from scene-graph.applyMaterials. Defaults here MUST match
+   * the shader defaults + the per-scenario kind defaults — Tweakpane's
+   * init phase pushes these values onto the registry & uniforms, so any
+   * mismatch silently clobbers the design defaults.
+   */
+  scenarios: {
+    nuclear: {
+      radiusKm: number;
+      stretchKm: number;
+      durationDays: number;
+    };
+    /** Recovery-curve exponent shared by every scenario kind for v1. */
+    decayExponent: number;
+    /** Land-shader uniforms — see LandMaterial.ts for the descriptions. */
+    wastelandColor: string;
+    wastelandDesaturate: number;
+    wastelandStrength: number;
+  };
   nuclear: {
     // Size & timing (live).
     worldScale: number;
@@ -343,6 +363,17 @@ export const initialDebugState: DebugState = {
       minPopulation: 0,
     },
     postFx: { bloomThreshold: 0.85, bloomStrength: 0.6, vignette: 0.35, gradeTint: '#f3eee0' },
+  },
+  scenarios: {
+    nuclear: {
+      radiusKm: 450,
+      stretchKm: 1200,
+      durationDays: 24,
+    },
+    decayExponent: 2.5,
+    wastelandColor: '#5a4d40',
+    wastelandDesaturate: 0.6,
+    wastelandStrength: 1.0,
   },
   nuclear: {
     worldScale: 0.003,
@@ -789,6 +820,33 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
   nCols.addBinding(state.nuclear, 'fireColorEnd', { label: 'fire end' });
   nCols.addBinding(state.nuclear, 'smokeColorStart', { label: 'smoke start' });
   nCols.addBinding(state.nuclear, 'smokeColorEnd', { label: 'smoke end' });
+
+  // Scenario-system bindings. The Nuclear sub-folder drives the wasteland
+  // ellipse shape + duration for new strikes (live changes only affect the
+  // NEXT detonation; in-flight scenarios keep their captured payload).
+  // Wasteland uniforms are pushed every frame from scene-graph.applyMaterials.
+  const scnFolder = pane.addFolder({ title: 'Scenarios', expanded: false });
+  const scnNuke = scnFolder.addFolder({ title: 'Nuclear', expanded: true });
+  scnNuke.addBinding(state.scenarios.nuclear, 'radiusKm', {
+    min: 50, max: 2000, step: 10, label: 'radius (km)',
+  });
+  scnNuke.addBinding(state.scenarios.nuclear, 'stretchKm', {
+    min: 0, max: 3000, step: 10, label: 'stretch (km)',
+  });
+  scnNuke.addBinding(state.scenarios.nuclear, 'durationDays', {
+    min: 2, max: 120, step: 1, label: 'duration (days)',
+  });
+  scnFolder.addBinding(state.scenarios, 'decayExponent', {
+    min: 0.5, max: 6, step: 0.05, label: 'decay exponent',
+  });
+  const scnLook = scnFolder.addFolder({ title: 'Wasteland look', expanded: false });
+  scnLook.addBinding(state.scenarios, 'wastelandColor', { label: 'color' });
+  scnLook.addBinding(state.scenarios, 'wastelandDesaturate', {
+    min: 0, max: 1, step: 0.01, label: 'desaturate',
+  });
+  scnLook.addBinding(state.scenarios, 'wastelandStrength', {
+    min: 0, max: 1, step: 0.01, label: 'strength',
+  });
 
   const pickFolder = pane.addFolder({ title: 'Pick', expanded: true });
   pickFolder.addBinding(state.pick, 'lastPick', { readonly: true, multiline: true, rows: 8 });

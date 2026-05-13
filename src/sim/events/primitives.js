@@ -22,6 +22,26 @@ export function setAttributeEvent(attr, value, location) {
     };
 }
 /**
+ * Helper for constructing a `set_attribute_ellipse` event. Wraps the
+ * downwind-elongated ellipse into the shared WorldEvent shape; the
+ * primitive's params are identical to `set_attribute`, only the location
+ * geometry differs.
+ */
+export function setAttributeEllipseEvent(attr, value, centreLat, centreLon, radiusKm, stretchKm, bearingDeg) {
+    return {
+        primitive: 'set_attribute_ellipse',
+        location: {
+            kind: 'ellipse',
+            lat: centreLat,
+            lon: centreLon,
+            radius_km: radiusKm,
+            stretch_km: stretchKm,
+            bearing_deg: bearingDeg,
+        },
+        params: { value, attribute_index: ATTRIBUTE_INDEX[attr] },
+    };
+}
+/**
  * Stable index for AttributeKey — pinned here so handlers + shaders + snapshots
  * agree on the integer encoding regardless of declaration order in types.ts.
  */
@@ -37,4 +57,10 @@ export const ATTRIBUTE_INDEX = Object.freeze({
     population_density: 8,
     ocean_health: 9,
     elevation: 10,
+    // Scenario-driven dynamic attribute. NOT backed by the dynamic grid —
+    // wasteland lives in a dedicated R8 texture owned by AttributeTextures
+    // and recomposed each frame by the ScenarioRegistry. Indexed here so the
+    // attribute-key registry stays a single source of truth for shaders +
+    // sim, even though the wasteland write path bypasses the dynamic grid.
+    wasteland: 11,
 });

@@ -3,29 +3,27 @@
 export const source = `// Highways vertex shader.
 //
 // Each vertex carries a centerline position on the unit sphere plus a
-// signed unit perpendicular (\`aPerp\`) and a kind flag (\`aKind\`,
-// 0=major, 1=arterial, 2=local, 3=local2). The shader lifts the centerline by the
-// local elevation (9-tap blur), then applies a *screen-space* offset of
-// half the kind's pixel width along the projected ribbon direction. This
-// is the standard Mapbox / Apple Maps trick: the line keeps a constant
-// on-screen width at every zoom.
+// signed unit perpendicular (\`aPerp\`), a kind flag (\`aKind\`,
+// 0=major, 1=arterial, 2=local, 3=local2), and the pre-baked elevation
+// lift in metres (\`aLiftMeters\`, from
+// web/src/render/util/elevation-lift-bake.ts — mirrors the same 9-tap
+// blur + distance-field coast fade the older shader did per frame).
+// The shader multiplies by \`uElevationScale\` so the altitude slider
+// still works without a rebake.
+//
+// After lifting the centerline, applies a *screen-space* offset of
+// half the kind's pixel width along the projected ribbon direction.
+// This is the standard Mapbox / Apple Maps trick: the line keeps a
+// constant on-screen width at every zoom.
 //
 // Cross-ribbon coordinate \`vU\` runs from +1 on one side to -1 on the
 // other, recovered from gl_VertexID parity (even = +side, odd = -side)
 // matching the geometry build order in HighwaysLayer.
-//
-// The healpix.glsl helper is concatenated before this source by
-// HighwaysLayer (Three.js ShaderMaterial doesn't process #include).
 
 precision highp float;
 precision highp int;
 precision highp sampler2D;
 
-uniform sampler2D uElevationMeters;
-uniform sampler2D uDistanceField;
-uniform int uHealpixNside;
-uniform int uHealpixOrdering;
-uniform int uAttrTexWidth;
 uniform float uElevationScale;
 uniform float uHighwayRadialBiasM;
 
@@ -39,17 +37,13 @@ uniform float uDayFillScale;
 
 in vec3 aPerp;
 in float aKind;
+in float aLiftMeters;
 
 out vec3 vSurfaceNormal;
 out vec3 vWorldPos;
 out float vKind;
 out float vU;
 out float vFillFrac;
-
-ivec2 cellTexel(vec3 d) {
-  int ipix = healpixZPhiToPix(uHealpixNside, uHealpixOrdering, d.z, atan(d.y, d.x));
-  return healpixIpixToTexel(ipix, uAttrTexWidth);
-}
 
 void main() {
   vKind = aKind;
@@ -59,59 +53,10 @@ void main() {
   vec3 dir = normalize(centerline);
   vSurfaceNormal = dir;
 
-  // 9-tap elevation blur — averages the cell-centre + 8 neighbours.
-  vec3 axisUp = abs(dir.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
-  vec3 t1 = normalize(cross(axisUp, dir));
-  vec3 t2 = cross(dir, t1);
-  const float eps = 3.0e-3;
-  const float diag = 0.7071;
-
-  vec3 d0 = dir;
-  vec3 d1 = normalize(dir + t1 * eps);
-  vec3 d2 = normalize(dir - t1 * eps);
-  vec3 d3 = normalize(dir + t2 * eps);
-  vec3 d4 = normalize(dir - t2 * eps);
-  vec3 d5 = normalize(dir + (t1 + t2) * eps * diag);
-  vec3 d6 = normalize(dir + (t1 - t2) * eps * diag);
-  vec3 d7 = normalize(dir - (t1 - t2) * eps * diag);
-  vec3 d8 = normalize(dir - (t1 + t2) * eps * diag);
-
-  ivec2 tx0 = cellTexel(d0);
-  ivec2 tx1 = cellTexel(d1);
-  ivec2 tx2 = cellTexel(d2);
-  ivec2 tx3 = cellTexel(d3);
-  ivec2 tx4 = cellTexel(d4);
-  ivec2 tx5 = cellTexel(d5);
-  ivec2 tx6 = cellTexel(d6);
-  ivec2 tx7 = cellTexel(d7);
-  ivec2 tx8 = cellTexel(d8);
-
-  float elev = (
-    texelFetch(uElevationMeters, tx0, 0).r +
-    texelFetch(uElevationMeters, tx1, 0).r +
-    texelFetch(uElevationMeters, tx2, 0).r +
-    texelFetch(uElevationMeters, tx3, 0).r +
-    texelFetch(uElevationMeters, tx4, 0).r +
-    texelFetch(uElevationMeters, tx5, 0).r +
-    texelFetch(uElevationMeters, tx6, 0).r +
-    texelFetch(uElevationMeters, tx7, 0).r +
-    texelFetch(uElevationMeters, tx8, 0).r
-  ) / 9.0;
-
-  // Coast fade — single bilinear sample of the distance field's signed-km
-  // channel. Matches Land's recipe exactly so the two meshes compute
-  // identical radial displacement at any given lat/lon; the previous
-  // 8-neighbour ocean count produced cell-quantized fades that
-  // disagreed with Land's continuous smoothstep by hundreds of metres
-  // in the coast band, losing the depth fight against the land mesh.
-  vec2 dfUv = sphereDirToEquirectUv(dir);
-  float distCoastKm = texture(uDistanceField, dfUv).r;
-  float coastFade = smoothstep(0.0, 4.0, distCoastKm);
-
-  float landDisplace = max(elev, 0.0) * uElevationScale * coastFade;
-  // Bias is in metres so it tracks the altitude-exaggeration slider — the
-  // multiplication by uElevationScale lifts both the land and the road in
-  // lock-step, preserving the depth-fight safety margin at every factor.
+  // Lift = baked metres × slider scale; the bias is in metres too so it
+  // tracks the slider in lock-step, preserving the depth-fight safety
+  // margin at every factor.
+  float landDisplace = aLiftMeters * uElevationScale;
   float radial = 1.0 + landDisplace + uHighwayRadialBiasM * uElevationScale;
 
   vec3 liftedCenter = dir * radial;

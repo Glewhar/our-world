@@ -221,6 +221,9 @@ export async function createWorldRuntime(
       return attributes.getElevationMetersAtCell(cellIndex);
     },
 
+    getElevationMetersAtCell: (ipix) => attributes.getElevationMetersAtCell(ipix),
+    getBodyIndexAtCell: (ipix) => idRaster.bodyIndexAtCell(ipix),
+
     getWindAt: (lat, lon) => (windField ? windField.sample(lat, lon) : null),
 
     getIdRaster: () => idRaster.toDataTexture(),
@@ -233,6 +236,9 @@ export async function createWorldRuntime(
     getWindFieldTexture: () => (windField ? windField.texture : null),
     getOceanCurrentsTexture: () => (oceanCurrents ? oceanCurrents.texture : null),
     getDistanceFieldTexture: () => (distanceField ? distanceField.texture : null),
+
+    getWastelandTexture: () => attributes.getWastelandTexture(),
+    applyWastelandFrame: (cells, values) => attributes.applyWastelandFrame(cells, values),
 
     getCities: () => cities,
     getRoads: () => roads,

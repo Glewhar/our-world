@@ -41,6 +41,7 @@ export class Land {
     u.uElevationEquirect.value = bakeElevationEquirectTexture(renderer, world);
     u.uDistanceField.value = world.getDistanceFieldTexture();
     u.uBiomeColor.value = bakeBiomeColorTexture(renderer, world);
+    u.uWastelandTex.value = world.getWastelandTexture();
 
     const { nside, ordering } = world.getHealpixSpec();
     u.uHealpixNside.value = nside;

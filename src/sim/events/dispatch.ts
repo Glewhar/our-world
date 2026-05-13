@@ -11,12 +11,20 @@
 
 import type { WorldEvent, WorldEventPrimitive } from './primitives.js';
 import { applySetAttribute, type SetAttributeContext } from './handlers/set_attribute.js';
+import {
+  applySetAttributeEllipse,
+  type SetAttributeEllipseContext,
+} from './handlers/set_attribute_ellipse.js';
 
 /**
  * Dispatch context — the minimum every handler needs. As more handlers
  * land, they take a superset of this (e.g. `entityStore`, `rng`).
+ *
+ * The two stamp handlers share `grid` + `cone`; ellipse additionally
+ * needs `nside`/`ordering` for its geodesic geometry. Union-by-extension
+ * keeps the call sites identical.
  */
-export type DispatchContext = SetAttributeContext;
+export type DispatchContext = SetAttributeContext & SetAttributeEllipseContext;
 
 export type DispatchResult = {
   primitive: WorldEventPrimitive;
@@ -30,6 +38,10 @@ export function dispatchEvent(ctx: DispatchContext, event: WorldEvent): Dispatch
   switch (event.primitive) {
     case 'set_attribute': {
       const cellsTouched = applySetAttribute(ctx, event);
+      return { primitive: event.primitive, cellsTouched, handled: true };
+    }
+    case 'set_attribute_ellipse': {
+      const cellsTouched = applySetAttributeEllipse(ctx, event);
       return { primitive: event.primitive, cellsTouched, handled: true };
     }
     // Recognized but unimplemented in the slice. Each lands in a future PR

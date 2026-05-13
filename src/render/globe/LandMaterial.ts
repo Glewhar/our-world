@@ -167,6 +167,33 @@ export type LandUniforms = {
    * sky-view LUT into the lit surface.
    */
   uHazeFalloffM: { value: number };
+
+  /**
+   * R8 wasteland attribute texture (one byte per HEALPix cell, value =
+   * byte / 255). Driven by the ScenarioRegistry on the main thread, NOT
+   * by the sim worker. Cells outside any active scenario stay at 0.
+   */
+  uWastelandTex: { value: THREE.DataTexture | null };
+
+  /**
+   * Master strength multiplier on the wasteland tint. 0 disables it
+   * completely (zero shader cost in the early-out branch). Default 1.
+   */
+  uWastelandStrength: { value: number };
+
+  /**
+   * Destination colour the biome blends toward at full wasteland (1.0).
+   * Default `#5a4d40` — warm gray-brown that reads as scorched earth at
+   * orbital zoom.
+   */
+  uWastelandColor: { value: THREE.Color };
+
+  /**
+   * How much the biome colour desaturates toward gray BEFORE the wasteland
+   * colour tint is applied. 0 leaves biome saturation intact; 1 fully
+   * desaturates to gray then tints. 0.6 is the design default.
+   */
+  uWastelandDesaturate: { value: number };
 };
 
 /**
@@ -314,6 +341,11 @@ export function createLandMaterial(): THREE.ShaderMaterial & {
     uHazeExposure: { value: 3.5 },
     uHazeAmount: { value: 0.7 },
     uHazeFalloffM: { value: 3000.0 },
+
+    uWastelandTex: { value: null },
+    uWastelandStrength: { value: 1.0 },
+    uWastelandColor: { value: new THREE.Color('#5a4d40') },
+    uWastelandDesaturate: { value: 0.6 },
   };
 
   // Three.js ShaderMaterial doesn't process GLSL `#include`, so the helper

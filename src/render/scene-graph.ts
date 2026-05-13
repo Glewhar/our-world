@@ -345,6 +345,13 @@ export function createSceneGraph(): SceneGraph {
         specAmps[i] = m.biomeSpecAmps[i] ?? specAmps[i]!;
       }
 
+      // Wasteland tint uniforms — pushed every frame so Tweakpane edits
+      // land immediately. The texture itself is set once in Land.ts.
+      const s = debug.scenarios;
+      land.uWastelandColor.value.set(s.wastelandColor);
+      land.uWastelandDesaturate.value = s.wastelandDesaturate;
+      land.uWastelandStrength.value = s.wastelandStrength;
+
       // Ocean colours + Gerstner knobs live on the dedicated water material.
       // Time is advanced separately in `update()`; this hook only pushes
       // Tweakpane-driven uniforms.

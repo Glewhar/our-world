@@ -81,6 +81,14 @@ export class AttributeTextures {
     dynamicBytes;
     elevMetersBytes;
     waterLevelMetersBytes;
+    /**
+     * Wasteland attribute byte-buffer (one R8 per HEALPix cell). Owned by
+     * this class for symmetry with the other attribute storage, but writes
+     * come from the main-thread `ScenarioRegistry` (NOT the sim worker) —
+     * scenarios compose stamps on the fly and call `applyWastelandFrame`.
+     * Zero on a fresh bake; never persisted.
+     */
+    wastelandBytes;
     textures = new Map();
     constructor(nside, staticBuf, climateBuf, dynamicBuf, elevMetersBuf, waterLevelMetersBuf) {
         this.nside = nside;
@@ -89,6 +97,7 @@ export class AttributeTextures {
         this.dynamicBytes = new Uint8Array(dynamicBuf);
         this.elevMetersBytes = new Uint8Array(elevMetersBuf);
         this.waterLevelMetersBytes = new Uint8Array(waterLevelMetersBuf);
+        this.wastelandBytes = new Uint8Array(12 * nside * nside);
     }
     /**
      * Return the R16F continuous-elevation texture in metres. One value per
@@ -135,10 +144,68 @@ export class AttributeTextures {
         return tex;
     }
     getTexture(attr) {
+        if (attr === 'wasteland')
+            return this.getWastelandTexture();
         const spec = CHANNEL_MAP[attr];
         if (!spec)
             return this._zeroTexture();
         return this._sourceTexture(spec.source);
+    }
+    /**
+     * R8 texture, one byte per HEALPix cell, value scaled `byte / 255` ∈
+     * [0, 1]. Driven by the ScenarioRegistry's frame composer — every active
+     * scenario's stamp is summed and clamped each frame; cells outside any
+     * active stamp stay at 0.
+     *
+     * Lives on a dedicated texture because the existing `dynamic` slot
+     * (fire/ice/infection/pollution) is fully packed; adding a fifth channel
+     * would require a new texture either way, and a single-channel R8 is
+     * the smallest the GPU side needs.
+     */
+    getWastelandTexture() {
+        const cached = this.textures.get('wasteland');
+        if (cached)
+            return cached;
+        const w = 4 * this.nside;
+        const h = 3 * this.nside;
+        const data = this.wastelandBytes;
+        const tex = new THREE.DataTexture(data, w, h, THREE.RedFormat, THREE.UnsignedByteType);
+        tex.minFilter = THREE.NearestFilter;
+        tex.magFilter = THREE.NearestFilter;
+        tex.wrapS = THREE.ClampToEdgeWrapping;
+        tex.wrapT = THREE.ClampToEdgeWrapping;
+        tex.needsUpdate = true;
+        this.textures.set('wasteland', tex);
+        return tex;
+    }
+    /**
+     * Push a frame of wasteland values from the ScenarioRegistry. `cells`
+     * and `values` line up index-for-index; `values` are floats in [0, 1].
+     * Cells not in the list keep whatever they already had — the registry
+     * is expected to include cells transitioning back to zero in the list
+     * so the texture clears them.
+     *
+     * Full-buffer upload via `needsUpdate = true` (no `texSubImage2D` in
+     * Three.js's DataTexture API). Cost: O(touched cells) for the byte
+     * write + one full buffer GPU push.
+     */
+    applyWastelandFrame(cells, values) {
+        if (cells.length !== values.length)
+            return;
+        for (let i = 0; i < cells.length; i++) {
+            const ipix = cells[i];
+            if (ipix >= this.wastelandBytes.length)
+                continue;
+            const v = values[i];
+            this.wastelandBytes[ipix] = clampByte(Math.round(v * 255));
+        }
+        const tex = this.textures.get('wasteland');
+        if (tex)
+            tex.needsUpdate = true;
+    }
+    /** Read the wasteland byte at a cell (0..255). Debug helper. */
+    getWastelandByte(ipix) {
+        return this.wastelandBytes[ipix] ?? 0;
     }
     /**
      * Apply a sim-emitted `attribute_delta`: for each `(cell, value)` pair,

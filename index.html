@@ -649,6 +649,138 @@
         background: transparent;
       }
 
+      /* Scenario card stack — top-right, stacked vertically below the
+         tweakpane toggle. One card per active Scenario (see
+         src/ui/scenario-cards.ts). Cards default to a single collapsed
+         row; click the header to expand and reveal details + stop. */
+      #scenario-stack {
+        position: fixed;
+        top: 64px;
+        right: 64px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        max-height: 50vh;
+        overflow-y: auto;
+        z-index: 6;
+        width: 320px;
+        pointer-events: none;
+      }
+      #scenario-stack > * {
+        pointer-events: auto;
+      }
+      .scenario-card {
+        background: rgba(10, 14, 22, 0.65);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        color: #cdd6e3;
+        font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+        font-size: 11px;
+        overflow: hidden;
+        transition: background 0.15s ease, border-color 0.15s ease;
+      }
+      .scenario-card:hover {
+        background: rgba(20, 26, 38, 0.7);
+        border-color: rgba(255, 255, 255, 0.14);
+      }
+      .scenario-card-header {
+        display: grid;
+        grid-template-columns: 18px 1fr 80px 36px;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .scenario-card-icon {
+        font-size: 14px;
+        line-height: 1;
+        text-align: center;
+        color: #ffd9a0;
+        text-shadow: 0 0 6px rgba(255, 217, 160, 0.55);
+      }
+      .scenario-card-title {
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        color: #e6ecf6;
+      }
+      .scenario-card-progress {
+        position: relative;
+        height: 4px;
+        background: rgba(255, 255, 255, 0.10);
+        border-radius: 999px;
+        overflow: hidden;
+      }
+      .scenario-card-progress-fill {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(to right, #ffb37a, #ff7a4d);
+        box-shadow: 0 0 6px rgba(255, 122, 77, 0.45);
+        transition: width 0.18s linear;
+      }
+      .scenario-card-days {
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.04em;
+        text-align: right;
+        color: rgba(230, 236, 246, 0.7);
+      }
+      .scenario-card-body {
+        padding: 0 10px 0 36px;
+        max-height: 0;
+        opacity: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        font-size: 11px;
+        line-height: 1.5;
+        color: rgba(230, 236, 246, 0.75);
+        transition: max-height 0.18s ease, opacity 0.18s ease, padding-bottom 0.18s ease;
+        overflow: hidden;
+      }
+      .scenario-card.expanded .scenario-card-body {
+        max-height: 160px;
+        opacity: 1;
+        padding-bottom: 10px;
+      }
+      .scenario-card-row {
+        font-variant-numeric: tabular-nums;
+      }
+      .scenario-card-stop {
+        align-self: flex-start;
+        margin-top: 6px;
+        padding: 4px 10px;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 8px;
+        color: #e6ecf6;
+        font-family: inherit;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        cursor: pointer;
+        transition: background 0.15s ease;
+      }
+      .scenario-card-stop:hover {
+        background: rgba(255, 122, 77, 0.25);
+        border-color: rgba(255, 122, 77, 0.5);
+      }
+      #scenario-stack::-webkit-scrollbar {
+        width: 6px;
+      }
+      #scenario-stack::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.15);
+        border-radius: 999px;
+      }
+      #scenario-stack::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
       /* FPS counter — top-center small readout. Hidden by default; the
          Tweakpane Debug folder toggles `.visible`. */
       #fps-counter {
@@ -803,6 +935,7 @@
     </div>
     <button id="tweakpane-toggle" type="button" aria-label="Toggle controls">≡</button>
     <div id="tweakpane-host"></div>
+    <div id="scenario-stack" aria-label="Active scenarios"></div>
     <div id="fps-counter">-- FPS</div>
     <script type="importmap">
       {

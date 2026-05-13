@@ -129,7 +129,15 @@ export class Scheduler {
         const queue = this.pendingEvents;
         this.pendingEvents = [];
         for (let i = 0; i < queue.length; i++) {
-          const result = dispatchEvent({ grid: this.grid, cone: this.cone }, queue[i]!);
+          const result = dispatchEvent(
+            {
+              grid: this.grid,
+              cone: this.cone,
+              nside: this.nside,
+              ordering: this.ordering,
+            },
+            queue[i]!,
+          );
           stats.eventsApplied.push(result);
         }
       }

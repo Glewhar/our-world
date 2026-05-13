@@ -222,7 +222,8 @@ export type AttributeKey =
   | 'albedo'
   | 'population_density'
   | 'ocean_health'
-  | 'elevation';
+  | 'elevation'
+  | 'wasteland';
 
 export type PickResult = {
   bodyId: string;
@@ -272,6 +273,22 @@ export interface WorldRuntime {
   getElevationMetersAt(lat: number, lon: number): number;
 
   /**
+   * Continuous elevation in metres at a specific HEALPix cell. Cheaper
+   * than the lat/lon variant when the caller has already resolved the
+   * cell index (e.g. when iterating a vertex buffer through
+   * `zPhiToPix`). Same buffer, same decode.
+   */
+  getElevationMetersAtCell(ipix: number): number;
+
+  /**
+   * Body index at a HEALPix cell. 0 means ocean / no body — used by
+   * surface-anchored bakes to mirror the GLSL `isOceanIdTexel` check
+   * (which compares the id raster's alpha sentinel) when computing
+   * coastline-aware lifts CPU-side.
+   */
+  getBodyIndexAtCell(ipix: number): number;
+
+  /**
    * Surface wind vector at the given lat/lon in m/s. `u` is eastward,
    * `v` is northward, both in the lat-tangent frame at the queried
    * point. Returns null on bakes that didn't ship the wind field.
@@ -305,6 +322,21 @@ export interface WorldRuntime {
    * "everywhere far from any boundary").
    */
   getDistanceFieldTexture(): THREE.DataTexture | null;
+
+  /**
+   * Wasteland R8 attribute texture (one byte per HEALPix cell, value
+   * normalized as `byte / 255` ∈ [0, 1]). Driven by the scenario registry
+   * on the main thread; zero everywhere on a fresh bake.
+   */
+  getWastelandTexture(): THREE.DataTexture;
+
+  /**
+   * Push a wasteland-attribute frame produced by the scenario registry.
+   * `cells` and `values` line up index-for-index; cells not in the list
+   * keep their prior value. The render layer doesn't call this — the
+   * scenario registry does, via a sink it gets from createWorldRuntime.
+   */
+  applyWastelandFrame(cells: Uint32Array, values: Float32Array): void;
 
   // HEALPix spec exposed to render-side shaders that sample the id raster
   // (Phase 3+). `nside` lets the GLSL port know the grid resolution; `ordering`

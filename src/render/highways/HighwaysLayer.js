@@ -29,6 +29,7 @@ import { source as healpixGlsl } from '../globe/shaders/healpix.glsl.js';
 import { source as vertGlsl } from './shaders/highways.vert.glsl.js';
 import { source as fragGlsl } from './shaders/highways.frag.glsl.js';
 import { DEFAULT_ELEVATION_SCALE } from '../globe/LandMaterial.js';
+import { bakeLiftMeters, } from '../util/elevation-lift-bake.js';
 /**
  * Spatial bucket grid. 4 lat bands × 8 lon bands = 32 buckets, ~45°×45°
  * each. Coarse enough to keep draw-call overhead negligible, fine enough
@@ -161,11 +162,35 @@ export class HighwaysLayer {
         });
         // Bucket roads by the first vertex's lat/lon, then build one
         // BufferGeometry + Mesh per non-empty bucket.
+        const distFieldTex = world.getDistanceFieldTexture();
+        const coastFade = distFieldTex
+            ? {
+                kind: 'distance-field',
+                // DataTexture's image.data is typed as a byte view in Three's
+                // d.ts, but for HalfFloatType + RGFormat the underlying buffer
+                // is actually a Uint16Array (one half-float per channel). The
+                // DistanceFieldTexture loader constructs it as one.
+                data: distFieldTex.image.data,
+                width: distFieldTex.image.width,
+                height: distFieldTex.image.height,
+            }
+            : // Degrade to "fully on land everywhere" — same fallback the
+                // shader used to do when the distance-field artifact didn't ship.
+                // Ocean-count-8 effectively pulls the same trick for cells with
+                // no ocean neighbours, which is true for every interior land
+                // vertex anyway.
+                { kind: 'ocean-count-8' };
+        const liftCtx = {
+            world,
+            nside,
+            ordering,
+            coastFade,
+        };
         const roadBuckets = bucketRoads(roads);
         for (const bucket of roadBuckets) {
             if (bucket.length === 0)
                 continue;
-            const built = buildRibbonGeometry(bucket);
+            const built = buildRibbonGeometry(bucket, liftCtx);
             if (built === null)
                 continue;
             const mesh = new THREE.Mesh(built.geometry, this.material);
@@ -263,7 +288,7 @@ function bucketRoads(roads) {
  *
  * Returns null if the bucket has no drawable triangles.
  */
-function buildRibbonGeometry(roads) {
+function buildRibbonGeometry(roads, liftCtx) {
     // Two passes: one to size the buffers, one to fill them.
     let totalVerts = 0;
     let totalTris = 0;
@@ -279,6 +304,10 @@ function buildRibbonGeometry(roads) {
     const positions = new Float32Array(totalVerts * 3);
     const perps = new Float32Array(totalVerts * 3);
     const kinds = new Float32Array(totalVerts);
+    // Per-vertex baked elevation lift in metres (max(elev,0) × coastFade);
+    // the shader multiplies by uElevationScale so the altitude slider
+    // still works without rebake.
+    const lifts = new Float32Array(totalVerts);
     // Use a 32-bit index buffer — 16-bit caps at 65k vertices and a real
     // bake easily exceeds that even after bucketing.
     const indices = new Uint32Array(totalTris * 3);
@@ -344,6 +373,10 @@ function buildRibbonGeometry(roads) {
                 minZ = pz;
             if (pz > maxZ)
                 maxZ = pz;
+            // One 9-tap lift bake per centerline point; copied into both
+            // ribbon verts (the +perp and -perp twins share the same
+            // centerline position, so they share the same lift).
+            const liftM = bakeLiftMeters(px, py, pz, liftCtx);
             // +perp side (centerline + unit perp; vertex shader scales to pixels)
             positions[vi * 3] = px;
             positions[vi * 3 + 1] = py;
@@ -352,6 +385,7 @@ function buildRibbonGeometry(roads) {
             perps[vi * 3 + 1] = perp.y;
             perps[vi * 3 + 2] = perp.z;
             kinds[vi] = kindFloat;
+            lifts[vi] = liftM;
             vi++;
             // -perp side (same centerline, opposite perp). Even index = +perp,
             // odd index = -perp — the vertex shader reads gl_VertexID parity to
@@ -363,6 +397,7 @@ function buildRibbonGeometry(roads) {
             perps[vi * 3 + 1] = -perp.y;
             perps[vi * 3 + 2] = -perp.z;
             kinds[vi] = kindFloat;
+            lifts[vi] = liftM;
             vi++;
         }
         // Triangulate consecutive rungs into two-triangle quads.
@@ -383,6 +418,7 @@ function buildRibbonGeometry(roads) {
     geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geom.setAttribute('aPerp', new THREE.BufferAttribute(perps, 3));
     geom.setAttribute('aKind', new THREE.BufferAttribute(kinds, 1));
+    geom.setAttribute('aLiftMeters', new THREE.BufferAttribute(lifts, 1));
     geom.setIndex(new THREE.BufferAttribute(indices, 1));
     // Bounding sphere over this bucket's centerline positions, slightly
     // inflated to cover the elevation lift + radial bias and the

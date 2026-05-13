@@ -9,10 +9,15 @@
  * constraint: same inputs → same mutations.
  */
 import { applySetAttribute } from './handlers/set_attribute.js';
+import { applySetAttributeEllipse, } from './handlers/set_attribute_ellipse.js';
 export function dispatchEvent(ctx, event) {
     switch (event.primitive) {
         case 'set_attribute': {
             const cellsTouched = applySetAttribute(ctx, event);
+            return { primitive: event.primitive, cellsTouched, handled: true };
+        }
+        case 'set_attribute_ellipse': {
+            const cellsTouched = applySetAttributeEllipse(ctx, event);
             return { primitive: event.primitive, cellsTouched, handled: true };
         }
         // Recognized but unimplemented in the slice. Each lands in a future PR

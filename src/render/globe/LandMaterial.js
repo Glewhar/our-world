@@ -146,6 +146,10 @@ export function createLandMaterial() {
         uHazeExposure: { value: 3.5 },
         uHazeAmount: { value: 0.7 },
         uHazeFalloffM: { value: 3000.0 },
+        uWastelandTex: { value: null },
+        uWastelandStrength: { value: 1.0 },
+        uWastelandColor: { value: new THREE.Color('#5a4d40') },
+        uWastelandDesaturate: { value: 0.6 },
     };
     // Three.js ShaderMaterial doesn't process GLSL `#include`, so the helper
     // module is concatenated by hand (vertex AND fragment use HEALPix lookups).

@@ -26,6 +26,7 @@ import { source as vertGlsl } from './shaders/cities.vert.glsl.js';
 import { source as fragGlsl } from './shaders/cities.frag.glsl.js';
 import { DEFAULT_ELEVATION_SCALE } from '../globe/LandMaterial.js';
 import { tangentBasisAt } from '../../world/coordinates.js';
+import { bakeLiftMeters, type LiftBakeContext } from '../util/elevation-lift-bake.js';
 import type { UrbanAreaRecord, WorldRuntime } from '../../world/index.js';
 
 const EARTH_RADIUS_KM = 6371;
@@ -158,10 +159,16 @@ export class CitiesLayer {
     });
 
     if (urbanAreas.length > 0) {
+      const liftCtx: LiftBakeContext = {
+        world,
+        nside,
+        ordering,
+        coastFade: { kind: 'ocean-count-8' },
+      };
       const cityBuckets = bucketByCentroid(urbanAreas);
       for (const bucket of cityBuckets) {
         if (bucket.length === 0) continue;
-        const built = buildBucketGeometry(bucket);
+        const built = buildBucketGeometry(bucket, liftCtx);
         if (built === null) continue;
         const mesh = new THREE.Mesh(built.geometry, this.material);
         mesh.renderOrder = -1;
@@ -247,6 +254,7 @@ function bucketByCentroid(records: readonly UrbanAreaRecord[]): UrbanAreaRecord[
  */
 function buildBucketGeometry(
   records: UrbanAreaRecord[],
+  liftCtx: LiftBakeContext,
 ): { geometry: THREE.BufferGeometry; centroidDir: THREE.Vector3 } | null {
   // First pass — triangulate each polygon and sum vertex / triangle counts.
   type Triangulated = {
@@ -344,6 +352,7 @@ function buildBucketGeometry(
   const halfExtents = new Float32Array(totalVerts * 2);
   const populations = new Float32Array(totalVerts);
   const seeds = new Float32Array(totalVerts);
+  const lifts = new Float32Array(totalVerts);
   const indices = new Uint32Array(totalIdx);
 
   let vBase = 0;
@@ -367,6 +376,11 @@ function buildBucketGeometry(
       if (px < minPx) minPx = px; if (px > maxPx) maxPx = px;
       if (py < minPy) minPy = py; if (py > maxPy) maxPy = py;
       if (pz < minPz) minPz = pz; if (pz > maxPz) maxPz = pz;
+      // 9-tap lift baked once per vertex; the shader scales by
+      // uElevationScale so the altitude slider keeps working without
+      // re-baking. Terraforming would need a `rebakeLifts()` pass to
+      // overwrite this buffer + flip needsUpdate.
+      lifts[vBase + i] = bakeLiftMeters(px, py, pz, liftCtx);
     }
     for (let i = 0; i < t.indices.length; i++) {
       indices[iWrite + i] = t.indices[i]! + vBase;
@@ -381,6 +395,7 @@ function buildBucketGeometry(
   geom.setAttribute('aHalfExtentKm', new THREE.BufferAttribute(halfExtents, 2));
   geom.setAttribute('aPopulation', new THREE.BufferAttribute(populations, 1));
   geom.setAttribute('aPatternSeed', new THREE.BufferAttribute(seeds, 1));
+  geom.setAttribute('aLiftMeters', new THREE.BufferAttribute(lifts, 1));
   geom.setIndex(new THREE.BufferAttribute(indices, 1));
 
   // Bounding sphere over this bucket's vertex positions, slightly

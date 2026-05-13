@@ -110,6 +110,15 @@ uniform float uHazeExposure;
 uniform float uHazeAmount;
 uniform float uHazeFalloffM;
 
+// Wasteland tint — scenario-driven dynamic attribute (R8 texture, one
+// byte per HEALPix cell). Cells with w>0 lerp from the biome colour
+// toward a desaturated wasteland tone, then toward uWastelandColor.
+// Strength=0 short-circuits the entire branch.
+uniform sampler2D uWastelandTex;
+uniform float uWastelandStrength;
+uniform vec3 uWastelandColor;
+uniform float uWastelandDesaturate;
+
 in vec3 vWorldPos;
 in vec3 vSphereDir;
 
@@ -377,6 +386,27 @@ void main() {
   base = mix(base, uColorInfection, dyn.b);
   base = mix(base, uColorPollution, dyn.a);
 
+  // ----- Wasteland tint -----
+  // Single-channel R8 attribute sampled at the centre cell. Composite as
+  // (1) desaturate biome toward grey, (2) lerp toward uWastelandColor.
+  // Specular contribution is also flattened on heavily-wasted cells so
+  // the surface reads dead instead of glossy. The master strength gates
+  // the whole branch; specCarry is the multiplier the spec contribution
+  // gets later in the shader.
+  float specCarry = 1.0;
+  if (uWastelandStrength > 0.0) {
+    float wRaw = texelFetch(uWastelandTex, tx, 0).r;
+    float w = clamp(wRaw * uWastelandStrength, 0.0, 1.0);
+    if (w > 0.0) {
+      float luma = dot(base, vec3(0.2126, 0.7152, 0.0722));
+      vec3 desat = mix(base, vec3(luma), clamp(uWastelandDesaturate, 0.0, 1.0));
+      vec3 wasted = mix(desat, uWastelandColor, w);
+      base = mix(base, wasted, w);
+      // Flatten specular by up to 80% at full wasteland.
+      specCarry = 1.0 - 0.8 * w;
+    }
+  }
+
   // Wrap-lambert day/night with a wider band. The Sobel-tilted normal
   // can dip well below 0 on lee-side slopes; the [-0.6, 0.8] range
   // gives a softer falloff so shadowed slopes stay legible.
@@ -397,7 +427,7 @@ void main() {
   float spec = pow(max(dot(n, halfDir), 0.0), 24.0);
   float sunMask = smoothstep(0.0, 0.15, ndotl);
   vec3 specTint = mix(vec3(1.0, 0.97, 0.92), vec3(0.95, 0.97, 1.05), snowMix);
-  vec3 specContrib = specTint * spec * smoothness * sunMask * uSpecularStrength;
+  vec3 specContrib = specTint * spec * smoothness * sunMask * uSpecularStrength * specCarry;
 
   // \`specContrib\` already carries its own tint via \`specTint\` (cool on
   // snow, warm-neutral elsewhere). Multiplying by \`uSunColor\` here would

@@ -19,6 +19,8 @@ import { createSceneGraph } from './render/scene-graph.js';
 import { createWorldRuntime } from './world/index.js';
 import { createDebugPanel, initialDebugState } from './debug/Tweakpane.js';
 import { setAttributeEvent } from './sim/events/primitives.js';
+import { NuclearScenario, ScenarioRegistry, } from './world/scenarios/index.js';
+import { mountScenarioCards } from './ui/scenario-cards.js';
 const host = document.getElementById('app');
 const loading = document.getElementById('loading');
 if (!host)
@@ -37,6 +39,41 @@ async function boot() {
     const renderer = new Renderer(host, sceneGraph);
     sceneGraph.attachWorld(world, renderer.canvas);
     const debug = createDebugPanel(initialDebugState);
+    // Scenario registry — owns the active scenario list and composes the
+    // wasteland attribute texture each frame from per-scenario stamps.
+    // Decoupled from Tweakpane state so the registry has no dependency on
+    // the debug layer; `scenarioRegistry.tuning.decayExponent` is pushed
+    // each frame from `debug.state.scenarios.decayExponent`.
+    const { nside: hpNside, ordering: hpOrdering } = world.getHealpixSpec();
+    const scenarioContext = {
+        sampleWindAt: (lat, lon) => world.getWindAt(lat, lon),
+        detonateAt: (latDeg, lonDeg) => {
+            // Z-up convention matches the bake's lonlat_to_xyz.
+            const latRad = (latDeg * Math.PI) / 180;
+            const lonRad = (lonDeg * Math.PI) / 180;
+            const cosLat = Math.cos(latRad);
+            const dir = new THREE.Vector3(cosLat * Math.cos(lonRad), cosLat * Math.sin(lonRad), Math.sin(latRad));
+            sceneGraph.detonateAt(dir);
+        },
+        paintAttributeEllipse: () => {
+            // The registry intercepts paint calls during onStart so the stamp
+            // is captured locally. Outside that window, fall through to a
+            // no-op — handlers shouldn't paint anywhere else for v1.
+        },
+    };
+    const scenarioRegistry = new ScenarioRegistry({
+        sink: {
+            applyFrame: (cells, values) => world.applyWastelandFrame(cells, values),
+        },
+        context: scenarioContext,
+        nside: hpNside,
+        ordering: hpOrdering,
+    });
+    scenarioRegistry.registerHandler('nuclear', NuclearScenario);
+    // Mount the floating scenario card stack (top-right, below the date readout).
+    // The host div is declared in index.html; mountScenarioCards reconciles
+    // against scenarioRegistry.list() every frame in the RAF loop below.
+    const scenarioCards = mountScenarioCards(document.getElementById('scenario-stack'), scenarioRegistry);
     // Floating top-left time card (pause button + 24-hour clock dial +
     // HH:MM readout + date label) and the top-right Tweakpane toggle. All
     // are static elements declared in index.html; here we bind them to
@@ -216,9 +253,18 @@ async function boot() {
             const sinMax = Math.sin((box.latMax * Math.PI) / 180);
             const latRad = Math.asin(sinMin + Math.random() * (sinMax - sinMin));
             const lonRad = ((box.lonMin + Math.random() * (box.lonMax - box.lonMin)) * Math.PI) / 180;
-            const cosLat = Math.cos(latRad);
-            const dir = new THREE.Vector3(cosLat * Math.cos(lonRad), cosLat * Math.sin(lonRad), Math.sin(latRad));
-            sceneGraph.detonateAt(dir);
+            const latDeg = (latRad * 180) / Math.PI;
+            const lonDeg = (lonRad * 180) / Math.PI;
+            const s = debug.state.scenarios.nuclear;
+            const payload = {
+                latDeg,
+                lonDeg,
+                radiusKm: s.radiusKm,
+                stretchKm: s.stretchKm,
+                windBearingDeg: 0, // overwritten by NuclearScenario.onStart
+            };
+            const label = `Nuclear strike — ${region}`;
+            scenarioRegistry.start('nuclear', payload, debug.state.timeOfDay.totalDays, s.durationDays, { label });
         });
     }
     // Make Tweakpane checkbox rows fully clickable, like the floating layer-toggle
@@ -295,6 +341,12 @@ async function boot() {
         prev = now;
         sim.tick(deltaMs);
         renderer.tick(deltaSec, debug.state);
+        // Scenario registry runs AFTER renderer.tick so it reads the freshly
+        // advanced `totalDays`. Tweakpane's decay-exponent slider is pushed
+        // before the tick so the next composition uses the live value.
+        scenarioRegistry.tuning.decayExponent = debug.state.scenarios.decayExponent;
+        scenarioRegistry.tick(debug.state.timeOfDay.totalDays);
+        scenarioCards.update();
         if (fpsCounter) {
             const wantVisible = debug.state.debug.fpsCounter;
             if (fpsCounter.classList.contains('visible') !== wantVisible) {
@@ -351,6 +403,36 @@ async function boot() {
         sceneGraph,
         renderer,
         debug,
+        scenarios: scenarioRegistry,
+        /**
+         * Manual wasteland paint — drops a single peak-value stamp directly
+         * onto the wasteland texture (no scenario, no decay). Useful for
+         * eyeballing the shader tint without firing a full scenario.
+         */
+        paintWastelandAt(latDeg, lonDeg, radiusKm = 500, stretchKm = 500, bearingDeg = 0, value = 1.0) {
+            // Import lazily to keep the boot path free of the dep cycle.
+            void import('./sim/fields/ellipse.js').then(({ computeEllipseStamp }) => {
+                const stamp = computeEllipseStamp({
+                    value,
+                    centreLatDeg: latDeg,
+                    centreLonDeg: lonDeg,
+                    radiusKm,
+                    stretchKm,
+                    bearingDeg,
+                }, hpNside, hpOrdering);
+                world.applyWastelandFrame(stamp.cells, stamp.values);
+            });
+        },
+        nukeAt(latDeg, lonDeg) {
+            const s = debug.state.scenarios.nuclear;
+            return scenarioRegistry.start('nuclear', {
+                latDeg,
+                lonDeg,
+                radiusKm: s.radiusKm,
+                stretchKm: s.stretchKm,
+                windBearingDeg: 0,
+            }, debug.state.timeOfDay.totalDays, s.durationDays, { label: `Nuclear strike — (${latDeg.toFixed(1)}, ${lonDeg.toFixed(1)})` });
+        },
         fireAt(latDeg, lonDeg, radiusKm = 500, value = 1.0) {
             sim.injectEvent(setAttributeEvent('fire', value, {
                 kind: 'point',
