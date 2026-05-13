@@ -52,6 +52,7 @@ import { UrbanDetailLayer } from './urban/UrbanDetailLayer.js';
 import { NuclearExplosion } from './effects/nuclear/NuclearExplosion.js';
 import { atmosphereRadiusFromFactor, elevationScaleFromFactor, } from './globe/LandMaterial.js';
 const CAMERA_RADIUS = 3.0;
+const MAX_CONCURRENT_BLASTS = 8;
 // Maximum solar declination — Earth's axial tilt. The per-frame declination
 // is a sinusoid of `timeOfDay.timeOfYear01`: +MAX at the June solstice,
 // -MAX at the December solstice, 0 at the equinoxes.
@@ -97,11 +98,13 @@ export function createSceneGraph() {
     let airplanes = null;
     const sunMoon = new SunMoon();
     scene.add(sunMoon.group);
-    // Nuclear-explosion particle effect — one Points mesh, dormant until
-    // `detonateAt(direction)` re-seeds and orients the local frame along
-    // the outward radial.
-    const nuclearExplosion = new NuclearExplosion(camera);
-    scene.add(nuclearExplosion.group);
+    // Pool so concurrent detonations don't stomp each other's particles.
+    const blastPool = [];
+    for (let i = 0; i < MAX_CONCURRENT_BLASTS; i++) {
+        const blast = new NuclearExplosion(camera);
+        blastPool.push(blast);
+        scene.add(blast.group);
+    }
     let pointerHandler = null;
     const raycaster = new THREE.Raycaster();
     const tmpVec2 = new THREE.Vector2();
@@ -506,7 +509,7 @@ export function createSceneGraph() {
         // the blast (consistent with every other time-driven layer). Dormant
         // when no detonation is active — `update` is an early-out then.
         const n = debug.nuclear;
-        nuclearExplosion.setLiveTuning({
+        const liveTuning = {
             worldScale: n.worldScale,
             timeScale: n.timeScale,
             spriteScale: n.spriteScale,
@@ -515,8 +518,8 @@ export function createSceneGraph() {
             windRamp: n.windRamp,
             windJitter: n.windJitter,
             windDrag: n.windDrag,
-        });
-        nuclearExplosion.setDetonateTuning({
+        };
+        const detonateTuning = {
             enables: {
                 fire: n.enableFire,
                 smoke: n.enableSmoke,
@@ -532,8 +535,12 @@ export function createSceneGraph() {
             fireColorEnd: new THREE.Color(n.fireColorEnd).getHex(),
             smokeColorStart: new THREE.Color(n.smokeColorStart).getHex(),
             smokeColorEnd: new THREE.Color(n.smokeColorEnd).getHex(),
-        });
-        nuclearExplosion.update(simDelta);
+        };
+        for (const blast of blastPool) {
+            blast.setLiveTuning(liveTuning);
+            blast.setDetonateTuning(detonateTuning);
+            blast.update(simDelta);
+        }
         if (airplanes) {
             airplanes.setSpeed(debug.airplanes.speed);
             airplanes.setTargetInFlight(debug.airplanes.targetInFlight);
@@ -573,7 +580,8 @@ export function createSceneGraph() {
         cloudsPass?.setSize(width, height);
         airplanes?.setViewport(width, height);
         highways?.setViewportSize(width, height);
-        nuclearExplosion.setViewportHeight(height);
+        for (const blast of blastPool)
+            blast.setViewportHeight(height);
     }
     function detonateAt(direction) {
         // Lift the blast group off the unit sphere so it sits on top of the
@@ -589,7 +597,26 @@ export function createSceneGraph() {
             radius += elevM * globe.uniforms.land.uElevationScale.value;
             wind = world.getWindAt(lat, lon);
         }
-        nuclearExplosion.detonate(direction, radius, wind);
+        // Pick a free instance; fall back to the one with the fewest particles
+        // (closest to finishing) so the visible disruption is minimised.
+        let slot = null;
+        for (const blast of blastPool) {
+            if (!blast.isRunning()) {
+                slot = blast;
+                break;
+            }
+        }
+        if (!slot) {
+            let lowest = Infinity;
+            for (const blast of blastPool) {
+                const count = blast.getParticleCount();
+                if (count < lowest) {
+                    lowest = count;
+                    slot = blast;
+                }
+            }
+        }
+        slot.detonate(direction, radius, wind);
     }
     function dispose() {
         if (pointerHandler && attachedCanvas) {
@@ -611,7 +638,8 @@ export function createSceneGraph() {
         airplanes = null;
         atmosphere?.dispose();
         atmosphere = null;
-        nuclearExplosion.dispose();
+        for (const blast of blastPool)
+            blast.dispose();
         sunMoon.dispose();
         controls?.dispose();
         controls = null;

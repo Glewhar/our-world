@@ -146,7 +146,7 @@ function refreshCard(card, scn, progress01) {
         const filled01 = Math.min(1, Math.max(0, progress01));
         card.progressFill.style.width = `${(filled01 * 100).toFixed(1)}%`;
         const remainingDays = Math.max(0, scn.durationDays - (progress01 * scn.durationDays));
-        card.daysLabel.textContent = `${Math.ceil(remainingDays)} d`;
+        card.daysLabel.textContent = formatRemaining(Math.ceil(remainingDays));
     }
     // Body content — only update text when expanded, but cheap to refresh
     // every frame either way.
@@ -159,6 +159,15 @@ function refreshCard(card, scn, progress01) {
         const endsYear = START_YEAR + Math.floor((scn.startedAtDay + scn.durationDays) / 12);
         card.timing.textContent = `started year ${startedYear}, recovers year ${endsYear}`;
     }
+}
+function formatRemaining(months) {
+    const years = Math.floor(months / 12);
+    const rem = months % 12;
+    if (years === 0)
+        return `${months}m`;
+    if (rem === 0)
+        return `${years}y`;
+    return `${years}y ${rem}m`;
 }
 function iconFor(scn) {
     switch (scn.kind) {

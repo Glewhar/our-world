@@ -60,6 +60,7 @@ import type { BodyRecord, WorldRuntime } from '../world/index.js';
 import type { DebugState } from '../debug/Tweakpane.js';
 
 const CAMERA_RADIUS = 3.0;
+const MAX_CONCURRENT_BLASTS = 8;
 // Maximum solar declination — Earth's axial tilt. The per-frame declination
 // is a sinusoid of `timeOfDay.timeOfYear01`: +MAX at the June solstice,
 // -MAX at the December solstice, 0 at the equinoxes.
@@ -124,11 +125,13 @@ export function createSceneGraph(): SceneGraph {
   let airplanes: AirplaneSystem | null = null;
   const sunMoon = new SunMoon();
   scene.add(sunMoon.group);
-  // Nuclear-explosion particle effect — one Points mesh, dormant until
-  // `detonateAt(direction)` re-seeds and orients the local frame along
-  // the outward radial.
-  const nuclearExplosion = new NuclearExplosion(camera);
-  scene.add(nuclearExplosion.group);
+  // Pool so concurrent detonations don't stomp each other's particles.
+  const blastPool: NuclearExplosion[] = [];
+  for (let i = 0; i < MAX_CONCURRENT_BLASTS; i++) {
+    const blast = new NuclearExplosion(camera);
+    blastPool.push(blast);
+    scene.add(blast.group);
+  }
   let pointerHandler: ((e: PointerEvent) => void) | null = null;
 
   const raycaster = new THREE.Raycaster();
@@ -578,7 +581,7 @@ export function createSceneGraph(): SceneGraph {
     // the blast (consistent with every other time-driven layer). Dormant
     // when no detonation is active — `update` is an early-out then.
     const n = debug.nuclear;
-    nuclearExplosion.setLiveTuning({
+    const liveTuning = {
       worldScale: n.worldScale,
       timeScale: n.timeScale,
       spriteScale: n.spriteScale,
@@ -587,8 +590,8 @@ export function createSceneGraph(): SceneGraph {
       windRamp: n.windRamp,
       windJitter: n.windJitter,
       windDrag: n.windDrag,
-    });
-    nuclearExplosion.setDetonateTuning({
+    };
+    const detonateTuning = {
       enables: {
         fire: n.enableFire,
         smoke: n.enableSmoke,
@@ -604,8 +607,12 @@ export function createSceneGraph(): SceneGraph {
       fireColorEnd: new THREE.Color(n.fireColorEnd).getHex(),
       smokeColorStart: new THREE.Color(n.smokeColorStart).getHex(),
       smokeColorEnd: new THREE.Color(n.smokeColorEnd).getHex(),
-    });
-    nuclearExplosion.update(simDelta);
+    };
+    for (const blast of blastPool) {
+      blast.setLiveTuning(liveTuning);
+      blast.setDetonateTuning(detonateTuning);
+      blast.update(simDelta);
+    }
 
     if (airplanes) {
       airplanes.setSpeed(debug.airplanes.speed);
@@ -649,7 +656,7 @@ export function createSceneGraph(): SceneGraph {
     cloudsPass?.setSize(width, height);
     airplanes?.setViewport(width, height);
     highways?.setViewportSize(width, height);
-    nuclearExplosion.setViewportHeight(height);
+    for (const blast of blastPool) blast.setViewportHeight(height);
   }
 
   function detonateAt(direction: THREE.Vector3): void {
@@ -666,7 +673,26 @@ export function createSceneGraph(): SceneGraph {
       radius += elevM * globe.uniforms.land.uElevationScale.value;
       wind = world.getWindAt(lat, lon);
     }
-    nuclearExplosion.detonate(direction, radius, wind);
+    // Pick a free instance; fall back to the one with the fewest particles
+    // (closest to finishing) so the visible disruption is minimised.
+    let slot: NuclearExplosion | null = null;
+    for (const blast of blastPool) {
+      if (!blast.isRunning()) {
+        slot = blast;
+        break;
+      }
+    }
+    if (!slot) {
+      let lowest = Infinity;
+      for (const blast of blastPool) {
+        const count = blast.getParticleCount();
+        if (count < lowest) {
+          lowest = count;
+          slot = blast;
+        }
+      }
+    }
+    slot!.detonate(direction, radius, wind);
   }
 
   function dispose(): void {
@@ -689,7 +715,7 @@ export function createSceneGraph(): SceneGraph {
     airplanes = null;
     atmosphere?.dispose();
     atmosphere = null;
-    nuclearExplosion.dispose();
+    for (const blast of blastPool) blast.dispose();
     sunMoon.dispose();
     controls?.dispose();
     controls = null;

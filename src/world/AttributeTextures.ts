@@ -245,14 +245,20 @@ export class AttributeTextures {
    */
   applyWastelandFrame(cells: Uint32Array, values: Float32Array): void {
     if (cells.length !== values.length) return;
+    let changed = false;
     for (let i = 0; i < cells.length; i++) {
       const ipix = cells[i]!;
       if (ipix >= this.wastelandBytes.length) continue;
-      const v = values[i]!;
-      this.wastelandBytes[ipix] = clampByte(Math.round(v * 255));
+      const next = clampByte(Math.round(values[i]! * 255));
+      if (this.wastelandBytes[ipix] !== next) {
+        this.wastelandBytes[ipix] = next;
+        changed = true;
+      }
     }
-    const tex = this.textures.get('wasteland');
-    if (tex) tex.needsUpdate = true;
+    if (changed) {
+      const tex = this.textures.get('wasteland');
+      if (tex) tex.needsUpdate = true;
+    }
   }
 
   /** Read the wasteland byte at a cell (0..255). Debug helper. */

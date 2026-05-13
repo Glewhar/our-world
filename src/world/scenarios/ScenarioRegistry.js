@@ -53,6 +53,16 @@ export class ScenarioRegistry {
     tuning = {
         decayExponent: 2.5,
     };
+    // Sized to all 12·nside² cells so reset cost stays O(touched), not O(npix).
+    accBuf;
+    markBuf;
+    dirtyList;
+    dirtyCount = 0;
+    // Composed picture is a pure function of (active, totalDays, decayExponent).
+    // `dirty` flips on active-list change; the other two are checked in recompose.
+    dirty = false;
+    lastComposedTotalDays = Number.NaN;
+    lastComposedDecayExponent = Number.NaN;
     /**
      * `paintAttributeEllipse` capture buffer — active only during `onStart`
      * so the handler's ellipse paint lands in the new scenario's stamp.
@@ -63,6 +73,10 @@ export class ScenarioRegistry {
         this.sink = deps.sink;
         this.nside = deps.nside;
         this.ordering = deps.ordering;
+        const npix = 12 * deps.nside * deps.nside;
+        this.accBuf = new Float32Array(npix);
+        this.markBuf = new Uint8Array(npix);
+        this.dirtyList = new Uint32Array(4096);
         const userCtx = deps.context;
         this.context = {
             sampleWindAt: (lat, lon) => userCtx.sampleWindAt(lat, lon),
@@ -98,6 +112,7 @@ export class ScenarioRegistry {
         }
         this.active.push({ scn, stamp });
         this.lastTotalDays = totalDays;
+        this.dirty = true;
         this.recomposeFrame(totalDays);
         return id;
     }
@@ -111,12 +126,18 @@ export class ScenarioRegistry {
             handler.onEnd(entry.scn, this.context);
         this.retireStamp(entry.stamp);
         this.active.splice(idx, 1);
+        this.dirty = true;
         this.recomposeFrame(this.lastTotalDays);
     }
     tick(totalDays) {
         this.lastTotalDays = totalDays;
-        if (this.active.length === 0 && this.retiredCells.length === 0)
+        if (totalDays !== this.lastComposedTotalDays)
+            this.dirty = true;
+        if (this.active.length === 0 && this.retiredCells.length === 0) {
+            if (this.dirty)
+                this.recomposeFrame(totalDays);
             return;
+        }
         for (let i = this.active.length - 1; i >= 0; i--) {
             const entry = this.active[i];
             const elapsed = totalDays - entry.scn.startedAtDay;
@@ -148,6 +169,7 @@ export class ScenarioRegistry {
                     this.retireStamp(entry.stamp);
                     this.active.splice(i, 1);
                 }
+                this.dirty = true;
             }
             else if (handler) {
                 const progress01 = raw < 0 ? 0 : raw;
@@ -172,7 +194,10 @@ export class ScenarioRegistry {
      * and push dirty cells + values to the sink.
      */
     recomposeFrame(totalDays) {
-        const acc = new Map();
+        if (this.tuning.decayExponent !== this.lastComposedDecayExponent)
+            this.dirty = true;
+        if (!this.dirty)
+            return;
         for (let s = 0; s < this.active.length; s++) {
             const entry = this.active[s];
             const elapsed = totalDays - entry.scn.startedAtDay;
@@ -185,33 +210,51 @@ export class ScenarioRegistry {
             const values = entry.stamp.values;
             for (let i = 0; i < cells.length; i++) {
                 const ipix = cells[i];
-                const v = values[i] * intensity;
-                const prev = acc.get(ipix) ?? 0;
-                const sum = prev + v;
-                acc.set(ipix, sum > 1 ? 1 : sum);
+                if (this.markBuf[ipix] === 0) {
+                    this.markBuf[ipix] = 1;
+                    this.appendDirty(ipix);
+                }
+                this.accBuf[ipix] += values[i] * intensity;
             }
         }
         // Ensure retired cells are emitted (with value 0 if no active scenario
         // covers them now) so the sink clears them.
         for (let i = 0; i < this.retiredCells.length; i++) {
             const ipix = this.retiredCells[i];
-            if (!acc.has(ipix))
-                acc.set(ipix, 0);
+            if (this.markBuf[ipix] === 0) {
+                this.markBuf[ipix] = 1;
+                this.appendDirty(ipix);
+            }
         }
         this.retiredCells.length = 0;
-        if (acc.size === 0)
-            return;
-        const ids = [];
-        acc.forEach((_v, k) => ids.push(k));
-        ids.sort((a, b) => a - b);
-        const out = new Uint32Array(ids.length);
-        const vals = new Float32Array(ids.length);
-        for (let i = 0; i < ids.length; i++) {
-            const ipix = ids[i];
-            out[i] = ipix;
-            vals[i] = acc.get(ipix) ?? 0;
+        if (this.dirtyCount > 0) {
+            const cells = new Uint32Array(this.dirtyCount);
+            const values = new Float32Array(this.dirtyCount);
+            for (let i = 0; i < this.dirtyCount; i++) {
+                const ipix = this.dirtyList[i];
+                cells[i] = ipix;
+                const v = this.accBuf[ipix];
+                values[i] = v > 1 ? 1 : v;
+            }
+            this.sink.applyFrame(cells, values);
+            for (let i = 0; i < this.dirtyCount; i++) {
+                const ipix = this.dirtyList[i];
+                this.accBuf[ipix] = 0;
+                this.markBuf[ipix] = 0;
+            }
+            this.dirtyCount = 0;
         }
-        this.sink.applyFrame(out, vals);
+        this.dirty = false;
+        this.lastComposedTotalDays = totalDays;
+        this.lastComposedDecayExponent = this.tuning.decayExponent;
+    }
+    appendDirty(ipix) {
+        if (this.dirtyCount >= this.dirtyList.length) {
+            const grown = new Uint32Array(Math.max(this.dirtyList.length * 2, this.dirtyCount + 1));
+            grown.set(this.dirtyList);
+            this.dirtyList = grown;
+        }
+        this.dirtyList[this.dirtyCount++] = ipix;
     }
     capturePaint(args, userCtx) {
         if (!this.capturingStamp) {

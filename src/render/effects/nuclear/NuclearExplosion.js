@@ -254,6 +254,12 @@ export class NuclearExplosion {
         for (const tex of this._textures)
             tex.dispose();
     }
+    isRunning() {
+        return this._running;
+    }
+    getParticleCount() {
+        return this._particles.length;
+    }
     _reset() {
         this._particles = [];
         for (const baseCfg of PARTICLES_TO_GENERATE) {
