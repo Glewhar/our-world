@@ -38,7 +38,6 @@
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { xyzToLatLon } from '../world/coordinates.js';
 import { Globe } from './globe/Globe.js';
 import { AtmospherePass } from './atmosphere/AtmospherePass.js';
 import { PostFXChain } from './postfx/PostFXChain.js';
@@ -50,6 +49,7 @@ import { SunMoon } from './sky/SunMoon.js';
 import { CitiesLayer } from './cities/CitiesLayer.js';
 import { UrbanDetailLayer } from './urban/UrbanDetailLayer.js';
 import { NuclearExplosion } from './effects/nuclear/NuclearExplosion.js';
+import { DEFAULT_NUCLEAR_CONFIG } from '../world/scenarios/handlers/NuclearScenario.config.js';
 import { atmosphereRadiusFromFactor, elevationScaleFromFactor, } from './globe/LandMaterial.js';
 const CAMERA_RADIUS = 3.0;
 const MAX_CONCURRENT_BLASTS = 8;
@@ -99,9 +99,11 @@ export function createSceneGraph() {
     const sunMoon = new SunMoon();
     scene.add(sunMoon.group);
     // Pool so concurrent detonations don't stomp each other's particles.
+    // Every blast shares the same scenario config — the render layer does
+    // not own the tuning; it consumes it from world/scenarios/handlers.
     const blastPool = [];
     for (let i = 0; i < MAX_CONCURRENT_BLASTS; i++) {
-        const blast = new NuclearExplosion(camera);
+        const blast = new NuclearExplosion(camera, DEFAULT_NUCLEAR_CONFIG);
         blastPool.push(blast);
         scene.add(blast.group);
     }
@@ -583,19 +585,16 @@ export function createSceneGraph() {
         for (const blast of blastPool)
             blast.setViewportHeight(height);
     }
-    function detonateAt(direction) {
+    function detonateAt(direction, elevationM, wind) {
         // Lift the blast group off the unit sphere so it sits on top of the
-        // displaced land mesh. Without this, tall terrain (Himalayas, Andes)
-        // pokes through and clips the fireball. Wind sampled once at the same
-        // lat/lon — projected into the explosion's local frame inside detonate.
+        // displaced land mesh — without this, tall terrain (Himalayas, Andes)
+        // pokes through and clips the fireball. Elevation comes in metres
+        // from the caller (scenario handler sampled it via ctx.sampleTerrainAt);
+        // we apply the live `uElevationScale` uniform here because that scale
+        // is a render-layer concept that the scenario layer shouldn't reach into.
         let radius = 1.0;
-        let wind = null;
-        if (world && globe) {
-            const dir = direction.clone().normalize();
-            const { lat, lon } = xyzToLatLon(dir);
-            const elevM = Math.max(0, world.getElevationMetersAt(lat, lon));
-            radius += elevM * globe.uniforms.land.uElevationScale.value;
-            wind = world.getWindAt(lat, lon);
+        if (globe) {
+            radius += Math.max(0, elevationM) * globe.uniforms.land.uElevationScale.value;
         }
         // Pick a free instance; fall back to the one with the fewest particles
         // (closest to finishing) so the visible disruption is minimised.

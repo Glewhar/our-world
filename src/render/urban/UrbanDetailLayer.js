@@ -20,12 +20,187 @@
  * `sampleDensity()` for a real raster lookup; no other code changes.
  */
 import * as THREE from 'three';
-import { source as bldVertGlsl } from './shaders/buildings.vert.glsl.js';
-import { source as bldFragGlsl } from './shaders/buildings.frag.glsl.js';
-import { source as strVertGlsl } from './shaders/streets.vert.glsl.js';
-import { source as strFragGlsl } from './shaders/streets.frag.glsl.js';
 import { source as healpixGlsl } from '../globe/shaders/healpix.glsl.js';
 import { DEFAULT_ELEVATION_SCALE } from '../globe/LandMaterial.js';
+const BUILDINGS_VERT = `// Buildings vertex shader — urban detail layer.
+//
+// Each instance is a unit-box (1×1×1) with base at z=0. We scale it by
+// the per-instance footprint (width × depth × height) in metres, rotate
+// it slightly around the tangent-up axis, place it at aLocalXY in the
+// city's tangent km frame, then map the whole thing to a position on
+// the globe surface using the per-city tangent basis uniforms.
+//
+// The healpix.glsl helper is concatenated before this source by
+// UrbanDetailLayer — even though we don't use HEALPix lookups here, the
+// concat keeps the surrounding code parallel with CitiesLayer.
+
+precision highp float;
+precision highp int;
+
+uniform vec3 uCityCentre;     // unit-sphere position
+uniform vec3 uTangentX;       // world-space tangent axis (east-ish), unit
+uniform vec3 uTangentY;       // world-space tangent axis (north-ish), unit
+uniform float uRadialBase;    // 1 + (elevation-fade + bias) in unit-sphere units
+uniform float uElevationScale;
+uniform float uMetresPerUnit; // EARTH_RADIUS_M
+
+// position (unit cube vertex, base at z=0) and normal are auto-declared
+// by three.js for GLSL3 ShaderMaterial — do NOT redeclare them here, or
+// the vertex shader fails to compile with "redeclaration of 'position'".
+in vec2 aLocalXY;             // per-instance tangent-frame (x, y) in km
+in vec3 aSize;                // per-instance (width_m, depth_m, height_m)
+in float aRotation;           // per-instance rotation (radians, around tangent normal)
+
+out vec3 vWorldPos;
+out vec3 vWorldNormal;
+out vec3 vSurfaceNormal;
+out float vHeightNorm;        // normalised height for shading variation
+
+void main() {
+  vHeightNorm = position.z; // [0, 1] along the box height — base 0, top 1
+
+  // 1) Scale unit cube to (w, d, h) metres.
+  vec3 sized = vec3(position.x * aSize.x, position.y * aSize.y, position.z * aSize.z);
+  // 2) Rotate around local tangent-up (z-axis in the tangent frame).
+  float ca = cos(aRotation);
+  float sa = sin(aRotation);
+  vec3 rotated = vec3(sized.x * ca - sized.y * sa, sized.x * sa + sized.y * ca, sized.z);
+  // 3) Translate within the tangent plane by aLocalXY (km → m).
+  vec2 offsetM = aLocalXY * 1000.0 + rotated.xy;
+  float heightM = rotated.z;
+
+  // 4) Convert metres back to unit-sphere units. The tangent vectors are
+  //    unit length in world-space, which is the same as unit-sphere.
+  float offsetUnitX = offsetM.x / uMetresPerUnit;
+  float offsetUnitY = offsetM.y / uMetresPerUnit;
+  float heightUnit = (heightM * uElevationScale) / 1.0;
+  // Note: uElevationScale is "unit per metre" (matches land mesh's
+  // displacement convention). Multiplying once is correct.
+
+  // 5) Place: city centre lifted to uRadialBase, then offset along
+  //    the two tangent axes, then radially out by heightUnit.
+  vec3 surface = uCityCentre * uRadialBase
+               + uTangentX * offsetUnitX
+               + uTangentY * offsetUnitY;
+  // surface normal at this point ≈ uCityCentre (planar approximation
+  // for a < 100 km patch — angular spread is < 1°).
+  vSurfaceNormal = normalize(uCityCentre);
+  vec3 worldPos = surface + vSurfaceNormal * heightUnit;
+  vWorldPos = worldPos;
+
+  // Transform the box's local-frame normal back into world space. The
+  // local axes are (uTangentX, uTangentY, vSurfaceNormal); rotation only
+  // happens in the (x, y) plane, so rotate the planar component.
+  float nx = normal.x * ca - normal.y * sa;
+  float ny = normal.x * sa + normal.y * ca;
+  vec3 nWorld = uTangentX * nx + uTangentY * ny + vSurfaceNormal * normal.z;
+  vWorldNormal = normalize(nWorld);
+
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(worldPos, 1.0);
+}
+`;
+const BUILDINGS_FRAG = `// Buildings fragment shader — flat lambert + small height-driven
+// brightness lift so taller buildings catch a touch more light at the
+// top. No texture maps. Day/night wrap computed per-fragment from
+// dot(surfaceNormal, sun) to match the rest of the globe layers.
+
+precision highp float;
+
+in vec3 vWorldPos;
+in vec3 vWorldNormal;
+in vec3 vSurfaceNormal;
+in float vHeightNorm;
+
+uniform vec3 uSunDirection;
+uniform float uOpacity;
+
+out vec4 fragColor;
+
+void main() {
+  vec3 N = normalize(vWorldNormal);
+  vec3 L = normalize(uSunDirection);
+  float ndotl = max(0.0, dot(N, L));
+
+  // Base palette — light grey concrete, lifted slightly toward the top.
+  vec3 base = mix(vec3(0.42, 0.41, 0.38), vec3(0.62, 0.6, 0.55), vHeightNorm * 0.6);
+  float lit = 0.25 + 0.85 * ndotl;
+  vec3 dayCol = base * lit;
+
+  // Night palette — dim warm window glow biased toward the upper half.
+  // Windows on the underside (the box's z=0 face) read as dark roofs.
+  float topMask = smoothstep(0.05, 0.4, vHeightNorm);
+  vec3 nightCol = mix(vec3(0.07, 0.07, 0.09), vec3(1.0, 0.85, 0.55) * 0.55, topMask * 0.6);
+
+  // Day/night terminator: same smoothstep window the cities + land
+  // shaders use, against the city's surface normal (planar approximation
+  // for a < 100 km patch).
+  float wrap = smoothstep(-0.05, 0.15, dot(vSurfaceNormal, L));
+  vec3 col = mix(nightCol, dayCol, wrap);
+  fragColor = vec4(col, uOpacity);
+}
+`;
+const STREETS_VERT = `// Streets vertex shader — flat-on-tangent-plane ribbon.
+//
+// Each input vertex is an (x, y) in the city's tangent km frame. The
+// per-city basis uniforms place the quad on the globe surface; a tiny
+// radial bias lifts it just above the land mesh so the depth test
+// prefers streets over the ground without z-fighting.
+
+precision highp float;
+
+uniform vec3 uCityCentre;
+uniform vec3 uTangentX;
+uniform vec3 uTangentY;
+uniform float uRadialBase;
+uniform float uMetresPerUnit;
+uniform float uElevationScale; // unused — kept symmetric with buildings
+
+in vec2 aLocalXY;     // km in tangent frame
+in vec2 aStreetUV;    // 0..1 within the cell
+
+out vec2 vUV;
+out vec3 vSurfaceNormal;
+
+void main() {
+  vUV = aStreetUV;
+  vSurfaceNormal = normalize(uCityCentre);
+  float ox = (aLocalXY.x * 1000.0) / uMetresPerUnit;
+  float oy = (aLocalXY.y * 1000.0) / uMetresPerUnit;
+  vec3 surface = uCityCentre * uRadialBase
+               + uTangentX * ox
+               + uTangentY * oy;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(surface, 1.0);
+}
+`;
+const STREETS_FRAG = `// Streets fragment shader — dark asphalt by day, thin warm trace by night.
+
+precision highp float;
+
+in vec2 vUV;
+in vec3 vSurfaceNormal;
+
+uniform vec3 uSunDirection;
+uniform float uOpacity;
+
+out vec4 fragColor;
+
+void main() {
+  // Centre core: brighter near the cell midline.
+  vec2 d = abs(vUV - 0.5);
+  float core = 1.0 - smoothstep(0.18, 0.42, max(d.x, d.y));
+
+  vec3 day = mix(vec3(0.18, 0.18, 0.19), vec3(0.32, 0.32, 0.33), core);
+  vec3 night = mix(vec3(0.04, 0.04, 0.05), vec3(0.55, 0.45, 0.3), core);
+
+  float wrap = smoothstep(-0.05, 0.15, dot(vSurfaceNormal, normalize(uSunDirection)));
+  vec3 col = mix(night, day, wrap);
+
+  // Cell-edge fade so adjacent street cells blend rather than reading
+  // as a grid of squares.
+  float alphaEdge = 1.0 - smoothstep(0.4, 0.5, max(d.x, d.y));
+  fragColor = vec4(col, alphaEdge * uOpacity * 0.85);
+}
+`;
 import { ATLAS_WIDTH, buildPolygonAtlas, pointInPolygon } from './PolygonAtlas.js';
 import { Pcg32 } from '../util/pcg32.js';
 import { tangentBasisAt } from '../../world/coordinates.js';
@@ -83,16 +258,16 @@ export class UrbanDetailLayer {
         this.bldMaterial = new THREE.ShaderMaterial({
             uniforms: this.bldUniforms,
             glslVersion: THREE.GLSL3,
-            vertexShader: `${healpixGlsl}\n${bldVertGlsl}`,
-            fragmentShader: bldFragGlsl,
+            vertexShader: `${healpixGlsl}\n${BUILDINGS_VERT}`,
+            fragmentShader: BUILDINGS_FRAG,
             transparent: false,
             depthWrite: true,
         });
         this.strMaterial = new THREE.ShaderMaterial({
             uniforms: this.strUniforms,
             glslVersion: THREE.GLSL3,
-            vertexShader: strVertGlsl,
-            fragmentShader: strFragGlsl,
+            vertexShader: STREETS_VERT,
+            fragmentShader: STREETS_FRAG,
             transparent: true,
             depthWrite: false,
         });

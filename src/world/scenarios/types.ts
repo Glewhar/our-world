@@ -84,6 +84,19 @@ export type ScenarioStamp = {
 };
 
 /**
+ * Sampled terrain at a lat/lon — produced by `ScenarioContext.sampleTerrainAt`.
+ * Wraps the two world-layer reads (elevation + wind) that scenario handlers
+ * need so they can hand the result back to `ctx.detonateAt` without the
+ * render layer reaching into world state on the handler's behalf.
+ */
+export type TerrainSample = {
+  /** Elevation above sea level in metres (clamped ≥ 0 by the world layer). */
+  elevationM: number;
+  /** Wind vector in m/s (u = eastward, v = northward), or null if no wind field. */
+  wind: { u: number; v: number } | null;
+};
+
+/**
  * Context passed to handler callbacks. The registry injects this — handlers
  * don't pull from globals, so tests can drive them with stubs.
  */
@@ -95,11 +108,18 @@ export type ScenarioContext = {
    */
   sampleWindAt(latDeg: number, lonDeg: number): { u: number; v: number } | null;
   /**
-   * Fire the existing particle blast at a lat/lon. The world layer
-   * computes the displaced-surface radius itself; the handler just hands
-   * over coordinates.
+   * Resolve a lat/lon to elevation + wind in a single call. Use this when
+   * you need both — keeps the render-layer code out of the scenario's
+   * sampling concerns.
    */
-  detonateAt(latDeg: number, lonDeg: number): void;
+  sampleTerrainAt(latDeg: number, lonDeg: number): TerrainSample;
+  /**
+   * Fire the existing particle blast at a lat/lon. Pass the terrain sample
+   * captured by `sampleTerrainAt` so the render layer doesn't have to
+   * re-sample on the scenario's behalf (which was the Phase-1 shape — the
+   * render layer secretly knew about wasteland-driven detonates).
+   */
+  detonateAt(latDeg: number, lonDeg: number, terrain: TerrainSample): void;
   /**
    * Stamp an attribute ellipse into the registry's accumulator. The
    * registry captures the result as a peak stamp; subsequent ticks scale

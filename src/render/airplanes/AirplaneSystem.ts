@@ -31,6 +31,7 @@
 
 import * as THREE from 'three';
 
+import { DEFAULTS } from '../../debug/defaults.js';
 import type { AirplaneData } from './data.js';
 import { AirportsLayer } from './AirportsLayer.js';
 import { RouteScaffoldLayer } from './RouteScaffoldLayer.js';
@@ -46,8 +47,6 @@ const CRUISE_KM_PER_HR = 850;
  */
 const TRAIL_LEN_T = 0.3;
 
-/** Aim for ~this many planes in flight at any time at speed=1. */
-const DEFAULT_TARGET_IN_FLIGHT = 500;
 /**
  * Pool capacity — accommodates ≈ 2 × the in-flight count because each slot
  * lives through a full grow-then-retract cycle (flight time + dissipation).
@@ -83,7 +82,7 @@ export class AirplaneSystem {
   private readonly routeBaseRate: Float32Array;
 
   private simHoursPerRealSecond = 1.0;
-  private targetInFlight = DEFAULT_TARGET_IN_FLIGHT;
+  private targetInFlight = DEFAULTS.airplanes.targetInFlight;
   private elapsedRealSeconds = 0;
   private sunLonRad = 0;
 

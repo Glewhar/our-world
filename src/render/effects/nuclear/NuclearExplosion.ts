@@ -14,30 +14,82 @@
 
 import * as THREE from 'three';
 
-import {
-  PARTICLE_FRAGMENT_SHADER,
-  PARTICLE_VERTEX_SHADER,
-} from './shaders.js';
-import {
-  PARTICLES_TO_GENERATE,
-  type ColourKeyframe,
-  type ParticleTypeConfig,
-} from './particleTypes.js';
+import type { ColourKeyframe, ParticleTypeConfig } from './particleTypes.js';
 
-// The demo uses SIZE_SCALE = SIZE_MOD / 14 with SIZE_MOD default 6, i.e.
-// 0.4286. Times an additional scene-level scale on the points host.
-// The demo's scene is roughly tens-of-units across. On our unit globe
-// (radius = 1), 0.02 covered the whole planet; the city-scale look
-// lives ~15× smaller.
-const SIZE_SCALE = 6 / 14;
-const EXPLOSION_WORLD_SCALE = 0.015;
+// GLSL ported from the nuke-theta demo's particle system
+// (bundle.pretty.js:19683–19754) and translated to GLSL ES 3.00 syntax
+// (in/out + texture + out_FragColor), because the demo uses
+// `flat varying int` which requires GLSL 3. Fog includes and the
+// customDensity uniform have been stripped — we do not wire scene fog
+// for the explosion.
+
+const PARTICLE_VERTEX_SHADER = `
+uniform float pointMultiplier;
+
+in float size;
+in float angle;
+in float blend;
+in vec4 colour;
+in int type;
+
+out vec4 vColour;
+out vec2 vAngle;
+out float vBlend;
+flat out int vType;
+
+void main() {
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
+  gl_PointSize = size * pointMultiplier / gl_Position.w;
+
+  vAngle = vec2(cos(angle), sin(angle));
+  vColour = colour;
+  vBlend = blend;
+  vType = type;
+}
+`;
+
+const PARTICLE_FRAGMENT_SHADER = `
+precision highp float;
+
+uniform sampler2D u_texturez[3];
+
+in vec4 vColour;
+in vec2 vAngle;
+in float vBlend;
+flat in int vType;
+
+out vec4 out_FragColor;
+
+void main() {
+  vec2 coords = (gl_PointCoord - 0.5) * mat2(vAngle.x, vAngle.y, -vAngle.y, vAngle.x) + 0.5;
+
+  vec4 sampled = vec4(0.0);
+  if (vType == 0 || vType == 4 || vType == 5) {
+    sampled = texture(u_texturez[0], coords);
+  } else if (vType == 1 || vType == 3 || vType == 6) {
+    sampled = texture(u_texturez[1], coords);
+  } else if (vType == 2) {
+    sampled = texture(u_texturez[2], coords);
+  }
+
+  vec4 col = sampled * vColour;
+  col.rgb *= col.a;
+  col.a *= vBlend;
+  out_FragColor = col;
+}
+`;
+import type {
+  NuclearDetonateTuning,
+  NuclearLiveTuning,
+  NuclearScenarioConfig,
+} from '../../../world/scenarios/handlers/NuclearScenario.config.js';
+
+// Unit-sphere convention shared with [../../globe/Globe.ts]: the planet's
+// reference radius is 1.0 and elevation is added on top in caller-supplied
+// units. Lives in the renderer (not the config) because it is a render-layer
+// frame convention, not a tuning knob.
 const PLANET_RADIUS = 1.0;
-
-// Camera FOV in the host scene. PerspectiveCamera(45°) in scene-graph.ts.
-// `pointMultiplier` is the demo's screen-pixel scale factor, derived
-// from the projection so that a particle's `size` attribute is roughly
-// pixel-equivalent.
-const CAMERA_FOV_DEG = 45;
 
 type Particle = {
   particleType: number;
@@ -93,16 +145,6 @@ type Splines = {
   colour: LinearSpline<THREE.Color>;
 };
 
-export type NuclearDetonateTuning = {
-  enables: Record<string, boolean>;
-  mushroomHeightScale: number;
-  columnHeightScale: number;
-  fireColorStart: number;
-  fireColorEnd: number;
-  smokeColorStart: number;
-  smokeColorEnd: number;
-};
-
 function randomBetween(min: number, max: number): number {
   return Math.random() * (max - min) + min;
 }
@@ -152,6 +194,7 @@ export class NuclearExplosion {
   readonly group: THREE.Group;
 
   private readonly _camera: THREE.PerspectiveCamera;
+  private readonly _profile: NuclearScenarioConfig;
   private readonly _material: THREE.ShaderMaterial;
   private readonly _geometry: THREE.BufferGeometry;
   private readonly _points: THREE.Points;
@@ -164,26 +207,36 @@ export class NuclearExplosion {
   private readonly _tmpVel = new THREE.Vector3();
   private _viewportHeight =
     typeof window !== 'undefined' ? window.innerHeight : 1080;
-  private _liveScale = EXPLOSION_WORLD_SCALE;
-  private _timeScale = 1;
-  private _spriteScale = 1;
-  private _windStrength = 0;
-  private _windDelay = 0;
-  private _windRamp = 1;
-  private _windJitter = 0.3;
+  private _liveScale: number;
+  private _timeScale: number;
+  private _spriteScale: number;
+  private _windStrength: number;
+  private _windDelay: number;
+  private _windRamp: number;
+  private _windJitter: number;
   // Damping on per-particle windVelocity, per second. Sets terminal drift
   // speed = (wind acceleration / windDrag). Higher = particle matches wind
   // rate quickly (snappy, less momentum). Lower = slow build-up, more glide.
-  private _windDrag = 1.0;
+  private _windDrag: number;
   private _windLocal = new THREE.Vector3(0, 0, 0);
   // Elapsed blast-time (deltaSec × timeScale) since detonate. Used to gate
   // wind drift: it's in the same time domain as the particle splines, so
   // halving `timeScale` doubles the real-time delay automatically.
   private _blastTime = 0;
-  private _detonateTuning: NuclearDetonateTuning | null = null;
+  private _detonateTuning: NuclearDetonateTuning;
 
-  constructor(camera: THREE.PerspectiveCamera) {
+  constructor(camera: THREE.PerspectiveCamera, profile: NuclearScenarioConfig) {
     this._camera = camera;
+    this._profile = profile;
+    this._liveScale = profile.live.worldScale;
+    this._timeScale = profile.live.timeScale;
+    this._spriteScale = profile.live.spriteScale;
+    this._windStrength = profile.live.windStrength;
+    this._windDelay = profile.live.windDelay;
+    this._windRamp = Math.max(0.001, profile.live.windRamp);
+    this._windJitter = Math.max(0, Math.min(1, profile.live.windJitter));
+    this._windDrag = Math.max(0, Math.min(10, profile.live.windDrag));
+    this._detonateTuning = profile.detonate;
 
     const loader = new THREE.TextureLoader();
     this._textures = [
@@ -193,16 +246,17 @@ export class NuclearExplosion {
     ];
 
     // Initial point multiplier guess; updated via setViewportHeight().
-    // We bake EXPLOSION_WORLD_SCALE in here because gl_PointSize doesn't
-    // go through the model matrix — group.scale shrinks particle positions
-    // but sprite pixel sizes stay raw unless we compensate here. Without
-    // this, particles cluster tightly but sprites stay huge, making the
-    // whole blast collapse into one undifferentiated blob with no
-    // mushroom structure visible.
+    // We bake _liveScale in here because gl_PointSize doesn't go through
+    // the model matrix — group.scale shrinks particle positions but sprite
+    // pixel sizes stay raw unless we compensate here. Without this,
+    // particles cluster tightly but sprites stay huge, making the whole
+    // blast collapse into one undifferentiated blob with no mushroom
+    // structure visible. Camera FOV is read directly so the renderer tracks
+    // any future projection-matrix changes.
     const initialHeight = typeof window !== 'undefined' ? window.innerHeight : 1080;
     const pointMultiplier =
-      (initialHeight / (2 * Math.tan((CAMERA_FOV_DEG * Math.PI) / 360))) *
-      EXPLOSION_WORLD_SCALE;
+      (initialHeight / (2 * Math.tan((camera.fov * Math.PI) / 360))) *
+      this._liveScale;
 
     this._material = new THREE.ShaderMaterial({
       uniforms: {
@@ -238,33 +292,24 @@ export class NuclearExplosion {
 
     this.group = new THREE.Group();
     this.group.add(this._points);
-    this.group.scale.setScalar(EXPLOSION_WORLD_SCALE);
+    this.group.scale.setScalar(this._liveScale);
 
     this._splinesByType = new Map();
-    for (const cfg of PARTICLES_TO_GENERATE) {
+    for (const cfg of profile.particleTypes) {
       this._splinesByType.set(cfg.particleType, buildSplines(cfg));
     }
   }
 
   // Called once per resize so `gl_PointSize` stays in screen pixels.
-  // EXPLOSION_WORLD_SCALE is folded in for the same reason as the
-  // constructor — sprite size must scale with position scale to keep
-  // the mushroom-vs-fireball proportions intact.
+  // `_liveScale` is folded in for the same reason as the constructor —
+  // sprite size must scale with position scale to keep the
+  // mushroom-vs-fireball proportions intact.
   setViewportHeight(heightPx: number): void {
     this._viewportHeight = heightPx;
     this._updatePointMultiplier();
   }
 
-  setLiveTuning(t: {
-    worldScale: number;
-    timeScale: number;
-    spriteScale: number;
-    windStrength: number;
-    windDelay: number;
-    windRamp: number;
-    windJitter: number;
-    windDrag: number;
-  }): void {
+  setLiveTuning(t: NuclearLiveTuning): void {
     this._timeScale = t.timeScale;
     this._spriteScale = t.spriteScale;
     this._windStrength = t.windStrength;
@@ -290,7 +335,7 @@ export class NuclearExplosion {
 
   private _updatePointMultiplier(): void {
     const pm =
-      (this._viewportHeight / (2 * Math.tan((CAMERA_FOV_DEG * Math.PI) / 360))) *
+      (this._viewportHeight / (2 * Math.tan((this._camera.fov * Math.PI) / 360))) *
       this._liveScale;
     this._material.uniforms.pointMultiplier!.value = pm;
   }
@@ -357,7 +402,7 @@ export class NuclearExplosion {
 
   private _reset(): void {
     this._particles = [];
-    for (const baseCfg of PARTICLES_TO_GENERATE) {
+    for (const baseCfg of this._profile.particleTypes) {
       const cfg = this._applyDetonateTuning(baseCfg);
       if (!cfg.enabled) continue;
       // Rebuild splines per type — colour / maxValues may have been overridden.
@@ -370,8 +415,6 @@ export class NuclearExplosion {
 
   private _applyDetonateTuning(base: ParticleTypeConfig): ParticleTypeConfig {
     const t = this._detonateTuning;
-    if (!t) return base;
-
     const enabled = t.enables[base.name] ?? base.enabled;
 
     let startColour = base.startColour;
@@ -422,6 +465,7 @@ export class NuclearExplosion {
       : cfg.dynamicSize
       ? rawSize * (radiusPerc + (cfg.radiusMod ?? 0))
       : rawSize;
+    const spriteScale = this._profile.visuals.spriteSizeScale;
 
     const life = randomBetween(cfg.lifeTime.minLife, cfg.lifeTime.maxLife);
     const startPosY = randomBetween(cfg.minHeight ?? 0, cfg.maxHeight ?? 0.5);
@@ -438,8 +482,8 @@ export class NuclearExplosion {
       velocity,
       position: startPos,
       originalPosition: startPos.clone(),
-      size: initialSize * SIZE_SCALE,
-      currentSize: initialSize * SIZE_SCALE,
+      size: initialSize * spriteScale,
+      currentSize: initialSize * spriteScale,
       life,
       maxLife: life,
       rotation: 2 * Math.random() * Math.PI,
@@ -469,7 +513,7 @@ export class NuclearExplosion {
     // ramp so the cloud front softens instead of all particles starting on
     // the same frame. Fraction is live-tunable (0..1).
     const jitterSpan = this._windRamp * this._windJitter;
-    const windRef = 16;
+    const windRef = this._profile.visuals.windRefHeight;
     // Local-frame Y of the planet center. The group sits at world distance
     // PLANET_RADIUS from origin with local +Y aligned to the outward radial,
     // so the planet center is at local (0, -R/scale, 0). Used by the radial

@@ -22,8 +22,8 @@
  * layer's responsibility — render is a read-only consumer. Render code
  * calls `world.getDistanceFieldTexture()` to bind it.
  *
- * Format spec lives in
- * [`docs/plans/coastlines-biomes/00-overview.md`](../../../docs/plans/coastlines-biomes/00-overview.md).
+ * Byte-layout spec lives in
+ * [`data-pipeline/src/earth_pipeline/distance_field.py`](../../../data-pipeline/src/earth_pipeline/distance_field.py).
  */
 
 import * as THREE from 'three';

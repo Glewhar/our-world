@@ -12,21 +12,72 @@
 //     thing that distinguishes "off a flat plane" from "off the planet
 //     surface".
 import * as THREE from 'three';
-import { PARTICLE_FRAGMENT_SHADER, PARTICLE_VERTEX_SHADER, } from './shaders.js';
-import { PARTICLES_TO_GENERATE, } from './particleTypes.js';
-// The demo uses SIZE_SCALE = SIZE_MOD / 14 with SIZE_MOD default 6, i.e.
-// 0.4286. Times an additional scene-level scale on the points host.
-// The demo's scene is roughly tens-of-units across. On our unit globe
-// (radius = 1), 0.02 covered the whole planet; the city-scale look
-// lives ~15× smaller.
-const SIZE_SCALE = 6 / 14;
-const EXPLOSION_WORLD_SCALE = 0.015;
+// GLSL ported from the nuke-theta demo's particle system
+// (bundle.pretty.js:19683–19754) and translated to GLSL ES 3.00 syntax
+// (in/out + texture + out_FragColor), because the demo uses
+// `flat varying int` which requires GLSL 3. Fog includes and the
+// customDensity uniform have been stripped — we do not wire scene fog
+// for the explosion.
+const PARTICLE_VERTEX_SHADER = `
+uniform float pointMultiplier;
+
+in float size;
+in float angle;
+in float blend;
+in vec4 colour;
+in int type;
+
+out vec4 vColour;
+out vec2 vAngle;
+out float vBlend;
+flat out int vType;
+
+void main() {
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
+  gl_PointSize = size * pointMultiplier / gl_Position.w;
+
+  vAngle = vec2(cos(angle), sin(angle));
+  vColour = colour;
+  vBlend = blend;
+  vType = type;
+}
+`;
+const PARTICLE_FRAGMENT_SHADER = `
+precision highp float;
+
+uniform sampler2D u_texturez[3];
+
+in vec4 vColour;
+in vec2 vAngle;
+in float vBlend;
+flat in int vType;
+
+out vec4 out_FragColor;
+
+void main() {
+  vec2 coords = (gl_PointCoord - 0.5) * mat2(vAngle.x, vAngle.y, -vAngle.y, vAngle.x) + 0.5;
+
+  vec4 sampled = vec4(0.0);
+  if (vType == 0 || vType == 4 || vType == 5) {
+    sampled = texture(u_texturez[0], coords);
+  } else if (vType == 1 || vType == 3 || vType == 6) {
+    sampled = texture(u_texturez[1], coords);
+  } else if (vType == 2) {
+    sampled = texture(u_texturez[2], coords);
+  }
+
+  vec4 col = sampled * vColour;
+  col.rgb *= col.a;
+  col.a *= vBlend;
+  out_FragColor = col;
+}
+`;
+// Unit-sphere convention shared with [../../globe/Globe.ts]: the planet's
+// reference radius is 1.0 and elevation is added on top in caller-supplied
+// units. Lives in the renderer (not the config) because it is a render-layer
+// frame convention, not a tuning knob.
 const PLANET_RADIUS = 1.0;
-// Camera FOV in the host scene. PerspectiveCamera(45°) in scene-graph.ts.
-// `pointMultiplier` is the demo's screen-pixel scale factor, derived
-// from the projection so that a particle's `size` attribute is roughly
-// pixel-equivalent.
-const CAMERA_FOV_DEG = 45;
 class LinearSpline {
     _lerp;
     _points = [];
@@ -90,6 +141,7 @@ function buildSplines(cfg) {
 export class NuclearExplosion {
     group;
     _camera;
+    _profile;
     _material;
     _geometry;
     _points;
@@ -101,25 +153,35 @@ export class NuclearExplosion {
     _tmpDrag = new THREE.Vector3();
     _tmpVel = new THREE.Vector3();
     _viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 1080;
-    _liveScale = EXPLOSION_WORLD_SCALE;
-    _timeScale = 1;
-    _spriteScale = 1;
-    _windStrength = 0;
-    _windDelay = 0;
-    _windRamp = 1;
-    _windJitter = 0.3;
+    _liveScale;
+    _timeScale;
+    _spriteScale;
+    _windStrength;
+    _windDelay;
+    _windRamp;
+    _windJitter;
     // Damping on per-particle windVelocity, per second. Sets terminal drift
     // speed = (wind acceleration / windDrag). Higher = particle matches wind
     // rate quickly (snappy, less momentum). Lower = slow build-up, more glide.
-    _windDrag = 1.0;
+    _windDrag;
     _windLocal = new THREE.Vector3(0, 0, 0);
     // Elapsed blast-time (deltaSec × timeScale) since detonate. Used to gate
     // wind drift: it's in the same time domain as the particle splines, so
     // halving `timeScale` doubles the real-time delay automatically.
     _blastTime = 0;
-    _detonateTuning = null;
-    constructor(camera) {
+    _detonateTuning;
+    constructor(camera, profile) {
         this._camera = camera;
+        this._profile = profile;
+        this._liveScale = profile.live.worldScale;
+        this._timeScale = profile.live.timeScale;
+        this._spriteScale = profile.live.spriteScale;
+        this._windStrength = profile.live.windStrength;
+        this._windDelay = profile.live.windDelay;
+        this._windRamp = Math.max(0.001, profile.live.windRamp);
+        this._windJitter = Math.max(0, Math.min(1, profile.live.windJitter));
+        this._windDrag = Math.max(0, Math.min(10, profile.live.windDrag));
+        this._detonateTuning = profile.detonate;
         const loader = new THREE.TextureLoader();
         this._textures = [
             loader.load(new URL('./sprites/fire_desat.png', import.meta.url).href),
@@ -127,15 +189,16 @@ export class NuclearExplosion {
             loader.load(new URL('./sprites/debris.png', import.meta.url).href),
         ];
         // Initial point multiplier guess; updated via setViewportHeight().
-        // We bake EXPLOSION_WORLD_SCALE in here because gl_PointSize doesn't
-        // go through the model matrix — group.scale shrinks particle positions
-        // but sprite pixel sizes stay raw unless we compensate here. Without
-        // this, particles cluster tightly but sprites stay huge, making the
-        // whole blast collapse into one undifferentiated blob with no
-        // mushroom structure visible.
+        // We bake _liveScale in here because gl_PointSize doesn't go through
+        // the model matrix — group.scale shrinks particle positions but sprite
+        // pixel sizes stay raw unless we compensate here. Without this,
+        // particles cluster tightly but sprites stay huge, making the whole
+        // blast collapse into one undifferentiated blob with no mushroom
+        // structure visible. Camera FOV is read directly so the renderer tracks
+        // any future projection-matrix changes.
         const initialHeight = typeof window !== 'undefined' ? window.innerHeight : 1080;
-        const pointMultiplier = (initialHeight / (2 * Math.tan((CAMERA_FOV_DEG * Math.PI) / 360))) *
-            EXPLOSION_WORLD_SCALE;
+        const pointMultiplier = (initialHeight / (2 * Math.tan((camera.fov * Math.PI) / 360))) *
+            this._liveScale;
         this._material = new THREE.ShaderMaterial({
             uniforms: {
                 u_texturez: { value: this._textures },
@@ -167,16 +230,16 @@ export class NuclearExplosion {
         this._points.renderOrder = 2;
         this.group = new THREE.Group();
         this.group.add(this._points);
-        this.group.scale.setScalar(EXPLOSION_WORLD_SCALE);
+        this.group.scale.setScalar(this._liveScale);
         this._splinesByType = new Map();
-        for (const cfg of PARTICLES_TO_GENERATE) {
+        for (const cfg of profile.particleTypes) {
             this._splinesByType.set(cfg.particleType, buildSplines(cfg));
         }
     }
     // Called once per resize so `gl_PointSize` stays in screen pixels.
-    // EXPLOSION_WORLD_SCALE is folded in for the same reason as the
-    // constructor — sprite size must scale with position scale to keep
-    // the mushroom-vs-fireball proportions intact.
+    // `_liveScale` is folded in for the same reason as the constructor —
+    // sprite size must scale with position scale to keep the
+    // mushroom-vs-fireball proportions intact.
     setViewportHeight(heightPx) {
         this._viewportHeight = heightPx;
         this._updatePointMultiplier();
@@ -204,7 +267,7 @@ export class NuclearExplosion {
         this._detonateTuning = t;
     }
     _updatePointMultiplier() {
-        const pm = (this._viewportHeight / (2 * Math.tan((CAMERA_FOV_DEG * Math.PI) / 360))) *
+        const pm = (this._viewportHeight / (2 * Math.tan((this._camera.fov * Math.PI) / 360))) *
             this._liveScale;
         this._material.uniforms.pointMultiplier.value = pm;
     }
@@ -262,7 +325,7 @@ export class NuclearExplosion {
     }
     _reset() {
         this._particles = [];
-        for (const baseCfg of PARTICLES_TO_GENERATE) {
+        for (const baseCfg of this._profile.particleTypes) {
             const cfg = this._applyDetonateTuning(baseCfg);
             if (!cfg.enabled)
                 continue;
@@ -275,8 +338,6 @@ export class NuclearExplosion {
     }
     _applyDetonateTuning(base) {
         const t = this._detonateTuning;
-        if (!t)
-            return base;
         const enabled = t.enables[base.name] ?? base.enabled;
         let startColour = base.startColour;
         let endColour = base.endColour;
@@ -318,6 +379,7 @@ export class NuclearExplosion {
             : cfg.dynamicSize
                 ? rawSize * (radiusPerc + (cfg.radiusMod ?? 0))
                 : rawSize;
+        const spriteScale = this._profile.visuals.spriteSizeScale;
         const life = randomBetween(cfg.lifeTime.minLife, cfg.lifeTime.maxLife);
         const startPosY = randomBetween(cfg.minHeight ?? 0, cfg.maxHeight ?? 0.5);
         const startPos = new THREE.Vector3(0, startPosY, 0);
@@ -332,8 +394,8 @@ export class NuclearExplosion {
             velocity,
             position: startPos,
             originalPosition: startPos.clone(),
-            size: initialSize * SIZE_SCALE,
-            currentSize: initialSize * SIZE_SCALE,
+            size: initialSize * spriteScale,
+            currentSize: initialSize * spriteScale,
             life,
             maxLife: life,
             rotation: 2 * Math.random() * Math.PI,
@@ -361,7 +423,7 @@ export class NuclearExplosion {
         // ramp so the cloud front softens instead of all particles starting on
         // the same frame. Fraction is live-tunable (0..1).
         const jitterSpan = this._windRamp * this._windJitter;
-        const windRef = 16;
+        const windRef = this._profile.visuals.windRefHeight;
         // Local-frame Y of the planet center. The group sits at world distance
         // PLANET_RADIUS from origin with local +Y aligned to the outward radial,
         // so the planet center is at local (0, -R/scale, 0). Used by the radial

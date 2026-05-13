@@ -56,9 +56,8 @@ export type WorldManifest = {
      * nearest coastline (positive on land, negative in water). G =
      * kilometres to nearest biome-class boundary. Sampled bilinearly by
      * the land shader to produce smooth sub-cell coast and biome-edge
-     * transitions. See
-     * `docs/plans/coastlines-biomes/00-overview.md` for the byte layout
-     * and conventions.
+     * transitions. Byte layout documented in
+     * `data-pipeline/src/earth_pipeline/distance_field.py`.
      */
     distance_field: ArtifactRef;
   };

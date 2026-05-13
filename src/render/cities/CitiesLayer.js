@@ -20,11 +20,218 @@
  */
 import * as THREE from 'three';
 import { source as healpixGlsl } from '../globe/shaders/healpix.glsl.js';
-import { source as vertGlsl } from './shaders/cities.vert.glsl.js';
-import { source as fragGlsl } from './shaders/cities.frag.glsl.js';
 import { DEFAULT_ELEVATION_SCALE } from '../globe/LandMaterial.js';
+const CITIES_VERT = `// Cities vertex shader — triangulated polygon mesh.
+//
+// Each polygon vertex carries its own unit-sphere position plus the
+// per-vertex tangent-frame (x_km, y_km) coordinate \`aLocalKm\` (computed
+// at construction in CitiesLayer.ts). The fragment shader uses
+// \`vLocalKm\` directly to drive the block-spray hashing — no shared
+// quad envelope, no per-fragment point-in-polygon test.
+//
+// Radial lift: pre-baked CPU-side into the per-vertex
+// \`aLiftMeters\` attribute (see web/src/render/util/elevation-lift-bake.ts),
+// which mirrors the same 9-tap blur + 8-neighbour coast fade the older
+// shader did per frame. The shader just multiplies by
+// \`uElevationScale\` so the altitude slider still works — that's the
+// only run-time elevation work left on this layer.
+
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+
+uniform float uElevationScale;
+uniform float uCityRadialBias;
+
+in vec2 aLocalKm;
+in vec2 aHalfExtentKm;
+in float aPopulation;
+in float aPatternSeed;
+in float aLiftMeters;
+
+out vec2 vLocalKm;
+flat out vec2 vHalfExtentKm;
+out vec3 vWorldPos;
+out float vPopulation;
+out float vPatternSeed;
+
+void main() {
+  vLocalKm = aLocalKm;
+  vHalfExtentKm = aHalfExtentKm;
+  vPopulation = aPopulation;
+  vPatternSeed = aPatternSeed;
+
+  vec3 dir = normalize(position);
+
+  float landDisplace = aLiftMeters * uElevationScale;
+  float radial = 1.0 + landDisplace + uCityRadialBias;
+  vec3 worldPos = dir * radial;
+  vWorldPos = worldPos;
+
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(worldPos, 1.0);
+}
+`;
+const CITIES_FRAG = `// Cities fragment shader — triangulated polygon mesh.
+//
+// The geometry IS the polygon now (triangulated CPU-side, see
+// CitiesLayer.ts), so there's no point-in-polygon loop and no
+// per-instance bbox reject — every shaded fragment is already inside
+// its city's polygon. The fragment paints the organic block-spray +
+// warm tungsten night palette using the interpolated tangent-frame
+// km coordinate, normalised by the city's half-extent for the
+// radial-density falloff.
+//
+// Coastline-clipped via the same HEALPix id raster the land/water
+// meshes use, so a coastal polygon never paints onto ocean cells.
+
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+
+in vec2 vLocalKm;
+flat in vec2 vHalfExtentKm;
+in vec3 vWorldPos;
+in float vPopulation;
+in float vPatternSeed;
+
+uniform vec3 uSunDirection;
+
+uniform sampler2D uIdRaster;
+uniform sampler2D uWastelandTex;
+uniform int uHealpixNside;
+uniform int uHealpixOrdering;
+uniform int uAttrTexWidth;
+
+uniform float uMinPopulation;
+
+uniform float uGridDensity;
+uniform float uAspectJitter;
+uniform float uRowOffset;
+uniform float uBlockThreshold;
+uniform float uOutlineMin;
+uniform float uOutlineMax;
+uniform float uNightBrightness;
+uniform float uTileSparkle;
+uniform float uDayContrast;
+uniform float uOpacity;
+uniform float uNightOpacity;
+
+out vec4 fragColor;
+
+float hash21(vec2 p) {
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+
+float hash11(float n) {
+  return fract(sin(n) * 43758.5453123);
+}
+
+float seedToThreshold(float seed) {
+  float h = fract(sin(seed * 12.9898 + 78.233) * 43758.5453);
+  // Skewed toward the low end so most features only reappear once wasteland
+  // is mostly gone. Kept in lockstep with highways.frag.glsl.ts so cities
+  // and roads recover at the same pace.
+  return mix(0.0, 0.5, h);
+}
+
+void main() {
+  if (vPopulation < uMinPopulation) discard;
+
+  // HEALPix texel for this fragment — reused below for the coastline mask.
+  vec3 sphereDir = normalize(vWorldPos);
+  int ipx = healpixZPhiToPix(uHealpixNside, uHealpixOrdering, sphereDir.z, atan(sphereDir.y, sphereDir.x));
+  ivec2 tx = healpixIpixToTexel(ipx, uAttrTexWidth);
+
+  // Wasteland kill — per-city threshold sweeps as wasteland decays, so
+  // cities pop back one-by-one rather than fading in unison.
+  float wasteland = texelFetch(uWastelandTex, tx, 0).r;
+  if (wasteland > seedToThreshold(vPatternSeed)) discard;
+
+  vec2 localKm = vLocalKm;
+
+  // Normalised intra-polygon coord. Reaches ~1 at the polygon's bbox
+  // edge in either axis; the radial-density term below uses length(local)
+  // so the layer fades toward the polygon's outer extents.
+  vec2 local = localKm / max(vHalfExtentKm, vec2(1.0));
+
+  // Cell grid in km. Per-row x-stretch + half-cell running-bond offset
+  // turn the uniform squares into irregular brickwork. uAspectJitter=0
+  // collapses back to the original square grid; uRowOffset=0 keeps rows
+  // aligned.
+  float cellsPerHalf = uGridDensity;
+  vec2 cellCoord = localKm / max(vHalfExtentKm.x, vHalfExtentKm.y) * cellsPerHalf;
+  float rowId = floor(cellCoord.y);
+  float rowHash = hash11(rowId * 13.13 + vPatternSeed * 0.137);
+  float xStretch = 1.0 + uAspectJitter * rowHash;
+  float xOffset = uRowOffset * (rowHash - 0.5);
+  float xWarped = (cellCoord.x + xOffset) / xStretch;
+  vec2 cellId = vec2(floor(xWarped), rowId);
+  vec2 cellLocal = vec2(fract(xWarped), fract(cellCoord.y));
+  float h = hash21(cellId + vec2(vPatternSeed * 0.0123, vPatternSeed * 0.0719));
+  float h2 = hash11(h * 91.7);
+
+  // Radial centre boost — denser near the centroid so even spread-out
+  // polygons still read as "dense downtown, lighter outskirts".
+  float r = length(local);
+  float density = exp(-r * r * 1.6);
+
+  float blockExists = step(uBlockThreshold + (1.0 - density), h);
+  float inset = mix(0.05, 0.18, h2) * (0.4 + 0.6 * density);
+  float dx = min(cellLocal.x, 1.0 - cellLocal.x);
+  float dy = min(cellLocal.y, 1.0 - cellLocal.y);
+  float edgeDist = min(dx, dy);
+  float fill = step(inset, edgeDist) * blockExists;
+
+  float outlineWidth = mix(uOutlineMin, uOutlineMax, density);
+  float outline = (1.0 - smoothstep(inset, inset + outlineWidth, edgeDist))
+                  * step(edgeDist, inset)
+                  * blockExists;
+
+  // Inner-tile highlight — the deep interior of each filled tile gets a
+  // brightness boost, reading as a "lit window cluster". The rim stays
+  // dimmer so local contrast climbs without the whole layer washing out.
+  float sparkle = smoothstep(inset, inset + 0.18, edgeDist) * blockExists;
+
+  float blockBright = mix(0.55, 1.0, h2);
+
+  // Coastline mask via the HEALPix id raster (uses tx from the top).
+  float landMask = isOceanIdTexel(texelFetch(uIdRaster, tx, 0)) ? 0.0 : 1.0;
+
+  float dayFill = mix(0.20, 0.35, blockBright);
+  float dayOutline = 0.14;
+  vec3 dayCol = vec3(mix(dayFill, dayOutline, outline));
+  dayCol = mix(vec3(0.7), dayCol, 0.5 + uDayContrast);
+
+  float popLight = clamp(log(max(vPopulation, 100.0)) / log(2.0e7), 0.35, 1.0);
+  vec3 nightFill = vec3(1.0, 0.85, 0.55) * blockBright * popLight * uNightBrightness;
+  nightFill *= (1.0 + uTileSparkle * sparkle);
+  vec3 nightOutline = vec3(0.04, 0.03, 0.02);
+  vec3 nightCol = mix(nightFill, nightOutline, outline);
+
+  // Surface normal at this fragment is just the unit direction from the
+  // globe centre — the polygon hugs the unit sphere, so this matches
+  // the land mesh's lighting frame within fractions of a degree.
+  vec3 surfaceNormal = sphereDir;
+  float wrap = smoothstep(-0.05, 0.15, dot(surfaceNormal, normalize(uSunDirection)));
+  vec3 col = mix(nightCol, dayCol, wrap);
+
+  float popOpacity = clamp(log(max(vPopulation, 100.0)) / log(2.0e7), 0.25, 1.0);
+  float a = (fill * (0.55 + 0.45 * density) + outline * 0.7);
+  // Night-only alpha boost — separate from uOpacity so the city feels more
+  // "present" on the dark side without colour saturating to white the way
+  // pushing uNightBrightness does.
+  float nightAlphaMul = mix(uNightOpacity, 1.0, wrap);
+  a *= popOpacity * landMask * uOpacity * nightAlphaMul;
+  if (a < 0.01) discard;
+
+  fragColor = vec4(col, a);
+}
+`;
 import { tangentBasisAt } from '../../world/coordinates.js';
 import { bakeLiftMeters } from '../util/elevation-lift-bake.js';
+import { DEFAULTS } from '../../debug/defaults.js';
 const EARTH_RADIUS_KM = 6371;
 /**
  * Spatial bucket grid. 4 lat bands × 8 lon bands = 32 buckets, ~45°×45°
@@ -40,20 +247,8 @@ const NUM_LON_BUCKETS = 8;
  * the surface so cities never z-fight with the displaced land mesh.
  */
 const DEFAULT_CITY_RADIAL_BIAS = 5e-4;
-const DEFAULT_UNIFORM_VALUES = {
-    minPopulation: 0,
-    gridDensity: 35,
-    aspectJitter: 0.1,
-    rowOffset: 0.5,
-    blockThreshold: 0.1,
-    outlineMin: 0.01,
-    outlineMax: 0.06,
-    nightBrightness: 0.9,
-    tileSparkle: 0.8,
-    dayContrast: 0.6,
-    opacity: 0.65,
-    nightOpacity: 2.9,
-};
+// All city tuning lives in [../../debug/defaults.ts] under
+// `DEFAULTS.materials.cities`.
 /**
  * Hemisphere-visibility threshold for bucket meshes: a bucket is shown
  * when `dot(bucketCentroidDir, cameraDir) > HEMISPHERE_THRESHOLD`. 0.0
@@ -76,6 +271,7 @@ export class CitiesLayer {
         const { nside, ordering } = world.getHealpixSpec();
         this.group = new THREE.Group();
         console.info(`[cities] constructing CitiesLayer with ${urbanAreas.length} polygons`);
+        const c = DEFAULTS.materials.cities;
         this.uniforms = {
             uSunDirection: { value: new THREE.Vector3(1, 0, 0.3).normalize() },
             uIdRaster: { value: world.getIdRaster() },
@@ -86,24 +282,24 @@ export class CitiesLayer {
             uElevationMeters: { value: world.getElevationMetersTexture() },
             uElevationScale: { value: DEFAULT_ELEVATION_SCALE },
             uCityRadialBias: { value: DEFAULT_CITY_RADIAL_BIAS },
-            uMinPopulation: { value: DEFAULT_UNIFORM_VALUES.minPopulation },
-            uGridDensity: { value: DEFAULT_UNIFORM_VALUES.gridDensity },
-            uAspectJitter: { value: DEFAULT_UNIFORM_VALUES.aspectJitter },
-            uRowOffset: { value: DEFAULT_UNIFORM_VALUES.rowOffset },
-            uBlockThreshold: { value: DEFAULT_UNIFORM_VALUES.blockThreshold },
-            uOutlineMin: { value: DEFAULT_UNIFORM_VALUES.outlineMin },
-            uOutlineMax: { value: DEFAULT_UNIFORM_VALUES.outlineMax },
-            uNightBrightness: { value: DEFAULT_UNIFORM_VALUES.nightBrightness },
-            uTileSparkle: { value: DEFAULT_UNIFORM_VALUES.tileSparkle },
-            uDayContrast: { value: DEFAULT_UNIFORM_VALUES.dayContrast },
-            uOpacity: { value: DEFAULT_UNIFORM_VALUES.opacity },
-            uNightOpacity: { value: DEFAULT_UNIFORM_VALUES.nightOpacity },
+            uMinPopulation: { value: c.minPopulation },
+            uGridDensity: { value: c.gridDensity },
+            uAspectJitter: { value: c.aspectJitter },
+            uRowOffset: { value: c.rowOffset },
+            uBlockThreshold: { value: c.blockThreshold },
+            uOutlineMin: { value: c.outlineMin },
+            uOutlineMax: { value: c.outlineMax },
+            uNightBrightness: { value: c.nightBrightness },
+            uTileSparkle: { value: c.tileSparkle },
+            uDayContrast: { value: c.dayContrast },
+            uOpacity: { value: c.opacity },
+            uNightOpacity: { value: c.nightOpacity },
         };
         this.material = new THREE.ShaderMaterial({
             uniforms: this.uniforms,
             glslVersion: THREE.GLSL3,
-            vertexShader: `${healpixGlsl}\n${vertGlsl}`,
-            fragmentShader: `${healpixGlsl}\n${fragGlsl}`,
+            vertexShader: `${healpixGlsl}\n${CITIES_VERT}`,
+            fragmentShader: `${healpixGlsl}\n${CITIES_FRAG}`,
             transparent: true,
             depthWrite: false,
             depthTest: true,

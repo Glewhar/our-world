@@ -127,7 +127,8 @@ export class ScenarioRegistry {
     const userCtx = deps.context;
     this.context = {
       sampleWindAt: (lat, lon) => userCtx.sampleWindAt(lat, lon),
-      detonateAt: (lat, lon) => userCtx.detonateAt(lat, lon),
+      sampleTerrainAt: (lat, lon) => userCtx.sampleTerrainAt(lat, lon),
+      detonateAt: (lat, lon, terrain) => userCtx.detonateAt(lat, lon, terrain),
       paintAttributeEllipse: (args) => this.capturePaint(args, userCtx),
     };
   }

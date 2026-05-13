@@ -28,15 +28,242 @@
 import * as THREE from 'three';
 
 import { source as healpixGlsl } from '../globe/shaders/healpix.glsl.js';
-import { source as vertGlsl } from './shaders/highways.vert.glsl.js';
-import { source as fragGlsl } from './shaders/highways.frag.glsl.js';
 import { DEFAULT_ELEVATION_SCALE } from '../globe/LandMaterial.js';
+
+const HIGHWAYS_VERT = `// Highways vertex shader.
+//
+// Each vertex carries a centerline position on the unit sphere plus a
+// signed unit perpendicular (\`aPerp\`), a kind flag (\`aKind\`,
+// 0=major, 1=arterial, 2=local, 3=local2), and the pre-baked elevation
+// lift in metres (\`aLiftMeters\`, from
+// web/src/render/util/elevation-lift-bake.ts — mirrors the same 9-tap
+// blur + distance-field coast fade the older shader did per frame).
+// The shader multiplies by \`uElevationScale\` so the altitude slider
+// still works without a rebake.
+//
+// After lifting the centerline, applies a *screen-space* offset of
+// half the kind's pixel width along the projected ribbon direction.
+// This is the standard Mapbox / Apple Maps trick: the line keeps a
+// constant on-screen width at every zoom.
+//
+// Cross-ribbon coordinate \`vU\` runs from +1 on one side to -1 on the
+// other, recovered from gl_VertexID parity (even = +side, odd = -side)
+// matching the geometry build order in HighwaysLayer.
+
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+
+uniform float uElevationScale;
+uniform float uHighwayRadialBiasM;
+
+uniform vec2 uViewportSize;
+uniform float uMajorWidthPx;
+uniform float uArterialWidthPx;
+uniform float uLocalWidthPx;
+uniform float uLocal2WidthPx;
+uniform float uDayCasingPx;
+uniform float uDayFillScale;
+
+in vec3 aPerp;
+in float aKind;
+in float aLiftMeters;
+in float aRoadSeed;
+
+out vec3 vSurfaceNormal;
+out vec3 vWorldPos;
+out float vKind;
+out float vU;
+out float vFillFrac;
+out float vRoadSeed;
+
+void main() {
+  vKind = aKind;
+  vRoadSeed = aRoadSeed;
+
+  // Centerline direction. position is on the unit sphere by construction.
+  vec3 centerline = position;
+  vec3 dir = normalize(centerline);
+  vSurfaceNormal = dir;
+
+  // Lift = baked metres × slider scale; the bias is in metres too so it
+  // tracks the slider in lock-step, preserving the depth-fight safety
+  // margin at every factor.
+  float landDisplace = aLiftMeters * uElevationScale;
+  float radial = 1.0 + landDisplace + uHighwayRadialBiasM * uElevationScale;
+
+  vec3 liftedCenter = dir * radial;
+
+  // ---- Screen-space ribbon offset --------------------------------------
+  // Project the lifted centerline to clip space. We then nudge the world
+  // position by a tiny multiple of \`aPerp\`, project again, and take the
+  // difference in pixel space. That gives us a *screen-space* unit vector
+  // pointing along the ribbon's perpendicular — signed by aPerp's side.
+  // Scaling by the kind's pixel half-width gives a constant on-screen
+  // width at every zoom.
+  vec4 clipCenter = projectionMatrix * modelViewMatrix * vec4(liftedCenter, 1.0);
+  vec4 clipNudged = projectionMatrix * modelViewMatrix * vec4(liftedCenter + aPerp * 1.0e-3, 1.0);
+
+  vec2 ndcA = clipCenter.xy / clipCenter.w;
+  vec2 ndcB = clipNudged.xy / clipNudged.w;
+  vec2 pxDiff = (ndcB - ndcA) * uViewportSize * 0.5;
+  float pxLen = length(pxDiff);
+  vec2 pxPerp = pxLen > 1.0e-6 ? pxDiff / pxLen : vec2(0.0);
+
+  // Pick the visible width in pixels for this road's kind.
+  // aKind: 0=major, 1=arterial, 2=local, 3=local2.
+  float widthPx =
+    (aKind < 0.5) ? uMajorWidthPx :
+    (aKind < 1.5) ? uArterialWidthPx :
+    (aKind < 2.5) ? uLocalWidthPx :
+                    uLocal2WidthPx;
+  // Cartographic casing: widen the ribbon by uDayCasingPx pixels on each
+  // side beyond the road's nominal width. The inner |vU| < vFillFrac
+  // region is the bright fill; the outer rim is the dark casing.
+  float casingPx = max(uDayCasingPx, 0.0);
+  float halfWidthPx = max(widthPx * 0.5 + casingPx, 0.5);
+  // Day fill width = the road's nominal width × uDayFillScale, clamped so
+  // it never exceeds the ribbon. Night ignores vFillFrac entirely, so this
+  // knob is day-only.
+  float fillPx = max(widthPx * uDayFillScale, 0.0);
+  vFillFrac = clamp(fillPx / max(widthPx + 2.0 * casingPx, 1.0e-3), 0.0, 1.0);
+
+  vec2 pxOffset = pxPerp * halfWidthPx;
+  vec2 ndcOffset = pxOffset * 2.0 / uViewportSize;
+  clipCenter.xy += ndcOffset * clipCenter.w;
+
+  vWorldPos = liftedCenter; // for the coastline lookup in the fragment
+
+  // Cross-ribbon coordinate, +1 on one side and -1 on the other. The
+  // geometry build emits even-indexed vertices on the +perp side and
+  // odd-indexed on the -perp side — gl_VertexID parity recovers it.
+  vU = ((gl_VertexID & 1) == 0) ? 1.0 : -1.0;
+
+  gl_Position = clipCenter;
+}
+`;
+
+const HIGHWAYS_FRAG = `// Highways fragment shader.
+//
+// Cross-ribbon coordinate \`vU\` runs -1 → 0 → +1 across the ribbon
+// (centerline at 0). \`u01 = abs(vU)\` is the normalized distance from the
+// center, 0 at the bright filament and 1 at the outer halo edge.
+//
+// Night look — bright sharp core + soft warm halo, the "neon tube"
+// profile. Brightness scales by \`uMajorBoost\` for major roads.
+// Day look — thin dark warm-grey trace that fades to nothing at the
+// halo's edge so it reads as a delicate outline on the land instead of
+// a flat painted bar.
+// Coastline-clipped via the same HEALPix id raster Land + Cities use.
+
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+
+in vec3 vSurfaceNormal;
+in vec3 vWorldPos;
+in float vKind;
+in float vU;
+in float vFillFrac;
+in float vRoadSeed;
+
+uniform vec3 uSunDirection;
+
+uniform sampler2D uIdRaster;
+uniform sampler2D uWastelandTex;
+uniform int uHealpixNside;
+uniform int uHealpixOrdering;
+uniform int uAttrTexWidth;
+
+uniform float uNightBrightness;
+uniform float uMajorBoost;
+uniform float uArterialBoost;
+uniform float uLocalBoost;
+uniform float uLocal2Boost;
+uniform float uCoreWidth;
+uniform float uCoreBoost;
+uniform float uHaloStrength;
+uniform float uHaloFalloff;
+uniform float uDayStrength;
+uniform float uDayCasingStrength;
+uniform float uDayFillBrightness;
+uniform float uOpacity;
+
+out vec4 fragColor;
+
+float seedToThreshold(float seed) {
+  float h = fract(sin(seed * 12.9898 + 78.233) * 43758.5453);
+  // Skewed toward the low end so most roads only reappear once wasteland
+  // is mostly gone — stretches the recovery tail without slowing decay.
+  return mix(0.0, 0.5, h);
+}
+
+void main() {
+  // Coastline clip — sample the HEALPix id raster at the centerline
+  // surface point. Same mask the land shader uses.
+  vec3 sphereDir = normalize(vWorldPos);
+  float phi = atan(sphereDir.y, sphereDir.x);
+  int ipx = healpixZPhiToPix(uHealpixNside, uHealpixOrdering, sphereDir.z, phi);
+  ivec2 tx = healpixIpixToTexel(ipx, uAttrTexWidth);
+  if (isOceanIdTexel(texelFetch(uIdRaster, tx, 0))) discard;
+
+  // Wasteland kill — per-polyline threshold sweeps as wasteland decays
+  // (sampled per-fragment so road segments near the impact discard
+  // while distant segments of the same polyline keep drawing).
+  float wasteland = texelFetch(uWastelandTex, tx, 0).r;
+  if (wasteland > seedToThreshold(vRoadSeed)) discard;
+
+  // Cross-ribbon distance, 0 at center, 1 at edge.
+  float u01 = clamp(abs(vU), 0.0, 1.0);
+
+  // Sharp inner core (the bright filament) + soft outer halo (the glow).
+  float core = 1.0 - smoothstep(0.0, max(uCoreWidth, 0.001), u01);
+  float halo = pow(max(1.0 - u01, 0.0), max(uHaloFalloff, 0.001));
+
+  // Per-kind brightness boost. vKind: 0=major, 1=arterial, 2=local, 3=local2.
+  float kindFactor =
+    (vKind < 0.5) ? uMajorBoost :
+    (vKind < 1.5) ? uArterialBoost :
+    (vKind < 2.5) ? uLocalBoost :
+                    uLocal2Boost;
+
+  // ---- Night --------------------------------------------------------
+  vec3 warmTungsten = vec3(1.0, 0.85, 0.55);
+  float nightProfile = core * uCoreBoost + halo * uHaloStrength;
+  vec3 nightCol = warmTungsten * uNightBrightness * kindFactor * nightProfile;
+  float nightAlpha = clamp(nightProfile, 0.0, 1.0);
+
+  // ---- Day ---------------------------------------------------------
+  // Cartographic casing: the ribbon was widened in the vertex shader by
+  // uDayCasingPx pixels per side. The inner fraction (|vU| < vFillFrac)
+  // is the bright fill — i.e. the road itself. The outer rim
+  // (vFillFrac < |vU| < 1) is the dark casing painted in the extra
+  // pixels. When uDayCasingPx = 0, vFillFrac = 1 and the casing region
+  // vanishes (bright fill across the whole road, no outline).
+  vec3 casingCol = vec3(0.18, 0.16, 0.14);
+  vec3 fillCol   = vec3(0.96, 0.94, 0.88) * clamp(uDayFillBrightness, 0.0, 1.5);
+  float fillEdge = clamp(vFillFrac, 0.0, 1.0);
+  float fillMask = 1.0 - smoothstep(max(fillEdge - 0.05, 0.0), fillEdge, u01);
+  float casingMask = (1.0 - fillMask) * (1.0 - smoothstep(0.92, 1.0, u01));
+  vec3 dayCol = mix(casingCol, fillCol, fillMask);
+  float dayAlpha = clamp((fillMask + casingMask * uDayCasingStrength) * uDayStrength, 0.0, 1.0);
+
+  // Day/night wrap (same shape as the cities + land terminator).
+  float wrap = smoothstep(-0.05, 0.15, dot(vSurfaceNormal, normalize(uSunDirection)));
+  vec3 col = mix(nightCol, dayCol, wrap);
+  float alpha = mix(nightAlpha, dayAlpha, wrap) * uOpacity;
+
+  if (alpha < 0.005) discard;
+  fragColor = vec4(col, alpha);
+}
+`;
 import {
   bakeLiftMeters,
   type CoastFadeStrategy,
   type LiftBakeContext,
 } from '../util/elevation-lift-bake.js';
 import type { RoadRecord, WorldRuntime } from '../../world/index.js';
+import { DEFAULTS } from '../../debug/defaults.js';
 
 /**
  * Spatial bucket grid. 4 lat bands × 8 lon bands = 32 buckets, ~45°×45°
@@ -65,37 +292,9 @@ const NUM_LON_BUCKETS = 8;
  */
 const DEFAULT_HIGHWAY_RADIAL_BIAS_M = 280;
 
-const DEFAULT_UNIFORM_VALUES = {
-  majorWidthPx: 3.5,
-  arterialWidthPx: 2.0,
-  localWidthPx: 1.0,
-  // local2 is NE's untyped bucket — noisier and denser than `local`,
-  // so render slimmer so it reads as a quiet substrate beneath the
-  // classified tiers.
-  local2WidthPx: 0.8,
-  nightBrightness: 0.6,
-  majorBoost: 1.35,
-  arterialBoost: 1.0,
-  // Local tier is mostly regional country roads, not bright urban
-  // arterials — render them dimmer so they read as a quieter background.
-  localBoost: 0.7,
-  // local2 is the dimmest of all — it's the catch-all `Unknown` bucket
-  // from Natural Earth, dominant in Asia / South America / Africa.
-  local2Boost: 0.5,
-  coreWidth: 0.3,
-  coreBoost: 1.2,
-  haloStrength: 0.5,
-  haloFalloff: 1.8,
-  dayStrength: 0.7,
-  dayCasingPx: 1.0,
-  dayCasingStrength: 0.85,
-  dayFillBrightness: 0.95,
-  dayFillScale: 1.0,
-  // Zoom-faded by scene-graph each frame: opacityNear at camera distance
-  // ≤ 1.5, lerping toward opacityFar at distance ≥ 15.
-  opacityNear: 1.0,
-  opacityFar: 0.4,
-} as const;
+// All other tuning lives in [../../debug/defaults.ts] under
+// `DEFAULTS.materials.highways`. opacityNear is the initial value; the
+// near/far blend lives in scene-graph.
 
 export type HighwaysUniforms = {
   uSunDirection: { value: THREE.Vector3 };
@@ -189,6 +388,7 @@ export class HighwaysLayer {
 
     this.group = new THREE.Group();
 
+    const h = DEFAULTS.materials.highways;
     this.uniforms = {
       uSunDirection: { value: new THREE.Vector3(1, 0, 0.3).normalize() },
 
@@ -207,26 +407,26 @@ export class HighwaysLayer {
       // Until then the ribbon is degenerate (one-pixel-wide); the resize
       // path runs on first frame so the wrong-size window is never seen.
       uViewportSize: { value: new THREE.Vector2(1, 1) },
-      uMajorWidthPx: { value: DEFAULT_UNIFORM_VALUES.majorWidthPx },
-      uArterialWidthPx: { value: DEFAULT_UNIFORM_VALUES.arterialWidthPx },
-      uLocalWidthPx: { value: DEFAULT_UNIFORM_VALUES.localWidthPx },
-      uLocal2WidthPx: { value: DEFAULT_UNIFORM_VALUES.local2WidthPx },
+      uMajorWidthPx: { value: h.majorWidthPx },
+      uArterialWidthPx: { value: h.arterialWidthPx },
+      uLocalWidthPx: { value: h.localWidthPx },
+      uLocal2WidthPx: { value: h.local2WidthPx },
 
-      uNightBrightness: { value: DEFAULT_UNIFORM_VALUES.nightBrightness },
-      uMajorBoost: { value: DEFAULT_UNIFORM_VALUES.majorBoost },
-      uArterialBoost: { value: DEFAULT_UNIFORM_VALUES.arterialBoost },
-      uLocalBoost: { value: DEFAULT_UNIFORM_VALUES.localBoost },
-      uLocal2Boost: { value: DEFAULT_UNIFORM_VALUES.local2Boost },
-      uCoreWidth: { value: DEFAULT_UNIFORM_VALUES.coreWidth },
-      uCoreBoost: { value: DEFAULT_UNIFORM_VALUES.coreBoost },
-      uHaloStrength: { value: DEFAULT_UNIFORM_VALUES.haloStrength },
-      uHaloFalloff: { value: DEFAULT_UNIFORM_VALUES.haloFalloff },
-      uDayStrength: { value: DEFAULT_UNIFORM_VALUES.dayStrength },
-      uDayCasingPx: { value: DEFAULT_UNIFORM_VALUES.dayCasingPx },
-      uDayCasingStrength: { value: DEFAULT_UNIFORM_VALUES.dayCasingStrength },
-      uDayFillBrightness: { value: DEFAULT_UNIFORM_VALUES.dayFillBrightness },
-      uDayFillScale: { value: DEFAULT_UNIFORM_VALUES.dayFillScale },
-      uOpacity: { value: DEFAULT_UNIFORM_VALUES.opacityNear },
+      uNightBrightness: { value: h.nightBrightness },
+      uMajorBoost: { value: h.majorBoost },
+      uArterialBoost: { value: h.arterialBoost },
+      uLocalBoost: { value: h.localBoost },
+      uLocal2Boost: { value: h.local2Boost },
+      uCoreWidth: { value: h.coreWidth },
+      uCoreBoost: { value: h.coreBoost },
+      uHaloStrength: { value: h.haloStrength },
+      uHaloFalloff: { value: h.haloFalloff },
+      uDayStrength: { value: h.dayStrength },
+      uDayCasingPx: { value: h.dayCasingPx },
+      uDayCasingStrength: { value: h.dayCasingStrength },
+      uDayFillBrightness: { value: h.dayFillBrightness },
+      uDayFillScale: { value: h.dayFillScale },
+      uOpacity: { value: h.opacityNear },
     };
 
     this.material = new THREE.ShaderMaterial({
@@ -235,8 +435,8 @@ export class HighwaysLayer {
       // Both stages call into healpix.glsl: vertex for the elevation
       // lift, fragment for the coastline mask. Concatenate the helper
       // module ourselves — ShaderMaterial doesn't process #include.
-      vertexShader: `${healpixGlsl}\n${vertGlsl}`,
-      fragmentShader: `${healpixGlsl}\n${fragGlsl}`,
+      vertexShader: `${healpixGlsl}\n${HIGHWAYS_VERT}`,
+      fragmentShader: `${healpixGlsl}\n${HIGHWAYS_FRAG}`,
       transparent: true,
       depthWrite: false,
       depthTest: true,

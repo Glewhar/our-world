@@ -47,13 +47,22 @@ async function boot() {
     const { nside: hpNside, ordering: hpOrdering } = world.getHealpixSpec();
     const scenarioContext = {
         sampleWindAt: (lat, lon) => world.getWindAt(lat, lon),
-        detonateAt: (latDeg, lonDeg) => {
+        sampleTerrainAt: (lat, lon) => ({
+            // World runtime clamps negative elevation to 0 internally for cells
+            // marked ocean — but match the historical scene-graph behaviour and
+            // clamp here as belt-and-braces. The wasteland blast's altitude lift
+            // never wants a negative value (below-sea-level points should fire
+            // at radius 1.0, not at radius 0.99).
+            elevationM: Math.max(0, world.getElevationMetersAt(lat, lon)),
+            wind: world.getWindAt(lat, lon),
+        }),
+        detonateAt: (latDeg, lonDeg, terrain) => {
             // Z-up convention matches the bake's lonlat_to_xyz.
             const latRad = (latDeg * Math.PI) / 180;
             const lonRad = (lonDeg * Math.PI) / 180;
             const cosLat = Math.cos(latRad);
             const dir = new THREE.Vector3(cosLat * Math.cos(lonRad), cosLat * Math.sin(lonRad), Math.sin(latRad));
-            sceneGraph.detonateAt(dir);
+            sceneGraph.detonateAt(dir, terrain.elevationM, terrain.wind);
         },
         paintAttributeEllipse: () => {
             // The registry intercepts paint calls during onStart so the stamp
@@ -455,7 +464,12 @@ async function boot() {
             const lonRad = (lonDeg * Math.PI) / 180;
             const cosLat = Math.cos(latRad);
             const dir = new THREE.Vector3(cosLat * Math.cos(lonRad), cosLat * Math.sin(lonRad), Math.sin(latRad));
-            sceneGraph.detonateAt(dir);
+            // Same sampling the scenario context does, inlined for the debug
+            // console helper so DevTools `__ED.detonateAt(lat, lon)` still
+            // produces an elevation-lifted, wind-driven blast.
+            const elevationM = Math.max(0, world.getElevationMetersAt(latDeg, lonDeg));
+            const wind = world.getWindAt(latDeg, lonDeg);
+            sceneGraph.detonateAt(dir, elevationM, wind);
         },
     };
 }

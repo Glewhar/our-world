@@ -5,4 +5,5 @@
  */
 export { ScenarioRegistry } from './ScenarioRegistry.js';
 export { NuclearScenario } from './handlers/NuclearScenario.js';
+export { DEFAULT_NUCLEAR_CONFIG, hexNumberToCss, NUCLEAR_PARTICLE_TYPES, } from './handlers/NuclearScenario.config.js';
 export { decayQuickThenSlow } from './recoveryCurves.js';

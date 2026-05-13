@@ -29,6 +29,7 @@
  * per slot: one flight time growing, one retracting).
  */
 import * as THREE from 'three';
+import { DEFAULTS } from '../../debug/defaults.js';
 import { AirportsLayer } from './AirportsLayer.js';
 import { RouteScaffoldLayer } from './RouteScaffoldLayer.js';
 import { TrailsLayer } from './TrailsLayer.js';
@@ -40,8 +41,6 @@ const CRUISE_KM_PER_HR = 850;
  * which also means dissipation only takes TRAIL_LEN_T × flight duration.
  */
 const TRAIL_LEN_T = 0.3;
-/** Aim for ~this many planes in flight at any time at speed=1. */
-const DEFAULT_TARGET_IN_FLIGHT = 500;
 /**
  * Pool capacity — accommodates ≈ 2 × the in-flight count because each slot
  * lives through a full grow-then-retract cycle (flight time + dissipation).
@@ -71,7 +70,7 @@ export class AirplaneSystem {
     /** Per-route base spawn rate (planes per sim hour). */
     routeBaseRate;
     simHoursPerRealSecond = 1.0;
-    targetInFlight = DEFAULT_TARGET_IN_FLIGHT;
+    targetInFlight = DEFAULTS.airplanes.targetInFlight;
     elapsedRealSeconds = 0;
     sunLonRad = 0;
     constructor(data) {

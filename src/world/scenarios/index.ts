@@ -7,6 +7,16 @@
 export { ScenarioRegistry } from './ScenarioRegistry.js';
 export type { ScenarioRegistryDeps, WastelandSink } from './ScenarioRegistry.js';
 export { NuclearScenario } from './handlers/NuclearScenario.js';
+export {
+  DEFAULT_NUCLEAR_CONFIG,
+  hexNumberToCss,
+  NUCLEAR_PARTICLE_TYPES,
+} from './handlers/NuclearScenario.config.js';
+export type {
+  NuclearDetonateTuning,
+  NuclearLiveTuning,
+  NuclearScenarioConfig,
+} from './handlers/NuclearScenario.config.js';
 export { decayQuickThenSlow } from './recoveryCurves.js';
 export type {
   EllipsePaintArgs,
@@ -18,4 +28,5 @@ export type {
   ScenarioPayload,
   ScenarioStamp,
   StartScenarioOpts,
+  TerrainSample,
 } from './types.js';
