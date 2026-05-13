@@ -200,6 +200,7 @@ export type DebugState = {
     windDelay: number;
     windRamp: number;
     windJitter: number;
+    windDrag: number;
     // Sub-effect toggles (re-detonate).
     enableFire: boolean;
     enableSmoke: boolean;
@@ -218,6 +219,7 @@ export type DebugState = {
     smokeColorEnd: string;
   };
   pick: { lastPick: string };
+  debug: { fpsCounter: boolean };
 };
 
 export const initialDebugState: DebugState = {
@@ -302,7 +304,7 @@ export const initialDebugState: DebugState = {
       coverage: 0.5,
       beer: 1.4,
       henyey: 0.4,
-      advection: 24,
+      advection: 40,
     },
     highways: {
       majorWidthPx: 4.0,
@@ -350,6 +352,7 @@ export const initialDebugState: DebugState = {
     windDelay: 4.0,
     windRamp: 8.0,
     windJitter: 1.0,
+    windDrag: 1.0,
     enableFire: true,
     enableSmoke: true,
     enableMushroom: true,
@@ -365,6 +368,7 @@ export const initialDebugState: DebugState = {
     smokeColorEnd: '#808080',
   },
   pick: { lastPick: '(click on the globe)' },
+  debug: { fpsCounter: false },
 };
 
 export type DebugPanel = {
@@ -389,6 +393,7 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
   const sceneFolder = pane.addFolder({ title: 'Scene' });
   sceneFolder.addBinding(state.scene, 'background');
   sceneFolder.addBinding(state.scene, 'showGrid', { disabled: true, label: 'showGrid (n/a)' });
+  sceneFolder.addBinding(state.debug, 'fpsCounter', { label: 'FPS counter' });
 
   const altitudeFolder = pane.addFolder({ title: 'Altitude', expanded: false });
   altitudeFolder.addBinding(state.altitude, 'scaleFactor', {
@@ -757,6 +762,9 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
   });
   nSize.addBinding(state.nuclear, 'windJitter', {
     min: 0, max: 1, step: 0.01, label: 'wind jitter',
+  });
+  nSize.addBinding(state.nuclear, 'windDrag', {
+    min: 0, max: 5, step: 0.05, label: 'wind drag',
   });
 
   const nSubs = nukeFolder.addFolder({ title: 'Sub-effects (redetonate)', expanded: false });

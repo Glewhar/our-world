@@ -132,11 +132,11 @@ export type RoadRecord = {
 };
 
 /**
- * Urban-areas artifact (`urban_areas.json`). The top-N urban polygon
- * outlines (Natural Earth ne_10m_urban_areas, spatially joined to
- * populated_places for population) that drive the procedural in-browser
- * streets-and-buildings layer. Sorted by `pop` descending; `id` is the
- * sequential rank (0-based). Empty list on fixture bakes.
+ * Urban-areas artifact (`urban_areas.json`). All ~11,400 urban-centre
+ * outlines from GHS-UCDB R2024A (per-polygon 2025 population) that
+ * drive the procedural in-browser streets-and-buildings layer. Sorted
+ * by `pop` descending; `id` is the sequential rank (0-based). Empty
+ * list on fixture bakes.
  *
  * This artifact sits OUTSIDE `WorldManifest.artifacts` — the runtime
  * fetches it by URL convention as a sibling of `world_manifest.json` so
@@ -144,7 +144,7 @@ export type RoadRecord = {
  */
 export type UrbanAreasFile = {
   version: 1;
-  source: string; // e.g. "natural_earth_10m_urban_areas_v5.1.1"
+  source: string; // e.g. "ghs_ucdb_R2024A_V1.1"
   generated_at: string; // ISO8601
   count: number;
   urban_areas: UrbanAreaRecord[];
@@ -333,11 +333,11 @@ export interface WorldRuntime {
   getRoads(): readonly RoadRecord[];
 
   /**
-   * Top-N urban-area outlines (Natural Earth ne_10m_urban_areas, spatially
-   * joined to populated_places for a population field). Fetched as a
-   * sibling of the manifest at `urban_areas.json.gz` and degrades to an
-   * empty array when the bake didn't produce the file (legacy bakes).
-   * Consumed by the procedural in-browser streets-and-buildings layer.
+   * Urban-centre outlines from GHS-UCDB R2024A (per-polygon 2025
+   * population). Fetched as a sibling of the manifest at
+   * `urban_areas.json.gz` and degrades to an empty array when the bake
+   * didn't produce the file (legacy bakes). Consumed by the procedural
+   * in-browser streets-and-buildings layer.
    */
   getUrbanAreas(): readonly UrbanAreaRecord[];
 

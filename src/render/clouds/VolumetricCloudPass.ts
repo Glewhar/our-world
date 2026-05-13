@@ -1,20 +1,21 @@
 /**
  * Volumetric cloud pass (M5).
  *
- * Renders the cloud raymarch into a half-resolution offscreen target, then
- * composites that target onto the main framebuffer via a fullscreen quad
- * (the public `mesh`). The composite mesh lives in the main scene at
- * `renderOrder = 0`, so the existing draw order (opaque globe → cloud
- * composite → atmosphere with renderOrder=1) is preserved by Three.js's
- * own sorting.
+ * Renders the cloud raymarch into a reduced-resolution offscreen target
+ * (1/CLOUD_RES_DIVISOR per axis), then composites that target onto the
+ * main framebuffer via a fullscreen quad (the public `mesh`). The
+ * composite mesh lives in the main scene at `renderOrder = 0`, so the
+ * existing draw order (opaque globe → cloud composite → atmosphere with
+ * renderOrder=1) is preserved by Three.js's own sorting.
  *
- * Half-res rendering is the dominant win here on tile-based mobile GPUs:
- * the raymarch is ~80 noise-volume samples per pixel, so quartering the
- * pixel count quarters the cost. The composite is a single bilinear tap
- * — net ~3.5× cheaper than full-res. Quality cost is minor: cloud
+ * Reduced-res rendering is the dominant win on tile-based mobile GPUs:
+ * the raymarch is up to ~12 view + ~36 light noise samples per pixel,
+ * so cutting pixel count by 1/N² cuts the cost the same way. The
+ * composite is a single bilinear tap. Quality cost is minor: cloud
  * silhouettes against the planet are already soft thanks to the hash-
- * jittered integration, and the `LinearFilter` on the half-res target
- * does the 4-tap upsample for free.
+ * jittered integration, and `LinearFilter` on the target does the
+ * upsample for free. (The field name `halfResTarget` is historical —
+ * the actual divisor is set by CLOUD_RES_DIVISOR below.)
  *
  * Domain: spherical shell `[CLOUD_BASE_M, CLOUD_TOP_M]` above the unit
  * sphere. Density is procedural (FBM + Worley); advection comes from
@@ -45,7 +46,7 @@ export const DEFAULT_CLOUD_DENSITY = 0.1;
 export const DEFAULT_CLOUD_COVERAGE = 0.5;
 export const DEFAULT_CLOUD_BEER = 1.4;
 export const DEFAULT_CLOUD_HENYEY = 0.4;
-export const DEFAULT_CLOUD_ADVECTION = 14;
+export const DEFAULT_CLOUD_ADVECTION = 40;
 
 // `uTime` in the shader feeds into a physically-honest wind integration:
 // `wind_m_per_s × uTime × 1.566e-7 rad/s/m/s` (one radian per planet
@@ -57,21 +58,17 @@ const CLOUD_TIME_SCALE = 400;
 
 // Cloud raymarch resolution divisor — render target is `canvas / N` per
 // axis (so 1/N² of total pixels). 2 = half-res (4× speedup vs full),
-// 4 = quarter-res (16× speedup vs full, 4× speedup vs half). Bilinear
-// upsample softens cloud silhouettes at higher divisors — works well
-// for fluffy procedural clouds, breaks down past ~4 where edges turn
-// visibly blurry.
+// 4 = quarter-res (16× speedup vs full). Bilinear upsample softens
+// cloud silhouettes at higher divisors — works well for fluffy
+// procedural clouds, breaks down past ~4 where edges turn visibly
+// blurry.
 const CLOUD_RES_DIVISOR = 4;
 
 // Initial uTime offset — pre-rolls the simulation so the first rendered
 // frame already shows wind-streaked, mid-morph clouds rather than a
-// pristine static noise field. With the two-phase wind crossfade
-// (WIND_PERIOD=6400 in the shader), 30000 lands phaseA at 4400 (68%
-// through cycle, weight 0.69, ~11 sec of wind buildup visible) and
-// phaseB at 1200 (18%, weight 0.31, ~3 sec buildup). Net: clear wind
-// motion from frame 1, no "wait for the simulation to warm up" gap.
-// Morph offset at this seed = 9 noise units — well past the boring
-// initial slice. If you bump CLOUD_TIME_SCALE or WIND_PERIOD, revisit.
+// pristine static noise field. At uTime=30000 the noise-space wind
+// shift is already ~0.5 noise units in high-wind regions and the
+// morph offset is ~9 noise units — well past the boring initial slice.
 const INITIAL_TIME = 30000;
 
 export class VolumetricCloudPass {
@@ -116,11 +113,11 @@ export class VolumetricCloudPass {
         uHenyey: { value: DEFAULT_CLOUD_HENYEY },
         uAdvection: { value: DEFAULT_CLOUD_ADVECTION },
         // Geo data — biome / temperature / moisture / elevation. The cloud
-        // shader samples these via a heavy multi-tap blur in `sampleCoverMul`,
+        // shader samples these via a 19-tap hex blur in `sampleBiomeProfile`,
         // so per-cell discontinuities are smeared over ~300 km before they
-        // reach the cloud opacity. Elevation is used to suppress cloud cover
-        // over high mountains (peaks above 2500 m fade clouds to zero).
-        uIdRaster: { value: world.getIdRaster() },
+        // reach the cloud field (both opacity AND per-biome octave weights).
+        // Elevation suppresses cover over high mountains (2500–3000 m fade
+        // band; zero above 3000 m).
         uAttrStatic: { value: world.getAttributeTexture('elevation') },
         uAttrClimate: { value: world.getAttributeTexture('temperature') },
         uElevationMeters: { value: world.getElevationMetersTexture() },

@@ -53,9 +53,15 @@ type Particle = {
   maxLife: number;
   rotation: number;
   rotationModifier: number;
-  // Random 0..1 jitter — multiplied by 30% of wind ramp at use time so the
-  // wind front softens (particles don't all start drifting on the same frame).
+  // Random 0..1 jitter — multiplied by (windRamp × _windJitter) at use time
+  // so the wind front softens (particles don't all start drifting on the
+  // same frame). Spread fraction is live-tunable via _windJitter (0..1).
   windJitter: number;
+  // Accumulated drift velocity from wind. Wind acts as continuous force:
+  // each frame adds (windForce * dt) to this, drag damps it, position is
+  // advected. Lets particles build up momentum during the ramp instead of
+  // instantly matching the ramped wind speed each frame.
+  windVelocity: THREE.Vector3;
 };
 
 class LinearSpline<T> {
@@ -156,7 +162,6 @@ export class NuclearExplosion {
   private readonly _tmpCameraLocal = new THREE.Vector3();
   private readonly _tmpDrag = new THREE.Vector3();
   private readonly _tmpVel = new THREE.Vector3();
-  private readonly _tmpWind = new THREE.Vector3();
   private _viewportHeight =
     typeof window !== 'undefined' ? window.innerHeight : 1080;
   private _liveScale = EXPLOSION_WORLD_SCALE;
@@ -166,6 +171,10 @@ export class NuclearExplosion {
   private _windDelay = 0;
   private _windRamp = 1;
   private _windJitter = 0.3;
+  // Damping on per-particle windVelocity, per second. Sets terminal drift
+  // speed = (wind acceleration / windDrag). Higher = particle matches wind
+  // rate quickly (snappy, less momentum). Lower = slow build-up, more glide.
+  private _windDrag = 1.0;
   private _windLocal = new THREE.Vector3(0, 0, 0);
   // Elapsed blast-time (deltaSec × timeScale) since detonate. Used to gate
   // wind drift: it's in the same time domain as the particle splines, so
@@ -254,6 +263,7 @@ export class NuclearExplosion {
     windDelay: number;
     windRamp: number;
     windJitter: number;
+    windDrag: number;
   }): void {
     this._timeScale = t.timeScale;
     this._spriteScale = t.spriteScale;
@@ -264,6 +274,9 @@ export class NuclearExplosion {
     // the delay clears).
     this._windRamp = Math.max(0.001, t.windRamp);
     this._windJitter = Math.max(0, Math.min(1, t.windJitter));
+    // Clamp drag to a safe range: 0 = no drag (unbounded acceleration),
+    // very high values can over-damp in a single frame and look jittery.
+    this._windDrag = Math.max(0, Math.min(10, t.windDrag));
     if (t.worldScale !== this._liveScale) {
       this._liveScale = t.worldScale;
       this.group.scale.setScalar(t.worldScale);
@@ -424,6 +437,7 @@ export class NuclearExplosion {
       rotation: 2 * Math.random() * Math.PI,
       rotationModifier: randomBetween(-1, 1),
       windJitter: Math.random(),
+      windVelocity: new THREE.Vector3(0, 0, 0),
     };
   }
 
@@ -435,9 +449,10 @@ export class NuclearExplosion {
     // Wind drift is gated on a global blast clock so it kicks in at the
     // same in-blast moment regardless of `timeScale`. The delay is in
     // blast-seconds (already scaled by timeScale via `_blastTime`); after
-    // the delay clears, we ramp in linearly over `_windRamp` blast-seconds.
-    // Height factor uses the mushroom's natural Y span (~16) as the
-    // reference so the ground fan barely moves and the cap drifts fully.
+    // the delay clears, we ramp in via smoothstep over `_windRamp` blast-
+    // seconds. Height factor uses the mushroom's natural Y span (~16) as
+    // the reference: a universal floor (30%) keeps ground smoke moving,
+    // with a bonus up to 100% as altitude approaches the windRef height.
     const windActive =
       this._windStrength !== 0 &&
       (this._windLocal.x !== 0 || this._windLocal.y !== 0 || this._windLocal.z !== 0);
@@ -449,9 +464,10 @@ export class NuclearExplosion {
     const windRef = 16;
     // Local-frame Y of the planet center. The group sits at world distance
     // PLANET_RADIUS from origin with local +Y aligned to the outward radial,
-    // so the planet center is at local (0, -R/scale, 0). Used to re-pin
-    // wind-drifted particles to their current altitude above the sphere
-    // instead of letting them slide off into the tangent plane.
+    // so the planet center is at local (0, -R/scale, 0). Used by the radial
+    // pin to keep every particle on a sphere of radius (planet + altitude)
+    // after all motion, so velocity- and wind-driven lateral drift wraps
+    // the globe instead of sliding along the tangent plane.
     const planetCenterLocalY = -PLANET_RADIUS / this._liveScale;
 
     for (const p of this._particles) {
@@ -461,6 +477,11 @@ export class NuclearExplosion {
       p.alpha = splines.alpha.get(t);
       p.currentSize = p.size * splines.size.get(t);
       p.colour.copy(splines.colour.get(t));
+      // Intended altitude above the sphere surface for this frame. Used
+      // both to weight wind by height and as the radial-pin target so
+      // lateral drift wraps the sphere instead of running along a tangent.
+      const targetAltitudeLocal =
+        p.originalPosition.y + (splines.height ? splines.height.get(t) : 0);
       if (splines.height) {
         p.position.y = p.originalPosition.y + splines.height.get(t);
       }
@@ -473,42 +494,63 @@ export class NuclearExplosion {
 
       if (windActive && elapsedAfterDelay > 0) {
         // Per-particle delay: jitter shifts each particle's effective start
-        // by 0..30% of the ramp. Smoothstep ease-in (t² × (3 − 2t)) on top
-        // so velocity doesn't snap at the end.
+        // by up to (windRamp × _windJitter) seconds. Smoothstep ease-in
+        // (t² × (3 − 2t)) on top so the wind doesn't snap to full at end.
         const elapsedForParticle = elapsedAfterDelay - p.windJitter * jitterSpan;
         if (elapsedForParticle > 0) {
           const linear = Math.min(1, elapsedForParticle / this._windRamp);
           const blastRamp = linear * linear * (3 - 2 * linear);
           // Universal floor (0.3) + height bonus (0.7) so ground-level smoke
           // and fire drift too — not just the mushroom cap. Cap still gets
-          // full wind because its y reaches the windRef height.
-          const heightNorm = Math.max(0, Math.min(1, p.position.y / windRef));
+          // full wind because its altitude reaches the windRef height.
+          // (Uses targetAltitudeLocal, not p.position.y, so the value is
+          // stable against the radial-pin pulling y down each frame.)
+          const heightNorm = Math.max(0, Math.min(1, targetAltitudeLocal / windRef));
           const heightFactor = 0.3 + 0.7 * heightNorm;
-          const scale = deltaSec * this._windStrength * heightFactor * blastRamp;
-          this._tmpWind.copy(this._windLocal).multiplyScalar(scale);
+          // Wind as a continuous acceleration onto the particle's drift
+          // velocity. The previous model added wind directly to position
+          // each frame, which made every particle instantly match the ramp
+          // value — no build-up. With force + drag the particle accelerates
+          // through the ramp and reaches a terminal speed = accel/drag.
+          const accel = this._windStrength * heightFactor * blastRamp * deltaSec;
+          p.windVelocity.x += this._windLocal.x * accel;
+          p.windVelocity.y += this._windLocal.y * accel;
+          p.windVelocity.z += this._windLocal.z * accel;
+        }
+      }
 
-          // Curvature correction (Option C): snapshot the particle's
-          // distance from planet center before wind, drift in the tangent
-          // plane, then rescale the offset-from-center vector back to the
-          // original length. Net effect: lateral motion is preserved but
-          // the particle hugs the sphere instead of flying off tangentially.
-          const dxB = p.position.x;
-          const dyB = p.position.y - planetCenterLocalY;
-          const dzB = p.position.z;
-          const radialBeforeSq = dxB * dxB + dyB * dyB + dzB * dzB;
+      // Drag on the wind-induced drift velocity. Separate from explosion
+      // velocity drag so the two physics regimes can be tuned independently.
+      // Without this, accumulated windVelocity would grow unboundedly while
+      // the wind keeps acting.
+      const windDamp = Math.max(0, 1 - this._windDrag * deltaSec);
+      p.windVelocity.multiplyScalar(windDamp);
 
-          p.position.add(this._tmpWind);
+      // Advect by accumulated wind-velocity every frame. Runs whether wind
+      // is currently being applied or not — so once momentum is built up
+      // the particle keeps drifting (drag-damped) even as height factor or
+      // ramp fades.
+      p.position.x += p.windVelocity.x * deltaSec;
+      p.position.y += p.windVelocity.y * deltaSec;
+      p.position.z += p.windVelocity.z * deltaSec;
 
-          const dxA = p.position.x;
-          const dyA = p.position.y - planetCenterLocalY;
-          const dzA = p.position.z;
-          const radialAfterSq = dxA * dxA + dyA * dyA + dzA * dzA;
-          if (radialAfterSq > 1e-9) {
-            const k = Math.sqrt(radialBeforeSq / radialAfterSq);
-            p.position.x = dxA * k;
-            p.position.y = dyA * k + planetCenterLocalY;
-            p.position.z = dzA * k;
-          }
+      // Curvature correction (Option C, universal): project the particle
+      // back onto a sphere of radius (planet + altitude) after ALL motion
+      // — velocity, wind, height spline, everything. The previous version
+      // only pinned across the wind nudge, so velocity-driven lateral
+      // spread kept sliding along the tangent plane and accumulated
+      // tangent error that became visible once wind extended the trail.
+      const targetRadialLocal = -planetCenterLocalY + targetAltitudeLocal;
+      if (targetRadialLocal > 0) {
+        const dx = p.position.x;
+        const dy = p.position.y - planetCenterLocalY;
+        const dz = p.position.z;
+        const currentRadialSq = dx * dx + dy * dy + dz * dz;
+        if (currentRadialSq > 1e-9) {
+          const k = targetRadialLocal / Math.sqrt(currentRadialSq);
+          p.position.x = dx * k;
+          p.position.y = dy * k + planetCenterLocalY;
+          p.position.z = dz * k;
         }
       }
 

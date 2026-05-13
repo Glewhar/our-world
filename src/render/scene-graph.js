@@ -497,6 +497,7 @@ export function createSceneGraph() {
             windDelay: n.windDelay,
             windRamp: n.windRamp,
             windJitter: n.windJitter,
+            windDrag: n.windDrag,
         });
         nuclearExplosion.setDetonateTuning({
             enables: {

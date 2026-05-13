@@ -269,13 +269,52 @@ async function boot() {
             dateReadout.textContent = formatDate(timeOfYear01, yearsElapsed);
     };
     refreshDateReadout(debug.state.timeOfDay.timeOfYear01, debug.state.timeOfDay.yearsElapsed);
+    const fpsCounter = document.getElementById('fps-counter');
+    let fpsAccumMs = 0;
+    let fpsFrames = 0;
+    // Background-window throttle. When the OS reports the window has lost
+    // focus, browser rAF is no longer vsync-aligned by the compositor —
+    // the render loop can fire faster than the display refresh and the GPU
+    // never gets its idle gaps between frames (seen as a 30–40% wattage
+    // spike when alt-tabbed). We cap to 30 FPS in that state by skipping
+    // rAF callbacks that arrive too soon. Skipped frames don't update
+    // \`prev\`, so the next rendered frame sees the correct accumulated
+    // delta and the simulation continues smoothly.
+    const BLURRED_MIN_FRAME_MS = 1000 / 30;
+    let windowFocused = document.hasFocus();
+    window.addEventListener('blur', () => { windowFocused = false; });
+    window.addEventListener('focus', () => { windowFocused = true; });
     let prev = performance.now();
     let raf = requestAnimationFrame(function frame(now) {
+        if (!windowFocused && (now - prev) < BLURRED_MIN_FRAME_MS) {
+            raf = requestAnimationFrame(frame);
+            return;
+        }
         const deltaMs = Math.min(100, now - prev);
         const deltaSec = deltaMs / 1000;
         prev = now;
         sim.tick(deltaMs);
         renderer.tick(deltaSec, debug.state);
+        if (fpsCounter) {
+            const wantVisible = debug.state.debug.fpsCounter;
+            if (fpsCounter.classList.contains('visible') !== wantVisible) {
+                fpsCounter.classList.toggle('visible', wantVisible);
+            }
+            if (wantVisible) {
+                fpsAccumMs += deltaMs;
+                fpsFrames += 1;
+                if (fpsAccumMs >= 500) {
+                    const fps = (fpsFrames * 1000) / fpsAccumMs;
+                    fpsCounter.textContent = `${fps.toFixed(0)} FPS`;
+                    fpsAccumMs = 0;
+                    fpsFrames = 0;
+                }
+            }
+            else if (fpsFrames !== 0) {
+                fpsAccumMs = 0;
+                fpsFrames = 0;
+            }
+        }
         // Refresh the top-left time card from the derived state that
         // scene-graph.ts just wrote: clock hand + HH:MM (unless the user is
         // mid-drag), the JAN 2067 / FEB 2067 / … date label, and the pause

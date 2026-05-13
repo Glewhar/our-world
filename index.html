@@ -648,6 +648,32 @@
       #tweakpane-host::-webkit-scrollbar-track {
         background: transparent;
       }
+
+      /* FPS counter — top-center small readout. Hidden by default; the
+         Tweakpane Debug folder toggles `.visible`. */
+      #fps-counter {
+        position: fixed;
+        top: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: none;
+        padding: 6px 10px;
+        background: rgba(10, 14, 22, 0.65);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 10px;
+        color: #e6ecf6;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.04em;
+        z-index: 6;
+        pointer-events: none;
+      }
+      #fps-counter.visible {
+        display: block;
+      }
     </style>
   </head>
   <body>
@@ -777,6 +803,7 @@
     </div>
     <button id="tweakpane-toggle" type="button" aria-label="Toggle controls">≡</button>
     <div id="tweakpane-host"></div>
+    <div id="fps-counter">-- FPS</div>
     <script type="importmap">
       {
         "imports": {

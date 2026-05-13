@@ -92,7 +92,7 @@ export const initialDebugState = {
             coverage: 0.5,
             beer: 1.4,
             henyey: 0.4,
-            advection: 24,
+            advection: 40,
         },
         highways: {
             majorWidthPx: 4.0,
@@ -140,6 +140,7 @@ export const initialDebugState = {
         windDelay: 4.0,
         windRamp: 8.0,
         windJitter: 1.0,
+        windDrag: 1.0,
         enableFire: true,
         enableSmoke: true,
         enableMushroom: true,
@@ -155,6 +156,7 @@ export const initialDebugState = {
         smokeColorEnd: '#808080',
     },
     pick: { lastPick: '(click on the globe)' },
+    debug: { fpsCounter: false },
 };
 export function createDebugPanel(state = initialDebugState) {
     // The pane lives inside #tweakpane-host so the page can collapse/expand it
@@ -170,6 +172,7 @@ export function createDebugPanel(state = initialDebugState) {
     const sceneFolder = pane.addFolder({ title: 'Scene' });
     sceneFolder.addBinding(state.scene, 'background');
     sceneFolder.addBinding(state.scene, 'showGrid', { disabled: true, label: 'showGrid (n/a)' });
+    sceneFolder.addBinding(state.debug, 'fpsCounter', { label: 'FPS counter' });
     const altitudeFolder = pane.addFolder({ title: 'Altitude', expanded: false });
     altitudeFolder.addBinding(state.altitude, 'scaleFactor', {
         min: 1, max: 10, step: 0.1, label: 'scale (×)',
@@ -514,6 +517,9 @@ export function createDebugPanel(state = initialDebugState) {
     });
     nSize.addBinding(state.nuclear, 'windJitter', {
         min: 0, max: 1, step: 0.01, label: 'wind jitter',
+    });
+    nSize.addBinding(state.nuclear, 'windDrag', {
+        min: 0, max: 5, step: 0.05, label: 'wind drag',
     });
     const nSubs = nukeFolder.addFolder({ title: 'Sub-effects (redetonate)', expanded: false });
     nSubs.addBinding(state.nuclear, 'enableFire', { label: 'fire' });
