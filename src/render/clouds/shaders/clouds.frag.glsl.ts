@@ -478,15 +478,19 @@ void main() {
   // would be visually identical at much higher cost. Lat-tangent basis:
   // east = unit eastward tangent ((-y, x, 0) normalised), the limit of
   // \`cross((0,0,1), dir) / cos(lat)\` away from the pole. \`eastLen\` =
-  // cos(lat), so smoothstep(0.05, 0.20, eastLen) fades wind to zero
-  // inside ~3° of the pole — where the lat-tangent basis spins
-  // per-longitude and a fixed shift would scramble the cloud pattern.
+  // cos(lat), so smoothstep(0.10, 0.40, eastLen) fades wind to zero
+  // inside ~6° of the pole and fully on outside ~24°. The fade band
+  // is intentionally wider than the unstable ring (the lat-tangent
+  // basis spins fast per-longitude within ~12° of the pole) so the
+  // partial-wind / spinning-basis combination — which reads as a
+  // scattered halo of mis-stretched cloud puffs — sits inside the
+  // calm zone instead of being visible at the band edge.
   vec2 wind = sampleWindLatLon(segDir);
   vec3 east = vec3(-segDir.y, segDir.x, 0.0);
   float eastLen = length(east);
   east = (eastLen > 1e-3) ? east / eastLen : vec3(1.0, 0.0, 0.0);
   vec3 north = cross(segDir, east);
-  float polarFade = smoothstep(0.05, 0.20, eastLen);
+  float polarFade = smoothstep(0.10, 0.40, eastLen);
   // Wind contributes a bounded, direction-aligned warp of the noise
   // sample position — a STATIC deformation, not time-integrated. Using
   // a fixed time constant (not uTime) keeps the cloud pattern from
