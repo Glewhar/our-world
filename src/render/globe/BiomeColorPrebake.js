@@ -21,6 +21,7 @@
  */
 import * as THREE from 'three';
 import { source as healpixGlsl } from './shaders/healpix.glsl.js';
+import { DEFAULTS } from '../../debug/defaults.js';
 // Power-of-two so the mipmap chain goes down cleanly. At LOD 0 the
 // equirect pixel is πR/H ≈ 20 km, doubling at each subsequent level —
 // the land shader picks a LOD from `uBiomeEdgeSharpness` so the slider
@@ -49,21 +50,11 @@ uniform sampler2D uAttrStatic;
 uniform int uHealpixNside;
 uniform int uHealpixOrdering;
 uniform int uAttrTexWidth;
+uniform vec3 uBiomePalette[12];
 
 vec3 biomePalette(int code) {
-  if (code <= 0) return vec3(0.55, 0.5, 0.4);
-  if (code == 1)  return vec3(0.157, 0.431, 0.235);
-  if (code == 2)  return vec3(0.522, 0.541, 0.298);
-  if (code == 3)  return vec3(0.553, 0.659, 0.345);
-  if (code == 4)  return vec3(0.745, 0.706, 0.380);
-  if (code == 5)  return vec3(0.451, 0.439, 0.424);
-  if (code == 6)  return vec3(0.882, 0.765, 0.510);
-  if (code == 7)  return vec3(0.882, 0.922, 0.961);
-  if (code == 8)  return vec3(0.235, 0.510, 0.784);
-  if (code == 9)  return vec3(0.353, 0.510, 0.431);
-  if (code == 10) return vec3(0.235, 0.412, 0.314);
-  if (code == 11) return vec3(0.706, 0.765, 0.784);
-  return vec3(0.55, 0.5, 0.4);
+  int c = clamp(code, 0, 11);
+  return uBiomePalette[c];
 }
 
 void main() {
@@ -106,6 +97,10 @@ export function bakeBiomeColorTexture(renderer, world) {
         generateMipmaps: true,
     });
     const { nside, ordering } = world.getHealpixSpec();
+    const paletteVecs = DEFAULTS.materials.globe.biomePalette.map((hex) => {
+        const c = new THREE.Color(hex);
+        return new THREE.Vector3(c.r, c.g, c.b);
+    });
     const material = new THREE.ShaderMaterial({
         glslVersion: THREE.GLSL3,
         vertexShader: VERT,
@@ -115,6 +110,7 @@ export function bakeBiomeColorTexture(renderer, world) {
             uHealpixNside: { value: nside },
             uHealpixOrdering: { value: ordering === 'ring' ? 0 : 1 },
             uAttrTexWidth: { value: 4 * nside },
+            uBiomePalette: { value: paletteVecs },
         },
         depthTest: false,
         depthWrite: false,

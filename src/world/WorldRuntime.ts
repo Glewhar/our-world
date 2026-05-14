@@ -123,7 +123,6 @@ export async function createWorldRuntime(
           attribute_climate_init: manifest.artifacts.attribute_climate_init,
           attribute_dynamic_init: manifest.artifacts.attribute_dynamic_init,
           elevation_meters: manifest.artifacts.elevation_meters,
-          water_level_meters: manifest.artifacts.water_level_meters,
         },
         baseUrl,
         nside,
@@ -229,7 +228,6 @@ export async function createWorldRuntime(
     getIdRaster: () => idRaster.toDataTexture(),
     getAttributeTexture: (a) => attributes.getTexture(a),
     getElevationMetersTexture: () => attributes.getElevationMetersTexture(),
-    getWaterLevelMetersTexture: () => attributes.getWaterLevelMetersTexture(),
 
     getHealpixSpec: () => ({ nside, ordering }),
 

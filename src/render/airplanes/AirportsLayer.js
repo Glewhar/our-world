@@ -9,6 +9,7 @@
  * per-instance matrix beyond the identity required by Three.js's InstancedMesh.
  */
 import * as THREE from 'three';
+import { DEFAULTS as APP_DEFAULTS } from '../../debug/defaults.js';
 const AIRPORTS_VERT = `// Airports — tiny tangent rectangles ("airstrips") at each airport's lat/lon.
 //
 // Per-instance attributes:
@@ -97,7 +98,7 @@ const DEFAULTS = {
     maxLengthKm: 35,
     widthKm: 1.2,
     radialBias: 1.5e-3, // ~10 km off the surface — clears clouds + ocean waves
-    color: new THREE.Color('#e8eef7'),
+    color: new THREE.Color(APP_DEFAULTS.materials.airplanes.airportColor),
     opacity: 0.9,
 };
 export class AirportsLayer {

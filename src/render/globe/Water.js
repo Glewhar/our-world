@@ -5,10 +5,10 @@
  * shell. Water doesn't carry the same micro-detail as terrain and the
  * extra triangles pull frame time without buying anything visible.
  *
- * Vertex displacement is driven by the per-cell `water_level_meters`
- * texture (R16F, init = 0 = sea level). Fragment shader discards on dry
- * land where the water surface is at or below the land elevation, and
- * paints ocean depth tint elsewhere.
+ * Vertex displacement is driven by `uSeaLevelOffsetM` (a single global
+ * metres value) plus the Gerstner-wave term. Fragment shader paints
+ * ocean depth tint everywhere; no discard — the land mesh draws front-
+ * most by depth test wherever land elevation exceeds water surface.
  */
 import * as THREE from 'three';
 import { createWaterMaterial } from './WaterMaterial.js';
@@ -23,9 +23,7 @@ export class Water {
         this.geometry = new THREE.IcosahedronGeometry(UNIT_RADIUS, ICOSPHERE_SUBDIVISION);
         this.material = createWaterMaterial();
         const u = this.material._waterUniforms;
-        u.uIdRaster.value = world.getIdRaster();
         u.uElevationMeters.value = world.getElevationMetersTexture();
-        u.uWaterLevelMeters.value = world.getWaterLevelMetersTexture();
         u.uOceanCurrents.value = world.getOceanCurrentsTexture();
         const { nside, ordering } = world.getHealpixSpec();
         u.uHealpixNside.value = nside;

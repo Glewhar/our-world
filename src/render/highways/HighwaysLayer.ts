@@ -190,6 +190,10 @@ uniform float uDayCasingStrength;
 uniform float uDayFillBrightness;
 uniform float uOpacity;
 
+uniform vec3 uNightColor;
+uniform vec3 uDayCasingColor;
+uniform vec3 uDayFillColor;
+
 // uSkyView, uHazeExposure, uHazeAmount + sampleSkyViewHaze() are declared
 // by the concatenated haze.glsl.ts chunk above this source.
 
@@ -232,9 +236,8 @@ void main() {
                     uLocal2Boost;
 
   // ---- Night --------------------------------------------------------
-  vec3 warmTungsten = vec3(1.0, 0.85, 0.55);
   float nightProfile = core * uCoreBoost + halo * uHaloStrength;
-  vec3 nightCol = warmTungsten * uNightBrightness * kindFactor * nightProfile;
+  vec3 nightCol = uNightColor * uNightBrightness * kindFactor * nightProfile;
   float nightAlpha = clamp(nightProfile, 0.0, 1.0);
 
   // ---- Day ---------------------------------------------------------
@@ -244,8 +247,8 @@ void main() {
   // (vFillFrac < |vU| < 1) is the dark casing painted in the extra
   // pixels. When uDayCasingPx = 0, vFillFrac = 1 and the casing region
   // vanishes (bright fill across the whole road, no outline).
-  vec3 casingCol = vec3(0.18, 0.16, 0.14);
-  vec3 fillCol   = vec3(0.96, 0.94, 0.88) * clamp(uDayFillBrightness, 0.0, 1.5);
+  vec3 casingCol = uDayCasingColor;
+  vec3 fillCol   = uDayFillColor * clamp(uDayFillBrightness, 0.0, 1.5);
   float fillEdge = clamp(vFillFrac, 0.0, 1.0);
   float fillMask = 1.0 - smoothstep(max(fillEdge - 0.05, 0.0), fillEdge, u01);
   float casingMask = (1.0 - fillMask) * (1.0 - smoothstep(0.92, 1.0, u01));
@@ -353,6 +356,10 @@ export type HighwaysUniforms = {
   uDayFillScale: { value: number };
   uOpacity: { value: number };
 
+  uNightColor: { value: THREE.Color };
+  uDayCasingColor: { value: THREE.Color };
+  uDayFillColor: { value: THREE.Color };
+
   /** Sky-view LUT shared with the atmosphere pass — see `LandUniforms.uSkyView`. */
   uSkyView: { value: THREE.Texture | null };
   /** Exposure multiplier on the LUT sample. Should track atmosphere exposure. */
@@ -451,6 +458,10 @@ export class HighwaysLayer {
       uDayFillBrightness: { value: h.dayFillBrightness },
       uDayFillScale: { value: h.dayFillScale },
       uOpacity: { value: h.opacityNear },
+
+      uNightColor: { value: new THREE.Color(h.nightColor) },
+      uDayCasingColor: { value: new THREE.Color(h.dayCasingColor) },
+      uDayFillColor: { value: new THREE.Color(h.dayFillColor) },
 
       uSkyView: { value: null },
       uHazeExposure: { value: 1.0 },

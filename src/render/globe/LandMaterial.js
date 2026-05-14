@@ -1,14 +1,13 @@
 /**
  * Land material — owns the land icosphere's shader pair.
  *
- * Split out of the previous unified `GlobeMaterial`. Drives the dry-land
- * icosphere: vertex displacement by `max(elevation_meters, 0)` and
- * fragment-shader land colouring (biome → elevation brightness → snow-line →
- * dynamic recolour). Ocean cells (`bodyId == 0`) discard in the fragment
- * shader — the separate `WaterMaterial` paints the water surface.
+ * Vertex shader displaces by raw signed elevation (seafloor dips inward,
+ * mountains poke out). Fragment shader discards cells whose current
+ * elevation sits below `uSeaLevelOffsetM` so the water mesh covers them
+ * cleanly; lowering the slider exposes shelves, raising it drowns coast.
  *
  * Ocean colour uniforms (`uOceanDeep`/`uOceanShallow`) live on
- * `WaterMaterial` now. Everything else mirrors the old `GlobeUniforms`.
+ * `WaterMaterial`. Everything else mirrors the old `GlobeUniforms`.
  *
  * `_landUniforms` is exposed (non-enumerable) so Tweakpane bindings and the
  * scene graph can poke uniforms by name without re-reaching into
@@ -101,24 +100,9 @@ void main() {
     texelFetch(uElevationMeters, tx8, 0).r
   ) / 9.0;
 
-  // Coast taper from the distance field — single bilinear sample in km.
-  // Negative on water, positive on land. \`smoothstep(0, K, d)\` gives a
-  // continuous taper that hits 0 in the water and 1 a few km inland, so
-  // the coast meets the flat water shell flush without leaving a vertical
-  // gap. K = 4 km is wide enough to blend any sub-pixel sampling jitter
-  // and narrow enough that ~all of normal land sits at full displacement.
-  vec2 dfUv = sphereDirToEquirectUv(dir);
-  float distCoastKm = texture(uDistanceField, dfUv).r;
-  float coastFade = smoothstep(0.0, 4.0, distCoastKm);
-
-  // Above-sea elevation keeps the coastFade taper so the land mesh meets
-  // the flat water shell flush at the shoreline. Bathymetry (elev < 0)
-  // passes through raw — no taper — so the seafloor sits at its real
-  // depth and the water shader's depth tint reads correctly over newly
-  // submerged terrain when the sea-level slider rises.
-  float landDisp = max(elev, 0.0) * coastFade;
-  float seaDisp  = min(elev, 0.0);
-  float displace = (landDisp + seaDisp) * uElevationScale;
+  // Raw elevation everywhere: mountains poke out, seafloor sits at its
+  // real depth, coast meets at whatever the data says. No taper.
+  float displace = elev * uElevationScale;
   vec3 displaced = dir * (1.0 + displace);
 
   vec4 wp = modelMatrix * vec4(displaced, 1.0);
@@ -126,38 +110,32 @@ void main() {
   gl_Position = projectionMatrix * viewMatrix * wp;
 }
 `;
-const LAND_FRAG = `// Land fragment shader — climate-driven biome shading on the dry-land
-// icosphere. Ocean cells fade to alpha 0 via a continuous distance-to-coast
-// field; the separate water mesh paints the ocean.
+const LAND_FRAG = `// Land fragment shader — climate-driven biome shading on the icosphere.
+// Fully opaque everywhere; the water mesh draws on top of submerged
+// cells so the ocean depth tint covers the land's seafloor paint.
 //
 // Pipeline (each step composes on top of the previous):
 //   1. Distance field sample  — single bilinear lookup of the equirect
 //                               \`uDistanceField\` (RG16F): R = signed km
 //                               to coast (positive on land), G = km to
-//                               nearest biome boundary. Replaces the
-//                               old 9-tap HEALPix blur — sub-cell
-//                               smooth, ~10× cheaper.
-//   2. Coast alpha            — fragAlpha = smoothstep(-S, +S, d.r) where
-//                               S = uCoastSharpness (km). Continuous,
-//                               anti-aliased coastline that doesn't
-//                               step on cell boundaries.
-//   3. Biome lookup           — centre HEALPix cell still drives the
+//                               nearest biome boundary.
+//   2. Biome lookup           — centre HEALPix cell still drives the
 //                               biome ID; the colour is faded toward
 //                               a neutral landfall tone within
 //                               uBiomeEdgeSharpness km of any biome
 //                               border, so vivid colours stay only in
 //                               biome interiors.
-//   4. Biome surface variation — per-biome procedural noise (color +
+//   3. Biome surface variation — per-biome procedural noise (color +
 //                               fake-bump). Master gate
 //                               \`uBiomeSurfaceStrength\` zero = pre-
 //                               feature look, no cost. Per-biome amps
 //                               in \`uBiomeSurfaceAmps[12]\`.
-//   5. Alpine thinning        — biome colour blends toward bare-rock
+//   4. Alpine thinning        — biome colour blends toward bare-rock
 //                               grey-tan as elevation rises 1.5 → 4 km.
-//   6. Cold/hot tints + snow line — same as before.
-//   7. Dynamic recolour       — fire / ice / infection / pollution.
-//   8. Wrap-Lambert lighting  — Sobel-tilted normal + fake-bump from
-//                               step 4 so noise patterns catch the
+//   5. Cold/hot tints + snow line — same as before.
+//   6. Dynamic recolour       — fire / ice / infection / pollution.
+//   7. Wrap-Lambert lighting  — Sobel-tilted normal + fake-bump from
+//                               step 3 so noise patterns catch the
 //                               sun, day/night wrap.
 //
 // \`vColor\` is intentionally unused — a per-body tint LUT is a follow-up.
@@ -173,7 +151,6 @@ uniform float uAmbient;
 uniform vec3 uMoonColor;
 uniform float uMoonIntensity;
 
-uniform sampler2D uIdRaster;
 uniform sampler2D uAttrStatic;
 uniform sampler2D uAttrClimate;
 uniform sampler2D uAttrDynamic;
@@ -186,11 +163,6 @@ uniform int uHealpixOrdering;
 uniform int uAttrTexWidth;
 uniform float uElevationScale;
 uniform float uSeaLevelOffsetM;
-// When the Ocean layer is toggled off, force ocean cells to render as
-// exposed seafloor instead of fading to transparent. 0 = normal coast
-// alpha, 1 = paint everything opaque so the planet reads as a single
-// terrain sphere with bathymetry visible.
-uniform float uOceanLayerHidden;
 
 uniform vec3 uColorFire;
 uniform vec3 uColorIce;
@@ -211,11 +183,6 @@ uniform float uSeasonOffsetC;
 // effect; 1 = full bare-rock at 4 km+.
 uniform float uAlpineStrength;
 
-// Half-width (km) of the smoothstep over distance-to-coast. Smaller =
-// razor edge; larger = soft dissolve. The shader reads the signed km
-// from the distance field's R channel, so this is in real-world km.
-uniform float uCoastSharpness;
-
 // Distance (km) over which biome colour is blended toward neutral at
 // boundaries. 0 = hard categorical edges; ~10 = clean clean-fade.
 uniform float uBiomeEdgeSharpness;
@@ -233,6 +200,23 @@ uniform float uBiomeSurfaceAmps[12];   // per-biome amplitude (indexed by biome 
 uniform float uBiomeSpecAmps[12];
 // Master multiplier on top of the per-biome amps; 0 disables all spec.
 uniform float uSpecularStrength;
+
+// Biome palette — indexed by biome ID 0..11. Authored in defaults.ts.
+uniform vec3 uBiomePalette[12];
+
+// Elevation / climate-driven tints (authored in defaults.ts).
+uniform vec3 uAlpineBareColor;
+uniform vec3 uColdToneColor;
+uniform vec3 uHotDryColor;
+
+// Two-tone specular tint (warm for non-snow, cool for snow); the shader
+// lerps between them by the snow-line mix.
+uniform vec3 uSpecularTintWarm;
+uniform vec3 uSpecularTintCool;
+
+// Moonlight reflectance — biome desaturates toward this neutral grey
+// under antipodal moonlight before being tinted by uMoonColor.
+uniform vec3 uMoonReflectanceBase;
 
 // Aerial perspective. uSkyView is the same sky-view LUT the atmosphere
 // halo samples — sampled here in the direction camera→undisplaced-sphere-
@@ -275,22 +259,9 @@ out vec4 fragColor;
 //  10  mangroves              — dark teal-green
 //  11  moss & lichen / tundra — pale grey-blue
 vec3 biomePalette(int code) {
-  if (code <= 0) return vec3(0.55, 0.5, 0.4);    // landfall fallback (sand-ish)
-  if (code == 1)  return vec3(0.157, 0.431, 0.235);
-  if (code == 2)  return vec3(0.522, 0.541, 0.298);
-  if (code == 3)  return vec3(0.553, 0.659, 0.345);
-  if (code == 4)  return vec3(0.745, 0.706, 0.380);
-  if (code == 5)  return vec3(0.451, 0.439, 0.424);
-  if (code == 6)  return vec3(0.882, 0.765, 0.510);
-  if (code == 7)  return vec3(0.882, 0.922, 0.961);
-  if (code == 8)  return vec3(0.235, 0.510, 0.784);
-  if (code == 9)  return vec3(0.353, 0.510, 0.431);
-  if (code == 10) return vec3(0.235, 0.412, 0.314);
-  if (code == 11) return vec3(0.706, 0.765, 0.784);
-  return vec3(0.55, 0.5, 0.4);
+  int c = clamp(code, 0, 11);
+  return uBiomePalette[c];
 }
-
-const vec3 LANDFALL_NEUTRAL = vec3(0.55, 0.50, 0.40);
 
 // \`sphereDirToEquirectUv(dir)\` comes from healpix.glsl (concatenated
 // ahead of this source). wrapS=Repeat on the sampled equirect textures
@@ -419,42 +390,20 @@ void main() {
   vec2 dfUv = sphereDirToEquirectUv(dir);
   vec2 df = texture(uDistanceField, dfUv).rg;
 
-  // ----- Slider-aware wet/dry classification -----
-  // The baked distance field labels each cell ocean (df.r < 0) or land
-  // (df.r > 0). The sea-level slider overrides either: a dropped sea
-  // exposes baked-ocean cells whose seafloor is above the new surface;
-  // a raised sea drowns baked-land cells. Per-cell waterLevel is 0
-  // everywhere in v1, so the new surface is just the slider value.
-  // \`rawElevM\` is unclamped so bathymetry survives — the existing
-  // \`elevM\` below clamps to 0 for alpine thinning and stays that way.
-  float waterSurfaceM = uSeaLevelOffsetM;
-  float rawElevM = texelFetch(uElevationMeters, tx, 0).r;
-  bool exposed = (df.r < 0.0) && (rawElevM > waterSurfaceM);
-  bool drowned = (df.r > 0.0) && (rawElevM < waterSurfaceM);
-  // Ocean layer toggled off → treat every ocean cell as exposed seafloor
-  // so the planet renders as a continuous terrain sphere instead of
-  // showing transparent holes with atmosphere bleeding through.
-  if (uOceanLayerHidden > 0.5 && df.r < 0.0) {
-    exposed = true;
-    drowned = false;
-  }
-  // Drop drowned fragments early so the water mesh paints unobstructed.
-  // \`alphaToCoverage\` would zero the MSAA mask but might still write
-  // depth; \`discard\` is the safer call. Skip when the ocean layer is
-  // hidden — there's no water mesh to paint over the hole, so a discard
-  // would just leak atmosphere through.
-  if (drowned && uOceanLayerHidden < 0.5) discard;
+  // Submerged-cell discard: a cell renders iff its current elevation
+  // sits at or above the sea-level slider. Slider lowered → seafloor
+  // cells whose depth is shallower than the new sea level become
+  // exposed; slider raised → low coast drowns. Single rule, no static
+  // coast mask, sub-cell precision from the bilinear equirect resample.
+  float elevHere = texture(uElevationEquirect, dfUv).r;
+  if (elevHere < uSeaLevelOffsetM) discard;
 
   // Centre biome ID still comes from HEALPix attribute_static.G.
   vec4 staticTexel = texelFetch(uAttrStatic, tx, 0);
   int biomeC = int(staticTexel.g * 255.0 + 0.5);
   biomeC = clamp(biomeC, 0, 11);
 
-  // Newly-exposed seafloor: the underlying biome is "permanent water" so
-  // \`biomePalette\` returns mid-blue. Override with a wet-rock grey-brown
-  // so the seafloor reads as terrain instead of tinted water.
-  const vec3 SEAFLOOR_TONE = vec3(0.38, 0.36, 0.32);
-  vec3 base = exposed ? SEAFLOOR_TONE : biomePalette(biomeC);
+  vec3 base = biomePalette(biomeC);
 
   // ----- Biome edge blend -----
   // Sample the prebaked biome COLOR map at a mipmap level chosen from
@@ -463,10 +412,7 @@ void main() {
   // LOD = log2(sharpness / 20) puts the slider value directly in the
   // blur-radius driver. One sample per fragment, all the work was paid
   // upfront at prebake time.
-  // Skip the biome-edge mip blend on exposed seafloor — the prebake at
-  // that uv is the water-biome blue, and mixing it back in would undo
-  // the wet-rock override above.
-  if (uBiomeEdgeSharpness > 0.0 && !exposed) {
+  if (uBiomeEdgeSharpness > 0.0) {
     float lod = max(0.0, log2(uBiomeEdgeSharpness / 20.0));
     // Prebake stores premultiplied RGBA: water cells are vec4(0). Bilinear/
     // mipmap filtering near a coast returns alpha < 1 for fragments whose
@@ -518,9 +464,8 @@ void main() {
   // Smoothly fade the biome colour toward bare-rock grey-tan as elevation
   // rises. Below ~1500 m: untouched. Above ~4000 m: ~70% rock. The blend
   // is \`smoothstep\` so there are no hard altitude lines.
-  const vec3 ALPINE_BARE = vec3(0.55, 0.50, 0.45);
   float altThin = smoothstep(1500.0, 4000.0, elevM);
-  base = mix(base, ALPINE_BARE, altThin * clamp(uAlpineStrength, 0.0, 1.0));
+  base = mix(base, uAlpineBareColor, altThin * clamp(uAlpineStrength, 0.0, 1.0));
 
   // ----- Effective temperature (with season slider) -----
   // Baked WorldClim annual mean + uSeasonOffsetC. Drives both the
@@ -536,16 +481,14 @@ void main() {
   // deserts, so without a strong tint here they paint identical to
   // the Sahara. Pale-blue "frost" reads wrong on dry rocky desert —
   // dusty grey-tan reads right.
-  const vec3 COLD_TONE = vec3(0.50, 0.48, 0.44);
   float coldBlend = smoothstep(22.0, -2.0, effTempC);
-  base = mix(base, COLD_TONE, coldBlend * 0.95);
+  base = mix(base, uColdToneColor, coldBlend * 0.95);
 
   // ----- Hot tint -----
   // Above ~22 °C a slight tan/dry tint creeps in (sun-baked vegetation,
   // dry grass). Capped at 25% blend.
-  const vec3 HOT_DRY = vec3(0.78, 0.70, 0.50);
   float hotBlend = smoothstep(22.0, 36.0, effTempC);
-  base = mix(base, HOT_DRY, hotBlend * 0.25);
+  base = mix(base, uHotDryColor, hotBlend * 0.25);
 
   // ----- Snow line -----
   // Driven directly by effective temperature.
@@ -595,14 +538,12 @@ void main() {
   // \`snowMix\` overrides any tepid biome smoothness on the snow line.
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
   vec3 halfDir = normalize(sunDir + viewDir);
-  // Exposed seafloor reads as wet rock — drop the water biome's high
-  // smoothness amp so it doesn't paint as a shiny puddle.
-  float biomeSmooth = exposed ? 0.0 : uBiomeSpecAmps[biomeC];
+  float biomeSmooth = uBiomeSpecAmps[biomeC];
   float frostBonus  = smoothstep(5.0, -10.0, effTempC) * 0.15;
   float smoothness  = max(biomeSmooth + frostBonus, snowMix * 0.6);
   float spec = pow(max(dot(n, halfDir), 0.0), 24.0);
   float sunMask = smoothstep(0.0, 0.15, ndotl);
-  vec3 specTint = mix(vec3(1.0, 0.97, 0.92), vec3(0.95, 0.97, 1.05), snowMix);
+  vec3 specTint = mix(uSpecularTintWarm, uSpecularTintCool, snowMix);
   vec3 specContrib = specTint * spec * smoothness * sunMask * uSpecularStrength * specCarry;
 
   // \`specContrib\` already carries its own tint via \`specTint\` (cool on
@@ -619,35 +560,9 @@ void main() {
   // the cinematic "blue moonlit Earth" look. Set the mix factor to 1.0
   // to revert to fully biome-tinted moonlight.
   float moonDotL = max(-ndotl, 0.0);
-  vec3 moonReflectance = mix(vec3(0.6), base, 0.25);
+  vec3 moonReflectance = mix(uMoonReflectanceBase, base, 0.25);
   vec3 moonGlow = moonReflectance * uMoonColor * moonDotL * uMoonIntensity;
   vec3 night = base * uNightTint + moonGlow;
-
-  // ----- Coast alpha (slider-aware) -----
-  // Continuous km-based smoothstep on the signed coast distance. With a
-  // bilinear-filtered distance field the transition is smooth at any
-  // zoom; uCoastSharpness controls the fade width in real km. At 0 the
-  // smoothstep edges collide (undefined in GLSL) so degrade to a hard
-  // step at the coastline. Drowned cells already discarded above;
-  // exposed cells paint fully opaque so the seafloor displaces the
-  // water mesh cleanly.
-  float fragAlpha;
-  if (exposed) {
-    fragAlpha = 1.0;
-  } else {
-    float coastBand = (uCoastSharpness <= 0.0)
-      ? step(0.0, df.r)
-      : smoothstep(-uCoastSharpness, uCoastSharpness, df.r);
-    // Above sea-level coastlines the smoothstep was only there to defeat
-    // z-fight with the water shell. Once elevation lifts the land vertex
-    // clear of \`uWaterRadialBias\`, that justification is gone — pin to
-    // opaque so MSAA writes depth at every sample and atmosphere / moon
-    // can't bleed through coastal-ridge silhouettes via the
-    // alpha-to-coverage gaps. Smooth 0..50 m ramp to avoid a hard alpha
-    // cliff right at the shoreline.
-    float elevOpaque = smoothstep(0.0, 50.0, elevM);
-    fragAlpha = max(coastBand, elevOpaque);
-  }
 
   vec3 finalColor = mix(night, day, wrap);
 
@@ -670,7 +585,7 @@ void main() {
     finalColor = mix(finalColor, hazeColor, hazeStrength);
   }
 
-  fragColor = vec4(finalColor, fragAlpha);
+  fragColor = vec4(finalColor, 1.0);
 }
 `;
 /**
@@ -728,7 +643,6 @@ export function createLandMaterial() {
         uAmbient: { value: g.ambient },
         uMoonColor: { value: new THREE.Color(g.moonColor) },
         uMoonIntensity: { value: g.moonIntensity },
-        uIdRaster: { value: null },
         uAttrStatic: { value: null },
         uAttrClimate: { value: null },
         uAttrDynamic: { value: null },
@@ -741,7 +655,6 @@ export function createLandMaterial() {
         uAttrTexWidth: { value: 1 },
         uElevationScale: { value: DEFAULT_ELEVATION_SCALE },
         uSeaLevelOffsetM: { value: o.seaLevelOffsetM },
-        uOceanLayerHidden: { value: 0 },
         uColorFire: { value: new THREE.Color(g.lerpColorFire) },
         uColorIce: { value: new THREE.Color(g.lerpColorIce) },
         uColorInfection: { value: new THREE.Color(g.lerpColorInfection) },
@@ -753,7 +666,6 @@ export function createLandMaterial() {
         uSnowLineStrength: { value: g.snowLineStrength },
         uSeasonOffsetC: { value: g.seasonOffsetC },
         uAlpineStrength: { value: g.alpineStrength },
-        uCoastSharpness: { value: g.coastSharpness },
         // Within this many km of a biome boundary, blend toward a mipmap
         // sample of the prebaked biome COLOR map. The slider also picks the
         // mip LOD, so it controls both the blend distance AND the blur
@@ -766,6 +678,18 @@ export function createLandMaterial() {
         uBiomeSurfaceAmps: { value: new Float32Array(g.biomeSurfaceAmps) },
         uBiomeSpecAmps: { value: new Float32Array(g.biomeSpecAmps) },
         uSpecularStrength: { value: g.specularStrength },
+        uBiomePalette: {
+            value: g.biomePalette.map((hex) => {
+                const c = new THREE.Color(hex);
+                return new THREE.Vector3(c.r, c.g, c.b);
+            }),
+        },
+        uAlpineBareColor: { value: new THREE.Color(g.alpineBareColor) },
+        uColdToneColor: { value: new THREE.Color(g.coldToneColor) },
+        uHotDryColor: { value: new THREE.Color(g.hotDryColor) },
+        uSpecularTintWarm: { value: new THREE.Color(g.specularTintWarm) },
+        uSpecularTintCool: { value: new THREE.Color(g.specularTintCool) },
+        uMoonReflectanceBase: { value: new THREE.Color(g.moonReflectanceBase) },
         uSkyView: { value: null },
         uHazeExposure: { value: a.exposure },
         uHazeAmount: { value: a.hazeAmount },
@@ -784,13 +708,6 @@ export function createLandMaterial() {
         glslVersion: THREE.GLSL3,
         vertexShader,
         fragmentShader,
-        // Alpha-to-coverage turns the distance-field coast smoothstep into an
-        // MSAA coverage mask: ocean fragments (alpha ≈ 0) drop out so the
-        // water mesh below shows through, and the few-km coast band gets
-        // dithered across MSAA samples for a smooth shoreline. Plain alpha
-        // blending would z-fight against the water mesh at coast vertices
-        // (both sit at radius ≈ 1.0).
-        alphaToCoverage: true,
     });
     Object.defineProperty(material, '_landUniforms', {
         value: uniforms,

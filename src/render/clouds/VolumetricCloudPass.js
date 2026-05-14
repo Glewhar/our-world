@@ -239,6 +239,8 @@ uniform float uCoverage;            // FBM threshold — higher = more sky cover
 uniform float uBeer;                // Beer-Lambert extinction strength
 uniform float uHenyey;              // Henyey-Greenstein g parameter
 uniform float uAdvection;           // wind-shift multiplier
+uniform vec3 uSunColor;             // direct sun lighting colour
+uniform vec3 uAmbientColor;         // ambient sky tint applied to shaded cloud faces
 
 // Per-biome octave-weight profiles for cn_fbm_weighted. Modulating
 // *which octaves dominate* — rather than the noise scale or sampling
@@ -445,9 +447,21 @@ float cloudDensity(vec3 p, CoverSample profile, vec3 windOffset) {
   // Erosion: 3D Worley carves billows / chunkiness inside the slabs.
   // \`WORLEY_MIX\` controls how aggressively Worley bites in: 0 = pure FBM
   // slabs (no chunkiness), 1 = fully Worley-eroded.
-  float wd = cn_worley(sampleP + vec3(3.7, 1.3, 5.1));
-  float erosion = clamp(1.0 - wd, 0.0, 1.0);
-  float density = baseSlab * (1.0 - WORLEY_MIX + WORLEY_MIX * erosion);
+  //
+  // Skip the 27-cell Worley fetch on sparse-coverage cells — wispy edges
+  // where baseSlab is small contribute almost nothing to the final colour
+  // (final density is multiplied by baseSlab), so the difference between
+  // a real Worley sample and the mean-Worley constant the light march
+  // uses is invisible. Threshold picked so the saved work covers the
+  // wispy fringe where Worley pays no visual rent.
+  float density;
+  if (baseSlab < 0.15) {
+    density = baseSlab * (1.0 - 0.5 * WORLEY_MIX);
+  } else {
+    float wd = cn_worley(sampleP + vec3(3.7, 1.3, 5.1));
+    float erosion = clamp(1.0 - wd, 0.0, 1.0);
+    density = baseSlab * (1.0 - WORLEY_MIX + WORLEY_MIX * erosion);
+  }
 
   return density * vFade * uDensity;
 }
@@ -701,9 +715,6 @@ void main() {
   float cosTheta = dot(dir, sunDir);
   float phase = henyeyGreenstein(cosTheta, uHenyey);
 
-  vec3 sunColor = vec3(1.00, 0.96, 0.88);
-  vec3 ambientColor = vec3(0.55, 0.65, 0.80);
-
   vec3 col = vec3(0.0);
   float transmittance = 1.0;
 
@@ -732,8 +743,8 @@ void main() {
       float wrap = smoothstep(-0.25, 0.55, dot(nP, sunDir));
 
       // In-scattering: directly-lit term + ambient sky tint.
-      vec3 inscatter = sunColor * lightTransmit * phase * 4.0 * PI * mix(0.05, 1.0, wrap);
-      inscatter += ambientColor * mix(0.20, 0.80, wrap);
+      vec3 inscatter = uSunColor * lightTransmit * phase * 4.0 * PI * mix(0.05, 1.0, wrap);
+      inscatter += uAmbientColor * mix(0.20, 0.80, wrap);
 
       // Front-to-back integration. Beer extinction across this step,
       // then accumulate emitted/scattered light premultiplied by the
@@ -764,8 +775,11 @@ const CLOUD_TIME_SCALE = 400;
 // 4 = quarter-res (16× speedup vs full). Bilinear upsample softens
 // cloud silhouettes at higher divisors — works well for fluffy
 // procedural clouds, breaks down past ~4 where edges turn visibly
-// blurry.
-const CLOUD_RES_DIVISOR = 4;
+// blurry. Cost on High-tier hardware is absorbed; weaker tiers turn
+// clouds off entirely via the autotune cascade in `debug/autotune.ts`,
+// and the user can dial the canvas down via the settings render-scale
+// slider, which shrinks the cloud target proportionally.
+const CLOUD_RES_DIVISOR = 3;
 // Initial uTime offset — pre-rolls the simulation so the first rendered
 // frame already shows wind-streaked, mid-morph clouds rather than a
 // pristine static noise field. At uTime=30000 the noise-space wind
@@ -807,6 +821,8 @@ export class VolumetricCloudPass {
                 uBeer: { value: DEFAULTS.materials.clouds.beer },
                 uHenyey: { value: DEFAULTS.materials.clouds.henyey },
                 uAdvection: { value: DEFAULTS.materials.clouds.advection },
+                uSunColor: { value: new THREE.Color(DEFAULTS.materials.clouds.sunColor) },
+                uAmbientColor: { value: new THREE.Color(DEFAULTS.materials.clouds.ambientColor) },
                 // Geo data — biome / temperature / moisture / elevation. The cloud
                 // shader samples these via a 19-tap hex blur in `sampleBiomeProfile`,
                 // so per-cell discontinuities are smeared over ~300 km before they

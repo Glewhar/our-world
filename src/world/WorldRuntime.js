@@ -63,7 +63,6 @@ export async function createWorldRuntime(opts = {}) {
             attribute_climate_init: manifest.artifacts.attribute_climate_init,
             attribute_dynamic_init: manifest.artifacts.attribute_dynamic_init,
             elevation_meters: manifest.artifacts.elevation_meters,
-            water_level_meters: manifest.artifacts.water_level_meters,
         }, baseUrl, nside).then(step('terrain textures')),
         // wind_field is allowed to be a zero-byte placeholder on older bakes,
         // in which case the loader returns null and consumers degrade.
@@ -158,7 +157,6 @@ export async function createWorldRuntime(opts = {}) {
         getIdRaster: () => idRaster.toDataTexture(),
         getAttributeTexture: (a) => attributes.getTexture(a),
         getElevationMetersTexture: () => attributes.getElevationMetersTexture(),
-        getWaterLevelMetersTexture: () => attributes.getWaterLevelMetersTexture(),
         getHealpixSpec: () => ({ nside, ordering }),
         getWindFieldTexture: () => (windField ? windField.texture : null),
         getOceanCurrentsTexture: () => (oceanCurrents ? oceanCurrents.texture : null),

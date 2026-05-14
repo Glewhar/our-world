@@ -7,9 +7,9 @@
  * subdivisions just over-sample past the data's resolution.
  *
  * Vertex shader displaces by the per-cell `elevation_meters` value
- * (max(elev, 0) — sub-sea-level land stays at radius 1.0 and is hidden
- * by the water mesh anyway). Fragment shader discards ocean cells; the
- * separate `Water` mesh paints those.
+ * (raw signed — seafloor dips inward, mountains poke out). Fragment
+ * shader discards cells whose elevation is below the sea-level slider;
+ * the separate `Water` mesh paints over the submerged region.
  */
 
 import * as THREE from 'three';
@@ -33,7 +33,6 @@ export class Land {
     this.material = createLandMaterial();
 
     const u = this.material._landUniforms;
-    u.uIdRaster.value = world.getIdRaster();
     u.uAttrStatic.value = world.getAttributeTexture('elevation');
     u.uAttrClimate.value = world.getAttributeTexture('temperature');
     u.uAttrDynamic.value = world.getAttributeTexture('fire');

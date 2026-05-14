@@ -117,6 +117,10 @@ uniform float uDayContrast;
 uniform float uOpacity;
 uniform float uNightOpacity;
 
+uniform vec3 uNightFillColor;
+uniform vec3 uNightOutlineColor;
+uniform vec3 uDayNeutralColor;
+
 // uSkyView, uHazeExposure, uHazeAmount + sampleSkyViewHaze() are declared
 // by the concatenated haze.glsl.ts chunk above this source.
 
@@ -206,13 +210,12 @@ void main() {
   float dayFill = mix(0.20, 0.35, blockBright);
   float dayOutline = 0.14;
   vec3 dayCol = vec3(mix(dayFill, dayOutline, outline));
-  dayCol = mix(vec3(0.7), dayCol, 0.5 + uDayContrast);
+  dayCol = mix(uDayNeutralColor, dayCol, 0.5 + uDayContrast);
 
   float popLight = clamp(log(max(vPopulation, 100.0)) / log(2.0e7), 0.35, 1.0);
-  vec3 nightFill = vec3(1.0, 0.85, 0.55) * blockBright * popLight * uNightBrightness;
+  vec3 nightFill = uNightFillColor * blockBright * popLight * uNightBrightness;
   nightFill *= (1.0 + uTileSparkle * sparkle);
-  vec3 nightOutline = vec3(0.04, 0.03, 0.02);
-  vec3 nightCol = mix(nightFill, nightOutline, outline);
+  vec3 nightCol = mix(nightFill, uNightOutlineColor, outline);
 
   // Surface normal at this fragment is just the unit direction from the
   // globe centre — the polygon hugs the unit sphere, so this matches
@@ -310,6 +313,9 @@ export class CitiesLayer {
             uDayContrast: { value: c.dayContrast },
             uOpacity: { value: c.opacity },
             uNightOpacity: { value: c.nightOpacity },
+            uNightFillColor: { value: new THREE.Color(c.nightFillColor) },
+            uNightOutlineColor: { value: new THREE.Color(c.nightOutlineColor) },
+            uDayNeutralColor: { value: new THREE.Color(c.dayNeutralColor) },
             uSkyView: { value: null },
             uHazeExposure: { value: 1.0 },
             uHazeAmount: { value: 0.0 },

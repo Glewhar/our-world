@@ -9,6 +9,7 @@
  */
 import * as THREE from 'three';
 import { DEFAULT_ELEVATION_SCALE } from '../globe/LandMaterial.js';
+import { DEFAULTS as APP_DEFAULTS } from '../../debug/defaults.js';
 const PLANE_VERT = `// Plane head — a screen-space billboard quad at the plane's current great-
 // circle position. Quad is expanded in clip space so the dot stays a constant
 // pixel size regardless of distance (within reason).
@@ -124,7 +125,7 @@ const DEFAULTS = {
     peakScale: 0.0013,
     radialBiasM: 50,
     pixelSize: 4,
-    colorBlink: new THREE.Color('#b32516'),
+    colorBlink: new THREE.Color(APP_DEFAULTS.materials.airplanes.headBlinkColor),
     opacity: 1.0,
 };
 export class PlaneHeadsLayer {

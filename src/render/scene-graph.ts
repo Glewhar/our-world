@@ -59,6 +59,7 @@ import {
 } from './globe/LandMaterial.js';
 import type { BodyRecord, WorldRuntime } from '../world/index.js';
 import type { DebugState } from '../debug/Tweakpane.js';
+import { DEFAULTS } from '../debug/defaults.js';
 
 const CAMERA_RADIUS = 3.0;
 const MAX_CONCURRENT_BLASTS = 8;
@@ -93,7 +94,7 @@ export type SceneGraph = {
 
 export function createSceneGraph(): SceneGraph {
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color('#06080c');
+  scene.background = new THREE.Color(DEFAULTS.scene.background);
 
   // Z-up matches the data-pipeline's `lonlat_to_xyz` convention end-to-end.
   // Orbit, picking, and shading all stay in this frame — no axis swap.
@@ -111,7 +112,7 @@ export function createSceneGraph(): SceneGraph {
   // channel of `sun.color × sun.intensity` that exceeds 1.0 will overdrive
   // white biomes (snow) past the white point and tilt them toward the warm
   // side — keep the product ≤ 1.0 per channel.
-  const sun = new THREE.DirectionalLight(0xfff5e6, 1.0);
+  const sun = new THREE.DirectionalLight(DEFAULTS.scene.sunLightColor, 1.0);
   sun.position.set(3, 2, 1.5);
   scene.add(sun);
 
@@ -339,9 +340,7 @@ export function createSceneGraph(): SceneGraph {
       land.uSeasonOffsetC.value = m.seasonOffsetC;
       land.uAlpineStrength.value = m.alpineStrength;
 
-      // Distance-field knobs — coast smoothstep half-width and biome
-      // edge fade distance, both in km.
-      land.uCoastSharpness.value = m.coastSharpness;
+      // Distance-field knob — biome edge fade distance, in km.
       land.uBiomeEdgeSharpness.value = m.biomeEdgeSharpness;
 
       // Biome surface variation. Master = 0 → identical to pre-feature look.
@@ -556,11 +555,6 @@ export function createSceneGraph(): SceneGraph {
       globe.group.visible = debug.layers.globe || debug.layers.ocean;
       globe.land.mesh.visible = debug.layers.globe;
       globe.water.mesh.visible = debug.layers.ocean;
-      // Tell the land shader to fill ocean cells as exposed seafloor when
-      // the water mesh is hidden, so the planet still looks like a solid
-      // terrain sphere instead of leaking atmosphere through transparent
-      // ocean fragments.
-      globe.uniforms.land.uOceanLayerHidden.value = debug.layers.ocean ? 0 : 1;
     }
     if (atmosphere) atmosphere.mesh.visible = debug.layers.atmosphere;
     cloudsPass?.setActive(debug.layers.clouds);

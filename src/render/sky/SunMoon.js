@@ -11,6 +11,7 @@
  * the current sun direction each frame via `setSunDirection`.
  */
 import * as THREE from 'three';
+import { DEFAULTS } from '../../debug/defaults.js';
 const SUN_DISTANCE = 60;
 const MOON_DISTANCE = 60;
 export class SunMoon {
@@ -21,14 +22,15 @@ export class SunMoon {
     moonMat;
     tmpDir = new THREE.Vector3();
     constructor() {
+        const s = DEFAULTS.materials.sky;
         const sunUniforms = {
-            uColor: { value: new THREE.Color('#ffd9a0') },
-            uGlowColor: { value: new THREE.Color('#ffaa55') },
+            uColor: { value: new THREE.Color(s.sunDiskColor) },
+            uGlowColor: { value: new THREE.Color(s.sunGlowColor) },
             uIntensity: { value: 6.0 },
         };
         const moonUniforms = {
-            uColor: { value: new THREE.Color('#cfd6e0') },
-            uGlowColor: { value: new THREE.Color('#7d869a') },
+            uColor: { value: new THREE.Color(s.moonDiskColor) },
+            uGlowColor: { value: new THREE.Color(s.moonGlowColor) },
             uIntensity: { value: 1.0 },
         };
         const sharedVert = /* glsl */ `

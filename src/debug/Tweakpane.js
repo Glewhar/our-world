@@ -166,9 +166,6 @@ export function createDebugPanel(state = initialDebugState) {
     // arrived with the distance-field bake — these need live tuning.
     const globeMat = mat.addFolder({ title: 'Globe', expanded: false });
     const gEdges = globeMat.addFolder({ title: 'Edges & coastline', expanded: false });
-    gEdges.addBinding(state.materials.globe, 'coastSharpness', {
-        min: 0, max: 100, step: 0.1, label: 'coast sharpness (km)',
-    });
     gEdges.addBinding(state.materials.globe, 'biomeEdgeSharpness', {
         min: 0, max: 100, step: 0.5, label: 'biome edge fade (km)',
     });

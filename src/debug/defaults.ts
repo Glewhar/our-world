@@ -26,6 +26,8 @@ export const DEFAULTS = {
   },
   scene: {
     background: '#06080c',
+    // Warm directional light (kept ≤ 1.0 per channel so snow doesn't overdrive).
+    sunLightColor: 0xfff5e6,
     showGrid: false,
   },
   timeOfDay: {
@@ -42,7 +44,7 @@ export const DEFAULTS = {
     globe: true,
     atmosphere: true,
     ocean: true,
-    clouds: true,
+    clouds: false,
     highways: true,
     airports: false,
     routeScaffold: false,
@@ -80,16 +82,54 @@ export const DEFAULTS = {
       snowLineStrength: 0.55,
       seasonOffsetC: 0.0,
       alpineStrength: 0.7,
-      coastSharpness: 50.0,
       biomeEdgeSharpness: 80.0,
       biomeSurfaceStrength: 1.0,
       biomeColorVar: 0.6,
-      biomeBumpStrength: 0.6,
-      biomeNoiseFreq: 12.0,
+      biomeBumpStrength: 0.5,
+      biomeNoiseFreq: 2.5,
       // 12 entries — indexed by biome class.
       biomeSurfaceAmps: [0.8, 0.7, 0.6, 0.5, 0.6, 0.4, 0.9, 0.3, 0.7, 0.4, 0.6, 1.0] as readonly number[],
       specularStrength: 1.4,
       biomeSpecAmps: [0.05, 0.1, 0.04, 0.06, 0.06, 0.05, 0.0, 0.4, 0.2, 0.15, 0.12, 0.2] as readonly number[],
+      // Biome palette — indexed by canonical biome_class code (see
+      // data-pipeline/config/attrs.yaml esa_worldcover remap):
+      //   0  fallback / barren         c4bcaa
+      //   1  forest (spring green)     6eaf85
+      //   2  shrubland (olive/khaki)   bfc294
+      //   3  grassland (light olive)   c4d49f
+      //   4  cropland (wheat)          e0dba6
+      //   5  built-up (neutral grey)   b3b1ae
+      //   6  bare / desert tan         f1e3bd
+      //   7  snow & ice (pale blue)    f1f6fb
+      //   8  permanent water (overridden by ocean shader)
+      //   9  herbaceous wetland        a0bdaf
+      //  10  mangroves                 85ac98
+      //  11  tundra / moss             dbe3e5
+      biomePalette: [
+        '#c4bcaa',
+        '#6eaf85',
+        '#bfc294',
+        '#c4d49f',
+        '#e0dba6',
+        '#b3b1ae',
+        '#f1e3bd',
+        '#f1f6fb',
+        '#ff00ff',
+        '#a0bdaf',
+        '#85ac98',
+        '#dbe3e5',
+      ] as readonly string[],
+      // Elevation / climate-driven tints applied on top of the biome palette.
+      alpineBareColor: '#c4bcb3',   // bare rock at high altitude
+      coldToneColor: '#bcb8b1',     // cold-climate desaturation
+      hotDryColor: '#e5dabc',       // hot/dry sun-baked tint
+      // Two-tone specular highlight: warm tint for non-snow, cool tint for
+      // snow. The shader lerps between them by the snow-line mix.
+      specularTintWarm: '#fffcf6',
+      specularTintCool: '#f9fcff',
+      // Moonlight reflectance — biome desaturates toward this neutral grey
+      // under antipodal moonlight.
+      moonReflectanceBase: '#cbcbcb',
     },
     atmosphere: {
       // Sky-physics preset id (see ATMOSPHERE_PRESETS in Tweakpane.ts).
@@ -117,13 +157,13 @@ export const DEFAULTS = {
       waveSpeed: 1.0,
       waveSteepness: 0.5,
       fresnelStrength: 1.0,
-      depthFalloff: 50,
+      depthFalloff: 65,
       abyssalColor: '#192551',
       deepColor: '#5b7cb7',
       shelfColor: '#296aa7',
       shallowColor: '#7bdbfa',
-      trenchStart: 2200,
-      trenchEnd: 7700,
+      trenchStart: 3700,
+      trenchEnd: 6900,
       coastalTintColor: '#ffffff',
       coastalTintStrength: 0.08,
       coastalTintFalloff: 400,
@@ -132,6 +172,15 @@ export const DEFAULTS = {
       showMediumCurrents: false,
       shimmerCurrentDrift: 17,
       seaLevelOffsetM: 0,
+      // Additive cool cast painted onto ocean cells where surface-current
+      // speed exceeds the visibility gate (Gulf Stream, Kuroshio, ACC).
+      currentTintColor: '#273f45',
+      // Sun-glint specular highlight colour on water (tight, warm-white
+      // sparkles on day-side wave crests).
+      sunGlintColor: '#fffced',
+      // Schlick Fresnel sky-reflection tint at grazing angles on the
+      // day side — "ocean reflects the sky" proxy.
+      skyTintColor: '#c4daf9',
     },
     clouds: {
       density: 0.1,
@@ -139,6 +188,20 @@ export const DEFAULTS = {
       beer: 1.4,
       henyey: 0.4,
       advection: 40,
+      // Direct sun lighting colour used inside the cloud raymarch (warm
+      // white). Drives the in-scatter term that reads as lit cloud faces.
+      sunColor: '#fffaf1',
+      // Ambient sky colour applied to shaded cloud faces — cool blue tint
+      // so clouds in shadow read as sky-lit rather than black.
+      ambientColor: '#c4d3e7',
+    },
+    sky: {
+      // Sun disk billboard.
+      sunDiskColor: '#ffd9a0',
+      sunGlowColor: '#ffaa55',
+      // Moon disk billboard.
+      moonDiskColor: '#cfd6e0',
+      moonGlowColor: '#7d869a',
     },
     highways: {
       majorWidthPx: 4.0,
@@ -161,6 +224,12 @@ export const DEFAULTS = {
       dayFillScale: 0.3,
       opacityNear: 1.0,
       opacityFar: 0.05,
+      // Night tungsten glow — same warm tone used for city lights so a lit
+      // road blends into the surrounding city colour.
+      nightColor: '#ffedc4',
+      // Day casing (dark outline) + fill (light asphalt tint).
+      dayCasingColor: '#766f69',
+      dayFillColor: '#faf8f1',
     },
     cities: {
       gridDensity: 35,
@@ -175,6 +244,35 @@ export const DEFAULTS = {
       opacity: 0.65,
       nightOpacity: 5.0,
       minPopulation: 0,
+      // Night window glow (warm tungsten) and outline (near-black).
+      nightFillColor: '#ffedc4',
+      nightOutlineColor: '#383027',
+      // Day neutral concrete grey applied before per-fragment lerp.
+      dayNeutralColor: '#dadada',
+    },
+    urban: {
+      // Building base palette — low storey to top storey mix.
+      buildingBaseLow: '#adaca6',
+      buildingBaseHigh: '#cecbc4',
+      // Night palette — dark unlit roofs blended toward warm window glow.
+      buildingNightDark: '#4b4b55',
+      buildingNightLitWarm: '#ffedc4', // multiplied by 0.55 in shader
+      // Streets — day asphalt dark→light by core proximity.
+      streetDayDark: '#767679',
+      streetDayLight: '#99999b',
+      // Streets — night unlit and lit (warm trace).
+      streetNightDark: '#38383f',
+      streetNightLit: '#c4b395',
+    },
+    airplanes: {
+      // Plane head blink dot.
+      headBlinkColor: '#b32516',
+      // Trail ribbon.
+      trailColor: '#ffffff',
+      // Route scaffold (static great-circle hint).
+      scaffoldColor: '#7fb3ff',
+      // Airport marker.
+      airportColor: '#e8eef7',
     },
     postFx: {
       bloomThreshold: 0.85,

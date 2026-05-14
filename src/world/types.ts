@@ -27,14 +27,6 @@ export type WorldManifest = {
      */
     elevation_meters: ArtifactRef;
     /**
-     * Continuous water-surface elevation in metres, half-float per
-     * HEALPix cell. Consumed by the Water mesh's vertex displacement
-     * path once the unified globe is split into Land + Water meshes.
-     * v1: zero everywhere (sea level); floods later bump cells up.
-     * Format: `bin`, R16F, npix * 2 bytes.
-     */
-    water_level_meters: ArtifactRef;
-    /**
      * Cities + populated places, JSON list (see `CitiesFile`). Cities are
      * points (lat, lon, population), not polygons, so they live outside
      * the HEALPix rasterizer pipeline; the artifact is a standalone JSON
@@ -304,13 +296,6 @@ export interface WorldRuntime {
    * for fragment-shader colour use.
    */
   getElevationMetersTexture(): THREE.DataTexture;
-  /**
-   * Continuous water-surface elevation R16F texture (half-float metres)
-   * keyed by HEALPix cell. Consumed by the new water mesh's vertex
-   * displacement path once the unified globe is split into Land + Water
-   * meshes. v1: zero everywhere (sea level); floods later bump cells up.
-   */
-  getWaterLevelMetersTexture(): THREE.DataTexture;
 
   /**
    * Equirectangular RG16F distance-field texture. R = signed km to

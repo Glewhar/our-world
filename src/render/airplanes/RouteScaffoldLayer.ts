@@ -14,6 +14,7 @@ import { DEFAULT_ELEVATION_SCALE } from '../globe/LandMaterial.js';
 import { source as vertGlsl } from './shaders/arc.vert.glsl.js';
 import { source as fragGlsl } from './shaders/arc.frag.glsl.js';
 import type { AirplaneData } from './data.js';
+import { DEFAULTS as APP_DEFAULTS } from '../../debug/defaults.js';
 
 const DEFAULTS = {
   elevationScale: DEFAULT_ELEVATION_SCALE,
@@ -23,7 +24,7 @@ const DEFAULTS = {
   peakScale: 0.0013,
   radialBiasM: 50,
   thicknessUnit: 1.5e-4,
-  color: new THREE.Color('#7fb3ff'),
+  color: new THREE.Color(APP_DEFAULTS.materials.airplanes.scaffoldColor),
   opacity: 0.04,
 };
 

@@ -101,8 +101,6 @@ export type DebugState = {
       snowLineStrength: number;
       seasonOffsetC: number;
       alpineStrength: number;
-      // Coast smoothstep half-width in km (smaller = razor edge).
-      coastSharpness: number;
       // Distance in km over which biome colour fades to neutral at borders.
       biomeEdgeSharpness: number;
       // Per-biome surface variation. Master = 0 → identical to pre-feature look.
@@ -435,9 +433,6 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
   const globeMat = mat.addFolder({ title: 'Globe', expanded: false });
 
   const gEdges = globeMat.addFolder({ title: 'Edges & coastline', expanded: false });
-  gEdges.addBinding(state.materials.globe, 'coastSharpness', {
-    min: 0, max: 100, step: 0.1, label: 'coast sharpness (km)',
-  });
   gEdges.addBinding(state.materials.globe, 'biomeEdgeSharpness', {
     min: 0, max: 100, step: 0.5, label: 'biome edge fade (km)',
   });

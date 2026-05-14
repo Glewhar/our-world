@@ -1,15 +1,11 @@
 /**
  * Globe — thin owner of the split land + water meshes.
  *
- * Step 2.x of the cell-grid migration: replaces the previously-unified
- * single-mesh globe (one icosphere, one shader, fragment-shader branch on
- * `bodyId`) with two separate meshes — a land icosphere driven by
- * `elevation_meters` and a water icosphere driven by `water_level_meters`.
- *
- * Why split: the unified shader had no geometric water surface, so there
- * was no per-cell water level signal — sea level couldn't rise, floods
- * couldn't spread, transparency / refraction were impossible. The split
- * costs +1 draw call and buys real geometric water.
+ * Two separate meshes — a land icosphere driven by per-cell
+ * `elevation_meters` and a water icosphere displaced to a single
+ * global sea-level value (`uSeaLevelOffsetM`) plus a Gerstner-wave
+ * term. The split costs +1 draw call and gives the water its own
+ * shader for swell, depth tint, glint, and Fresnel.
  *
  * Picking flow stays intact: the scene graph raycasts via
  * `world.pickFromRay(ray)`, never against either mesh.

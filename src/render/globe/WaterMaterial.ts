@@ -1,15 +1,11 @@
 /**
  * Water material — owns the water icosphere's shader pair.
  *
- * Split out of the previous unified `GlobeMaterial`. Drives a separate
- * water icosphere whose vertices are displaced by the per-cell
- * `water_level_meters` texture (R16F, init = 0 = sea level everywhere; sim
- * later raises cells for floods, tsunamis, sea-level rise).
- *
- * Fragment shader paints ocean depth tint then discards on dry-land cells
- * (`bodyId != 0u && waterSurface <= landElev`). This makes the water mesh
- * a real geometric surface that can rise per-cell, ready for transparency
- * and refraction work later.
+ * Drives a separate water icosphere whose vertices are displaced to
+ * sea level (`uSeaLevelOffsetM`) plus a Gerstner-wave term. Fragment
+ * shader paints the ocean depth tint (computed from
+ * `uSeaLevelOffsetM - landElev`) and does NOT discard — the land mesh
+ * draws front-most by depth test wherever land sticks above water.
  *
  * `uElevationScale` MUST match `LandMaterial`'s value — otherwise the
  * land terrain and water surface drift out of vertical sync.
@@ -108,21 +104,17 @@ void waterWaves(
 }
 `;
 
-const WATER_VERT = `// Water vertex shader — displaces every vertex to (water-surface +
-// Gerstner-wave) elevation. The base water surface comes from
-// \`uWaterLevelMeters\` (R16F, half-float metres; v1 init = 0 = sea level).
-// The wave term is computed by \`waterWaves()\` (water_waves.glsl), summing
-// 4 sinusoids on the un-displaced direction so phase is stable across
-// frames at any zoom.
-//
-// Wave amplitude is attenuated by \`coastFade\` (a smoothstep over water
-// depth = waterLevel - landElev) so coastlines stay calm and only deep
-// open water swells.
+const WATER_VERT = `// Water vertex shader — displaces every vertex to (sea-level +
+// Gerstner-wave) elevation. The base water surface is a single
+// global value, \`uSeaLevelOffsetM\` (metres). The wave term is
+// computed by \`waterWaves()\` (water_waves.glsl), summing 4 sinusoids
+// on the un-displaced direction so phase is stable across frames at
+// any zoom.
 //
 // \`vSphereDir\` carries the un-displaced direction so the fragment shader
 // can re-look-up its HEALPix cell + recompute the analytic wave normal
 // without drift from the displaced position. \`vWaterSurface\` carries the
-// metres value the fragment shader uses for depth tint and discard logic.
+// metres value the fragment shader uses for depth tint.
 // \`vWorldPos\` carries the actual displaced world position for view-vector
 // lookups (Fresnel + sun glint).
 
@@ -130,13 +122,7 @@ precision highp float;
 precision highp int;
 precision highp sampler2D;
 
-uniform sampler2D uWaterLevelMeters;
-uniform sampler2D uElevationMeters;
-uniform int uHealpixNside;
-uniform int uHealpixOrdering;
-uniform int uAttrTexWidth;
 uniform float uElevationScale;
-uniform float uWaterRadialBias;
 uniform float uSeaLevelOffsetM;
 
 uniform float uTime;
@@ -152,16 +138,8 @@ void main() {
   vec3 dir = normalize(position);
   vSphereDir = dir;
 
-  int ipx = healpixZPhiToPix(uHealpixNside, uHealpixOrdering, dir.z, atan(dir.y, dir.x));
-  ivec2 tx = healpixIpixToTexel(ipx, uAttrTexWidth);
-  float waterLevel = texelFetch(uWaterLevelMeters, tx, 0).r;
-  float landElev = texelFetch(uElevationMeters, tx, 0).r;
-  float waterSurface = waterLevel + uSeaLevelOffsetM;
+  float waterSurface = uSeaLevelOffsetM;
   vWaterSurface = waterSurface;
-
-  float depth = max(waterSurface - landElev, 0.0);
-  float coastFade = smoothstep(0.0, 400.0, depth);
-  float ampAtt = uWaveAmplitude * coastFade;
 
   float waveRadialM;
   vec3 waveTangent;
@@ -169,7 +147,7 @@ void main() {
   waterWaves(
     dir,
     uTime * uWaveSpeed,
-    ampAtt,
+    uWaveAmplitude,
     uWaveSteepness,
     uElevationScale,
     waveRadialM,
@@ -177,7 +155,7 @@ void main() {
     waveNormal_
   );
 
-  float displace = (waterSurface + waveRadialM) * uElevationScale + uWaterRadialBias;
+  float displace = (waterSurface + waveRadialM) * uElevationScale;
   vec3 surfaceObj = dir * (1.0 + displace) + waveTangent;
   vec4 wp = modelMatrix * vec4(surfaceObj, 1.0);
   vWorldPos = wp.xyz;
@@ -198,9 +176,10 @@ const WATER_FRAG = `// Water fragment shader — paints the water shell over oce
 //      at K=50, ramped in over deep water only, so open ocean reads
 //      visibly different from coastal water.
 //
-// All three layers are attenuated by \`coastFade\` (a smoothstep over water
-// depth = waterSurface - landElev), so coastlines stay calm and only the
-// open ocean ripples at full strength.
+// The two ripple layers are attenuated by \`depthFade\` (a smoothstep
+// over water depth = waterSurface - landElev), so the fine-detail
+// shimmer fades toward shore while the Gerstner swell itself runs at
+// full amplitude everywhere on the water surface.
 //
 // Per-fragment surface currents influence the ripple shimmer by warping
 // the noise sample point (see \`uShimmerCurrentDrift\` below) — the noise
@@ -217,8 +196,8 @@ const WATER_FRAG = `// Water fragment shader — paints the water shell over oce
 // tint (\`currentSpeedTint\`) overlays a subtle cool cast where flow speed
 // exceeds the gate.
 //
-// No discard. The land mesh discards ocean cells, and where land elevation
-// is taller than the water surface it draws front-most by depth test.
+// No discard. Land elevation taller than the water surface draws
+// front-most by depth test; everywhere else the water shell paints.
 
 precision highp float;
 precision highp int;
@@ -230,7 +209,6 @@ uniform float uAmbient;
 uniform vec3 uMoonColor;
 uniform float uMoonIntensity;
 
-uniform sampler2D uIdRaster;
 uniform sampler2D uElevationMeters;
 uniform int uHealpixNside;
 uniform int uHealpixOrdering;
@@ -283,6 +261,9 @@ uniform sampler2D uOceanCurrents;
 uniform float uCurrentStrength;
 uniform float uCurrentTintEnabled;
 uniform float uShowMediumCurrents;
+uniform vec3 uCurrentTintColor;
+uniform vec3 uSunGlintColor;
+uniform vec3 uSkyTintColor;
 
 // Aerial perspective — shared sky-view LUT with the atmosphere pass. See
 // land.frag.glsl for the longer explanation; same uniforms, same lookup.
@@ -417,8 +398,7 @@ vec3 currentSpeedTint(vec3 dir, float coastFade, float wrap) {
     uShowMediumCurrents
   );
 
-  vec3 tintColor = vec3(0.02, 0.05, 0.06);
-  return tintColor * speedVis * coastFade * wrap * uCurrentTintEnabled;
+  return uCurrentTintColor * speedVis * coastFade * wrap * uCurrentTintEnabled;
 }
 
 // Tilt the outward normal by the gradient of an animated FBM, expressed
@@ -459,12 +439,9 @@ void main() {
   ivec2 tx = healpixIpixToTexel(ipx, uAttrTexWidth);
   float landElev = texelFetch(uElevationMeters, tx, 0).r;
 
-  // No discard. The depth test handles every case correctly: where land is
-  // taller than the water surface (normal continents, exposed seafloor when
-  // slider drops) the LAND mesh's outward vertex displacement wins the
-  // depth test. A previous attempt to discard here punched holes through
-  // the partial-alpha coastline band of the land mesh, letting the
-  // atmosphere shell behind shine through as a glowing continent outline.
+  // No discard. Depth test handles every case: land taller than the
+  // water surface (continents, exposed seafloor when slider drops) wins
+  // via its outward vertex displacement; elsewhere water paints.
 
   // Layered ocean gradient. \`uOceanDeep\` is the open-ocean baseline that
   // most of the world ocean reads as. Shelf + shallow blend up via exp
@@ -486,15 +463,11 @@ void main() {
   float coastalT = exp(-depth / uCoastalTintFalloff);
   base = mix(base, uCoastalTintColor, coastalT * uCoastalTintStrength);
 
-  // Coast fade: same formula as the vertex shader so swell + glint
-  // attenuate together. 0 m depth → 0, 400 m depth → full.
-  float coastFade = smoothstep(0.0, 400.0, depth);
-  float ampAtt = uWaveAmplitude * coastFade;
-
   // Depth-varying Fresnel: shallow/coast water reflects the sky more
   // strongly than open ocean. 0.3 at coast → 0.1 in deep water.
   // \`uFresnelStrength\` (Tweakpane) scales the result on top.
-  float fresnelMix = mix(0.3, 0.1, coastFade);
+  float depthFade = smoothstep(0.0, 400.0, depth);
+  float fresnelMix = mix(0.3, 0.1, depthFade);
 
   // Sample local current for a static (non-accumulating) warp of the
   // ripple-noise sample point. The current vector is added once as a
@@ -514,7 +487,7 @@ void main() {
   waterWaves(
     vSphereDir,
     uTime * uWaveSpeed,
-    ampAtt,
+    uWaveAmplitude,
     uWaveSteepness,
     uElevationScale,
     waveRadialM_,
@@ -529,7 +502,7 @@ void main() {
   // Strength is gently faded near coast (40 % at shore → 100 % at
   // deep) so shore ripples are calmer than open ocean without going
   // fully static — the animation still reaches the coast.
-  float fineRippleFade = mix(0.15, 1.0, coastFade);
+  float fineRippleFade = mix(0.15, 1.0, depthFade);
   vec3 detailFine = detailRippleNormal(
     vSphereDir,
     uTime * uWaveSpeed,
@@ -547,7 +520,7 @@ void main() {
   // to 2 octaves: this layer is already big features, so the smallest
   // sub-detail isn't doing visible work — saves ~1/6 of total ripple
   // cost without affecting the look.
-  float bigRippleMix = coastFade * coastFade;
+  float bigRippleMix = depthFade * depthFade;
   vec3 detailBig = detailRippleNormal(
     vSphereDir,
     uTime * uWaveSpeed,
@@ -584,7 +557,7 @@ void main() {
   vec3 halfDir = normalize(sunDir + viewDir);
   float spec = pow(max(dot(n, halfDir), 0.0), 220.0);
   float sunMask = smoothstep(0.0, 0.15, ndotl);
-  col += vec3(1.0, 0.97, 0.85) * spec * fresnelMix * uFresnelStrength * 2.0 * sunMask;
+  col += uSunGlintColor * spec * fresnelMix * uFresnelStrength * 2.0 * sunMask;
 
   // Antipodal-moon specular — the "path of moonlight" on night-side
   // ocean. Wider cone (pow 64) than the sun glint so the highlight
@@ -599,14 +572,13 @@ void main() {
   // Schlick Fresnel sky tint — adds a brighter rim at grazing angles on
   // the day side. Cheap proxy for "ocean reflects the sky."
   float fresnel = pow(1.0 - max(dot(n, viewDir), 0.0), 5.0);
-  vec3 skyTint = vec3(0.55, 0.70, 0.95);
-  col += skyTint * fresnel * fresnelMix * uFresnelStrength * 0.25 * wrap;
+  col += uSkyTintColor * fresnel * fresnelMix * uFresnelStrength * 0.25 * wrap;
 
   // Current-speed tint — additive cool cast, day-side only, faded toward
   // shore so the literal coastline stays clean. Master \`uCurrentStrength\`
   // scales the result; Tweakpane drops it to 0 to disable.
   if (uCurrentStrength > 0.0) {
-    col += currentSpeedTint(vSphereDir, coastFade, wrap) * uCurrentStrength;
+    col += currentSpeedTint(vSphereDir, depthFade, wrap) * uCurrentStrength;
   }
 
   // ----- Aerial perspective (haze) -----
@@ -634,9 +606,7 @@ export type WaterUniforms = {
   uMoonColor: { value: THREE.Color };
   uMoonIntensity: { value: number };
 
-  uIdRaster: { value: THREE.DataTexture | null };
   uElevationMeters: { value: THREE.DataTexture | null };
-  uWaterLevelMeters: { value: THREE.DataTexture | null };
 
   uHealpixNside: { value: number };
   uHealpixOrdering: { value: number };
@@ -645,18 +615,11 @@ export type WaterUniforms = {
   /** Unit-sphere displacement per metre of real elevation. MUST match LandMaterial. */
   uElevationScale: { value: number };
   /**
-   * Tiny outward bias on the water shell so an init-zero water level (sea
-   * level) sits a hair above any zero-elevation land cells, avoiding
-   * z-fighting at coastlines while remaining visually imperceptible.
-   */
-  uWaterRadialBias: { value: number };
-  /**
-   * Global metres-valued offset added to every cell's `uWaterLevelMeters`
-   * sample in the vertex shader. Tweakpane-driven "sea level" slider —
-   * raises (or, with negative values, lowers) the entire ocean surface
-   * without rewriting the per-cell texture. Every depth-driven tint band
-   * in the fragment shader re-derives from `vWaterSurface - landElev`
-   * and follows automatically.
+   * Global metres-valued sea level used as the water-surface height in the
+   * vertex shader. Tweakpane-driven "sea level" slider — raises (or, with
+   * negative values, lowers) the entire ocean surface uniformly. Every
+   * depth-driven tint band in the fragment shader re-derives from
+   * `vWaterSurface - landElev` and follows automatically.
    */
   uSeaLevelOffsetM: { value: number };
 
@@ -705,6 +668,12 @@ export type WaterUniforms = {
    * pass the speed gate. When 1, the gate is lowered so medium-speed
    * currents also show up in the tint. */
   uShowMediumCurrents: { value: number };
+  /** Additive cool cast painted onto ocean cells with fast surface currents. */
+  uCurrentTintColor: { value: THREE.Color };
+  /** Sun-glint specular highlight colour on water (warm-white). */
+  uSunGlintColor: { value: THREE.Color };
+  /** Schlick Fresnel sky-reflection tint at grazing angles (day side). */
+  uSkyTintColor: { value: THREE.Color };
 
   /**
    * Sky-view LUT shared with the atmosphere pass — see `LandUniforms.uSkyView`.
@@ -720,13 +689,7 @@ export type WaterUniforms = {
   uHazeAmount: { value: number };
 };
 
-// 30 m of ocean rise. `bias_in_unit_sphere = metres * uElevationScale`,
-// and `uElevationScale = 1.2e-5`, so 30 * 1.2e-5 = 3.6e-4. This is a
-// shader-internal coastline z-fight bias, not a user-facing tunable —
-// stays here rather than in the central defaults table.
-export const DEFAULT_WATER_RADIAL_BIAS = 3.6e-4;
-
-// All other ocean tuning lives in [../../debug/defaults.ts] under
+// All ocean tuning lives in [../../debug/defaults.ts] under
 // `DEFAULTS.materials.ocean`. The uniform initial values below pull from
 // that table so the first frame matches what Tweakpane is about to
 // push in via `scene-graph.applyMaterials`.
@@ -747,16 +710,13 @@ export function createWaterMaterial(): THREE.ShaderMaterial & {
     uMoonColor: { value: new THREE.Color(g.moonColor) },
     uMoonIntensity: { value: g.moonIntensity },
 
-    uIdRaster: { value: null },
     uElevationMeters: { value: null },
-    uWaterLevelMeters: { value: null },
 
     uHealpixNside: { value: 1 },
     uHealpixOrdering: { value: 0 },
     uAttrTexWidth: { value: 1 },
 
     uElevationScale: { value: DEFAULT_ELEVATION_SCALE },
-    uWaterRadialBias: { value: DEFAULT_WATER_RADIAL_BIAS },
     uSeaLevelOffsetM: { value: o.seaLevelOffsetM },
 
     uOceanAbyssal: { value: new THREE.Color(o.abyssalColor) },
@@ -780,6 +740,9 @@ export function createWaterMaterial(): THREE.ShaderMaterial & {
     uCurrentStrength: { value: o.currentStrength },
     uCurrentTintEnabled: { value: o.currentTintEnabled ? 1 : 0 },
     uShowMediumCurrents: { value: o.showMediumCurrents ? 1 : 0 },
+    uCurrentTintColor: { value: new THREE.Color(o.currentTintColor) },
+    uSunGlintColor: { value: new THREE.Color(o.sunGlintColor) },
+    uSkyTintColor: { value: new THREE.Color(o.skyTintColor) },
 
     uSkyView: { value: null },
     uHazeExposure: { value: a.exposure },

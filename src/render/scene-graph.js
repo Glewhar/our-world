@@ -52,6 +52,7 @@ import { UrbanDetailLayer } from './urban/UrbanDetailLayer.js';
 import { NuclearExplosion } from './effects/nuclear/NuclearExplosion.js';
 import { DEFAULT_NUCLEAR_CONFIG } from '../world/scenarios/handlers/NuclearScenario.config.js';
 import { atmosphereRadiusFromFactor, elevationScaleFromFactor, } from './globe/LandMaterial.js';
+import { DEFAULTS } from '../debug/defaults.js';
 const CAMERA_RADIUS = 3.0;
 const MAX_CONCURRENT_BLASTS = 8;
 // Maximum solar declination — Earth's axial tilt. The per-frame declination
@@ -68,7 +69,7 @@ const YEAR_PHASE_OFFSET = 0.221;
 const T01_PER_SECOND = 0.04;
 export function createSceneGraph() {
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color('#06080c');
+    scene.background = new THREE.Color(DEFAULTS.scene.background);
     // Z-up matches the data-pipeline's `lonlat_to_xyz` convention end-to-end.
     // Orbit, picking, and shading all stay in this frame — no axis swap.
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
@@ -83,7 +84,7 @@ export function createSceneGraph() {
     // channel of `sun.color × sun.intensity` that exceeds 1.0 will overdrive
     // white biomes (snow) past the white point and tilt them toward the warm
     // side — keep the product ≤ 1.0 per channel.
-    const sun = new THREE.DirectionalLight(0xfff5e6, 1.0);
+    const sun = new THREE.DirectionalLight(DEFAULTS.scene.sunLightColor, 1.0);
     sun.position.set(3, 2, 1.5);
     scene.add(sun);
     const sunDirection = new THREE.Vector3().copy(sun.position).normalize();
@@ -284,9 +285,7 @@ export function createSceneGraph() {
             land.uSnowLineStrength.value = m.snowLineStrength;
             land.uSeasonOffsetC.value = m.seasonOffsetC;
             land.uAlpineStrength.value = m.alpineStrength;
-            // Distance-field knobs — coast smoothstep half-width and biome
-            // edge fade distance, both in km.
-            land.uCoastSharpness.value = m.coastSharpness;
+            // Distance-field knob — biome edge fade distance, in km.
             land.uBiomeEdgeSharpness.value = m.biomeEdgeSharpness;
             // Biome surface variation. Master = 0 → identical to pre-feature look.
             land.uBiomeSurfaceStrength.value = m.biomeSurfaceStrength;
@@ -487,11 +486,6 @@ export function createSceneGraph() {
             globe.group.visible = debug.layers.globe || debug.layers.ocean;
             globe.land.mesh.visible = debug.layers.globe;
             globe.water.mesh.visible = debug.layers.ocean;
-            // Tell the land shader to fill ocean cells as exposed seafloor when
-            // the water mesh is hidden, so the planet still looks like a solid
-            // terrain sphere instead of leaking atmosphere through transparent
-            // ocean fragments.
-            globe.uniforms.land.uOceanLayerHidden.value = debug.layers.ocean ? 0 : 1;
         }
         if (atmosphere)
             atmosphere.mesh.visible = debug.layers.atmosphere;

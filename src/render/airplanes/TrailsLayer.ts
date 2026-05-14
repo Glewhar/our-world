@@ -25,6 +25,7 @@ import { makeArcRibbonGeometry } from './arcGeometry.js';
 import { DEFAULT_ELEVATION_SCALE } from '../globe/LandMaterial.js';
 import { source as vertGlsl } from './shaders/arc.vert.glsl.js';
 import { source as fragGlsl } from './shaders/arc.frag.glsl.js';
+import { DEFAULTS as APP_DEFAULTS } from '../../debug/defaults.js';
 
 const DEFAULTS = {
   elevationScale: DEFAULT_ELEVATION_SCALE,
@@ -37,7 +38,7 @@ const DEFAULTS = {
   peakScale: 0.0013,
   radialBiasM: 50,
   thicknessUnit: 8.0e-3,
-  color: new THREE.Color('#ffffff'),
+  color: new THREE.Color(APP_DEFAULTS.materials.airplanes.trailColor),
   opacity: 0.05,
 };
 

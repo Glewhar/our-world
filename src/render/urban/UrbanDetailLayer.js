@@ -23,6 +23,7 @@ import * as THREE from 'three';
 import { source as healpixGlsl } from '../globe/shaders/healpix.glsl.js';
 import { source as hazeGlsl } from '../atmosphere/shaders/haze.glsl.js';
 import { DEFAULT_ELEVATION_SCALE } from '../globe/LandMaterial.js';
+import { DEFAULTS } from '../../debug/defaults.js';
 const BUILDINGS_VERT = `// Buildings vertex shader — urban detail layer.
 //
 // Each instance is a unit-box (1×1×1) with base at z=0. We scale it by
@@ -115,6 +116,11 @@ in float vHeightNorm;
 uniform vec3 uSunDirection;
 uniform float uOpacity;
 
+uniform vec3 uBuildingBaseLow;
+uniform vec3 uBuildingBaseHigh;
+uniform vec3 uBuildingNightDark;
+uniform vec3 uBuildingNightLitWarm;
+
 // uSkyView, uHazeExposure, uHazeAmount + sampleSkyViewHaze() are declared
 // by the concatenated haze.glsl.ts chunk above this source.
 
@@ -126,14 +132,14 @@ void main() {
   float ndotl = max(0.0, dot(N, L));
 
   // Base palette — light grey concrete, lifted slightly toward the top.
-  vec3 base = mix(vec3(0.42, 0.41, 0.38), vec3(0.62, 0.6, 0.55), vHeightNorm * 0.6);
+  vec3 base = mix(uBuildingBaseLow, uBuildingBaseHigh, vHeightNorm * 0.6);
   float lit = 0.25 + 0.85 * ndotl;
   vec3 dayCol = base * lit;
 
   // Night palette — dim warm window glow biased toward the upper half.
   // Windows on the underside (the box's z=0 face) read as dark roofs.
   float topMask = smoothstep(0.05, 0.4, vHeightNorm);
-  vec3 nightCol = mix(vec3(0.07, 0.07, 0.09), vec3(1.0, 0.85, 0.55) * 0.55, topMask * 0.6);
+  vec3 nightCol = mix(uBuildingNightDark, uBuildingNightLitWarm * 0.55, topMask * 0.6);
 
   // Day/night terminator: same smoothstep window the cities + land
   // shaders use, against the city's surface normal (planar approximation
@@ -198,6 +204,11 @@ in vec3 vWorldPos;
 uniform vec3 uSunDirection;
 uniform float uOpacity;
 
+uniform vec3 uStreetDayDark;
+uniform vec3 uStreetDayLight;
+uniform vec3 uStreetNightDark;
+uniform vec3 uStreetNightLit;
+
 // Haze uniforms + sampleSkyViewHaze() come from the concatenated
 // haze.glsl.ts chunk above this source.
 
@@ -208,8 +219,8 @@ void main() {
   vec2 d = abs(vUV - 0.5);
   float core = 1.0 - smoothstep(0.18, 0.42, max(d.x, d.y));
 
-  vec3 day = mix(vec3(0.18, 0.18, 0.19), vec3(0.32, 0.32, 0.33), core);
-  vec3 night = mix(vec3(0.04, 0.04, 0.05), vec3(0.55, 0.45, 0.3), core);
+  vec3 day = mix(uStreetDayDark, uStreetDayLight, core);
+  vec3 night = mix(uStreetNightDark, uStreetNightLit, core);
 
   vec3 L = normalize(uSunDirection);
   float wrap = smoothstep(-0.05, 0.15, dot(vSurfaceNormal, L));
@@ -527,6 +538,7 @@ export class UrbanDetailLayer {
     }
 }
 function makeUniforms() {
+    const u = DEFAULTS.materials.urban;
     return {
         uSunDirection: { value: new THREE.Vector3(1, 0, 0.3).normalize() },
         uCityCentre: { value: new THREE.Vector3() },
@@ -536,6 +548,14 @@ function makeUniforms() {
         uElevationScale: { value: DEFAULT_ELEVATION_SCALE },
         uMetresPerUnit: { value: EARTH_RADIUS_KM * 1000 },
         uOpacity: { value: 1.0 },
+        uBuildingBaseLow: { value: new THREE.Color(u.buildingBaseLow) },
+        uBuildingBaseHigh: { value: new THREE.Color(u.buildingBaseHigh) },
+        uBuildingNightDark: { value: new THREE.Color(u.buildingNightDark) },
+        uBuildingNightLitWarm: { value: new THREE.Color(u.buildingNightLitWarm) },
+        uStreetDayDark: { value: new THREE.Color(u.streetDayDark) },
+        uStreetDayLight: { value: new THREE.Color(u.streetDayLight) },
+        uStreetNightDark: { value: new THREE.Color(u.streetNightDark) },
+        uStreetNightLit: { value: new THREE.Color(u.streetNightLit) },
         uSkyView: { value: null },
         uHazeExposure: { value: 1.0 },
         uHazeAmount: { value: 0.0 },

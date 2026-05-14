@@ -80,7 +80,6 @@ export type AttributeArtifactRefs = {
   attribute_climate_init: ArtifactRef;
   attribute_dynamic_init: ArtifactRef;
   elevation_meters: ArtifactRef;
-  water_level_meters: ArtifactRef;
 };
 
 export class AttributeTextures {
@@ -90,15 +89,13 @@ export class AttributeTextures {
     nside: number,
   ): Promise<AttributeTextures> {
     const npix = 12 * nside * nside;
-    const [staticBuf, climateBuf, dynamicBuf, elevMetersBuf, waterLevelMetersBuf] =
+    const [staticBuf, climateBuf, dynamicBuf, elevMetersBuf] =
       await Promise.all([
         fetchAndCheck(`${baseUrl}/${refs.attribute_static.path}`, npix * 4),
         fetchAndCheck(`${baseUrl}/${refs.attribute_climate_init.path}`, npix * 4),
         fetchAndCheck(`${baseUrl}/${refs.attribute_dynamic_init.path}`, npix * 4),
         // R16F = 2 bytes per cell.
         fetchAndCheck(`${baseUrl}/${refs.elevation_meters.path}`, npix * 2),
-        // R16F = 2 bytes per cell.
-        fetchAndCheck(`${baseUrl}/${refs.water_level_meters.path}`, npix * 2),
       ]);
     return new AttributeTextures(
       nside,
@@ -106,7 +103,6 @@ export class AttributeTextures {
       climateBuf,
       dynamicBuf,
       elevMetersBuf,
-      waterLevelMetersBuf,
     );
   }
 
@@ -115,7 +111,6 @@ export class AttributeTextures {
   private readonly climateBytes: Uint8Array;
   private readonly dynamicBytes: Uint8Array;
   private readonly elevMetersBytes: Uint8Array;
-  private readonly waterLevelMetersBytes: Uint8Array;
   /**
    * Wasteland attribute byte-buffer (one R8 per HEALPix cell). Owned by
    * this class for symmetry with the other attribute storage, but writes
@@ -125,7 +120,7 @@ export class AttributeTextures {
    */
   private readonly wastelandBytes: Uint8Array;
   private readonly textures = new Map<
-    ChannelSource | 'zero' | 'elevMeters' | 'waterLevelMeters',
+    ChannelSource | 'zero' | 'elevMeters',
     THREE.DataTexture
   >();
 
@@ -135,14 +130,12 @@ export class AttributeTextures {
     climateBuf: ArrayBuffer,
     dynamicBuf: ArrayBuffer,
     elevMetersBuf: ArrayBuffer,
-    waterLevelMetersBuf: ArrayBuffer,
   ) {
     this.nside = nside;
     this.staticBytes = new Uint8Array(staticBuf);
     this.climateBytes = new Uint8Array(climateBuf);
     this.dynamicBytes = new Uint8Array(dynamicBuf);
     this.elevMetersBytes = new Uint8Array(elevMetersBuf);
-    this.waterLevelMetersBytes = new Uint8Array(waterLevelMetersBuf);
     this.wastelandBytes = new Uint8Array(12 * nside * nside);
   }
 
@@ -169,32 +162,6 @@ export class AttributeTextures {
     tex.wrapT = THREE.ClampToEdgeWrapping;
     tex.needsUpdate = true;
     this.textures.set('elevMeters', tex);
-    return tex;
-  }
-
-  /**
-   * Return the R16F continuous water-surface elevation texture in metres.
-   * One value per HEALPix cell, half-float; consumed by the water mesh's
-   * vertex displacement path. NearestFilter — bilinear smoothing is a
-   * v1.1 follow-up.
-   */
-  getWaterLevelMetersTexture(): THREE.DataTexture {
-    const cached = this.textures.get('waterLevelMeters');
-    if (cached) return cached;
-    const w = 4 * this.nside;
-    const h = 3 * this.nside;
-    const u16 = new Uint16Array(
-      this.waterLevelMetersBytes.buffer,
-      this.waterLevelMetersBytes.byteOffset,
-      this.waterLevelMetersBytes.byteLength / 2,
-    ) as Uint16Array<ArrayBuffer>;
-    const tex = new THREE.DataTexture(u16, w, h, THREE.RedFormat, THREE.HalfFloatType);
-    tex.minFilter = THREE.NearestFilter;
-    tex.magFilter = THREE.NearestFilter;
-    tex.wrapS = THREE.ClampToEdgeWrapping;
-    tex.wrapT = THREE.ClampToEdgeWrapping;
-    tex.needsUpdate = true;
-    this.textures.set('waterLevelMeters', tex);
     return tex;
   }
 
