@@ -193,4 +193,5 @@ export const DEFAULTS = {
     debug: {
         fpsCounter: false,
     },
+    renderScale: 1.0,
 };

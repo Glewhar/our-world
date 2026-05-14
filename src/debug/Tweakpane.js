@@ -78,6 +78,7 @@ export const initialDebugState = {
     },
     pick: { ...DEFAULTS.pick },
     debug: { ...DEFAULTS.debug },
+    renderScale: DEFAULTS.renderScale,
 };
 export function createDebugPanel(state = initialDebugState) {
     // The pane lives inside #tweakpane-host so the page can collapse/expand it
@@ -103,38 +104,58 @@ export function createDebugPanel(state = initialDebugState) {
     // it can also be flipped from here.
     const todFolder = pane.addFolder({ title: 'Time of day' });
     todFolder.addBinding(state.timeOfDay, 'paused', { label: 'pause' });
-    // Clouds / ocean / atmosphere / cities / planes (combined planes+trails)
-    // live on the floating bottom toggle bar (#layer-toggles in index.html).
-    // Airports + routes remain here as the fine-grained airline-overlay knobs;
+    // Clouds toggle still lives on the floating bottom toggle bar
+    // (#layer-toggles in index.html). Ocean / atmosphere / highways /
+    // planes have been merged into their respective Materials sub-folders
+    // (header toggle + reset button + disabled-on-off settings). Airports
+    // + routes remain here as the fine-grained airline-overlay knobs;
     // globe stays here; postFx is n/a.
     const layersFolder = pane.addFolder({ title: 'Layers' });
     layersFolder.addBinding(state.layers, 'globe');
     layersFolder.addBinding(state.layers, 'postFx', { disabled: true, label: 'postFx (n/a)' });
+    // Airplanes folder: layer toggle (combined master for planes + trails)
+    // and a reset chip stay at the top — the speed/density/opacity bindings
+    // below are greyed out when the toggle is off.
     const planesFolder = pane.addFolder({ title: 'Airplanes' });
-    planesFolder.addBinding(state.airplanes, 'speed', {
+    const planesControls = [];
+    const updatePlanesDisabled = () => {
+        const off = !state.layers.planes;
+        for (const c of planesControls)
+            c.disabled = off;
+    };
+    planesFolder.addBinding(state.layers, 'planes', { label: 'enabled' }).on('change', (ev) => {
+        state.layers.trails = ev.value;
+        updatePlanesDisabled();
+    });
+    planesFolder.addButton({ title: 'Reset' }).on('click', () => {
+        state.layers.planes = DEFAULTS.layers.planes;
+        state.layers.trails = DEFAULTS.layers.trails;
+        Object.assign(state.airplanes, DEFAULTS.airplanes);
+        pane.refresh();
+        updatePlanesDisabled();
+    });
+    planesControls.push(planesFolder.addBinding(state.airplanes, 'speed', {
         min: 0,
         max: 10,
         step: 0.05,
         label: 'speed (h/sec)',
-    });
-    planesFolder.addBinding(state.airplanes, 'targetInFlight', {
+    }), planesFolder.addBinding(state.airplanes, 'targetInFlight', {
         min: 0,
         max: 4000,
         step: 50,
         label: 'in-flight target',
-    });
-    planesFolder.addBinding(state.airplanes, 'scaffoldOpacity', {
+    }), planesFolder.addBinding(state.airplanes, 'scaffoldOpacity', {
         min: 0,
         max: 0.5,
         step: 0.005,
         label: 'route alpha',
-    });
-    planesFolder.addBinding(state.airplanes, 'trailOpacity', {
+    }), planesFolder.addBinding(state.airplanes, 'trailOpacity', {
         min: 0,
         max: 0.3,
         step: 0.001,
         label: 'trail alpha',
-    });
+    }));
+    updatePlanesDisabled();
     const mat = pane.addFolder({ title: 'Materials' });
     // Globe live bindings live outside the panel: `seasonOffsetC` is driven by
     // the floating left-center thermostat (#season-control in index.html). The
@@ -217,7 +238,27 @@ export function createDebugPanel(state = initialDebugState) {
     });
     // Atmosphere — Hillaire 2020 LUTs. `rayleighScale`/`mieScale` are
     // multipliers on the physical β coefficients; 1.0 = real Earth.
+    // Header row = layer toggle + reset chip; the rest of the folder is
+    // greyed out when the toggle is off.
     const atmMat = mat.addFolder({ title: 'Atmosphere', expanded: false });
+    const atmControls = [];
+    const updateAtmDisabled = () => {
+        const off = !state.layers.atmosphere;
+        for (const c of atmControls)
+            c.disabled = off;
+    };
+    atmMat.addBinding(state.layers, 'atmosphere', { label: 'enabled' }).on('change', () => {
+        updateAtmDisabled();
+    });
+    atmMat.addButton({ title: 'Reset' }).on('click', () => {
+        state.layers.atmosphere = DEFAULTS.layers.atmosphere;
+        const d = DEFAULTS.materials.atmosphere;
+        Object.assign(state.materials.atmosphere, d, {
+            solarIrradiance: { ...d.solarIrradiance },
+        });
+        pane.refresh();
+        updateAtmDisabled();
+    });
     // Sky-physics presets. Selecting one batch-writes rayleigh/mie scales +
     // top-of-atmosphere solar irradiance, then refreshes the UI so the
     // dependent sliders show the new values. Subsequent slider drags move
@@ -232,7 +273,7 @@ export function createDebugPanel(state = initialDebugState) {
         dust: { rayleighScale: 1.2, mieScale: 2.5, solarIrradiance: { r: 1.474, g: 1.8504, b: 1.91198 } },
         pearl: { rayleighScale: 0.7, mieScale: 0.4, solarIrradiance: { r: 1.6, g: 1.7, b: 1.9 } },
     };
-    atmMat
+    const atmPresetBinding = atmMat
         .addBinding(state.materials.atmosphere, 'preset', {
         label: 'preset',
         options: {
@@ -257,36 +298,56 @@ export function createDebugPanel(state = initialDebugState) {
         a.solarIrradiance.b = p.solarIrradiance.b;
         pane.refresh();
     });
-    atmMat.addBinding(state.materials.atmosphere, 'rayleighScale', { min: 0, max: 2, step: 0.05 });
-    atmMat.addBinding(state.materials.atmosphere, 'mieScale', { min: 0, max: 3, step: 0.05 });
-    atmMat.addBinding(state.materials.atmosphere, 'sunDiskSize', {
+    atmControls.push(atmPresetBinding);
+    atmControls.push(atmMat.addBinding(state.materials.atmosphere, 'rayleighScale', { min: 0, max: 2, step: 0.05 }));
+    atmControls.push(atmMat.addBinding(state.materials.atmosphere, 'mieScale', { min: 0, max: 3, step: 0.05 }));
+    atmControls.push(atmMat.addBinding(state.materials.atmosphere, 'sunDiskSize', {
         min: 0.001,
         max: 0.25,
         step: 0.005,
-    });
-    atmMat.addBinding(state.materials.atmosphere, 'exposure', { min: 0.1, max: 14, step: 0.05 });
+    }));
+    atmControls.push(atmMat.addBinding(state.materials.atmosphere, 'exposure', { min: 0.1, max: 14, step: 0.05 }));
     // Aerial perspective — tints land/water toward the sky-view LUT colour
     // by a slant-column air-thickness factor. 0 = no haze; 1 = strong blue
     // rim with disc-centre still readable.
-    atmMat.addBinding(state.materials.atmosphere, 'hazeAmount', {
+    atmControls.push(atmMat.addBinding(state.materials.atmosphere, 'hazeAmount', {
         min: 0,
         max: 1.5,
         step: 0.01,
         label: 'haze',
-    });
+    }));
     // Haze layer height in metres. Terrain above this exponentially loses
     // haze so mountain peaks at the limb keep their shading detail. Low =
     // even hills punch through; high = behaviour reverts toward uniform haze.
-    atmMat.addBinding(state.materials.atmosphere, 'hazeFalloffM', {
+    atmControls.push(atmMat.addBinding(state.materials.atmosphere, 'hazeFalloffM', {
         min: 500,
         max: 100000,
         step: 100,
         label: 'haze layer (m)',
-    });
+    }));
+    updateAtmDisabled();
     // Ocean — Gerstner waves + layered depth gradient + coastal tint +
     // current-speed tint + shimmer-noise warp by current direction.
+    // Header row = layer toggle + reset chip; sub-folders below are
+    // greyed out when the toggle is off.
     const oceanMat = mat.addFolder({ title: 'Ocean', expanded: false });
+    const oceanSubFolders = [];
+    const updateOceanDisabled = () => {
+        const off = !state.layers.ocean;
+        for (const f of oceanSubFolders)
+            f.disabled = off;
+    };
+    oceanMat.addBinding(state.layers, 'ocean', { label: 'enabled' }).on('change', () => {
+        updateOceanDisabled();
+    });
+    oceanMat.addButton({ title: 'Reset' }).on('click', () => {
+        state.layers.ocean = DEFAULTS.layers.ocean;
+        Object.assign(state.materials.ocean, DEFAULTS.materials.ocean);
+        pane.refresh();
+        updateOceanDisabled();
+    });
     const oWaves = oceanMat.addFolder({ title: 'Waves', expanded: false });
+    oceanSubFolders.push(oWaves);
     oWaves.addBinding(state.materials.ocean, 'waveAmplitude', {
         min: 0, max: 600, step: 5, label: 'amplitude (m)',
     });
@@ -300,6 +361,7 @@ export function createDebugPanel(state = initialDebugState) {
         min: 0, max: 3, step: 0.05, label: 'fresnel',
     });
     const oDepth = oceanMat.addFolder({ title: 'Depth & color', expanded: false });
+    oceanSubFolders.push(oDepth);
     oDepth.addBinding(state.materials.ocean, 'depthFalloff', {
         // Range widened to 500 so the user can dial up the shallow-tint
         // falloff when raising sea level — freshly-flooded interior reads
@@ -320,6 +382,7 @@ export function createDebugPanel(state = initialDebugState) {
     // #season-control (see index.html #sealevel-control). Tweakpane binding
     // removed so the two surfaces can't race against each other.
     const oCoast = oceanMat.addFolder({ title: 'Coastal tint', expanded: false });
+    oceanSubFolders.push(oCoast);
     oCoast.addBinding(state.materials.ocean, 'coastalTintColor', { label: 'color' });
     oCoast.addBinding(state.materials.ocean, 'coastalTintStrength', {
         min: 0, max: 1, step: 0.01, label: 'strength',
@@ -328,6 +391,7 @@ export function createDebugPanel(state = initialDebugState) {
         min: 0, max: 1500, step: 10, label: 'falloff (m)',
     });
     const oCurrents = oceanMat.addFolder({ title: 'Currents', expanded: false });
+    oceanSubFolders.push(oCurrents);
     oCurrents.addBinding(state.materials.ocean, 'currentStrength', {
         min: 0, max: 3, step: 0.05, label: 'strength',
     });
@@ -340,6 +404,7 @@ export function createDebugPanel(state = initialDebugState) {
     oCurrents.addBinding(state.materials.ocean, 'shimmerCurrentDrift', {
         min: 0, max: 40, step: 0.05, label: 'shimmer drift',
     });
+    updateOceanDisabled();
     // Clouds — volumetric raymarch in the [1.012, 1.025] shell.
     const cloudsMat = mat.addFolder({ title: 'Clouds', expanded: false });
     cloudsMat.addBinding(state.materials.clouds, 'density', { min: 0, max: 2, step: 0.01 });
@@ -352,8 +417,26 @@ export function createDebugPanel(state = initialDebugState) {
     // every zoom. Grouped sub-folders: Road widths (shared day+night),
     // Day look (white fill + dark casing), Night look (glowing core + halo),
     // Zoom fade (opacity by camera distance).
+    // Header row = layer toggle + reset chip; sub-folders below are
+    // greyed out when the toggle is off.
     const highwaysMat = mat.addFolder({ title: 'Highways', expanded: false });
+    const highwaysSubFolders = [];
+    const updateHighwaysDisabled = () => {
+        const off = !state.layers.highways;
+        for (const f of highwaysSubFolders)
+            f.disabled = off;
+    };
+    highwaysMat.addBinding(state.layers, 'highways', { label: 'enabled' }).on('change', () => {
+        updateHighwaysDisabled();
+    });
+    highwaysMat.addButton({ title: 'Reset' }).on('click', () => {
+        state.layers.highways = DEFAULTS.layers.highways;
+        Object.assign(state.materials.highways, DEFAULTS.materials.highways);
+        pane.refresh();
+        updateHighwaysDisabled();
+    });
     const hwWidths = highwaysMat.addFolder({ title: 'Road widths (px)', expanded: false });
+    highwaysSubFolders.push(hwWidths);
     hwWidths.addBinding(state.materials.highways, 'majorWidthPx', {
         min: 1, max: 8, step: 0.25, label: 'major',
     });
@@ -367,6 +450,7 @@ export function createDebugPanel(state = initialDebugState) {
         min: 0.2, max: 4, step: 0.1, label: 'local2',
     });
     const hwDay = highwaysMat.addFolder({ title: 'Day look', expanded: false });
+    highwaysSubFolders.push(hwDay);
     hwDay.addBinding(state.materials.highways, 'dayStrength', {
         min: 0, max: 2, step: 0.05, label: 'overall strength',
     });
@@ -383,6 +467,7 @@ export function createDebugPanel(state = initialDebugState) {
         min: 0, max: 1.5, step: 0.05, label: 'casing strength',
     });
     const hwNight = highwaysMat.addFolder({ title: 'Night look', expanded: false });
+    highwaysSubFolders.push(hwNight);
     hwNight.addBinding(state.materials.highways, 'nightBrightness', {
         min: 0, max: 2, step: 0.05, label: 'overall brightness',
     });
@@ -411,12 +496,14 @@ export function createDebugPanel(state = initialDebugState) {
         min: 0.5, max: 5, step: 0.05, label: 'halo falloff',
     });
     const hwFade = highwaysMat.addFolder({ title: 'Zoom fade', expanded: false });
+    highwaysSubFolders.push(hwFade);
     hwFade.addBinding(state.materials.highways, 'opacityNear', {
         min: 0, max: 1, step: 0.01, label: 'alpha zoomed in',
     });
     hwFade.addBinding(state.materials.highways, 'opacityFar', {
         min: 0, max: 1, step: 0.01, label: 'alpha zoomed out',
     });
+    updateHighwaysDisabled();
     // Cities — far-LOD polygon glow. The PIP test stamps each city's
     // outline; the block-spray inside is a per-row brick grid with random
     // x-stretch (aspect jitter) and a running-bond x-offset.

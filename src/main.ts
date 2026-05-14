@@ -54,9 +54,15 @@ async function boot(): Promise<void> {
   // state. No persistence — every launch re-probes from scratch.
   const probe = await runGpuProbe(renderer, sceneGraph, initialDebugState);
   applyTier(initialDebugState, probe.tier);
+  // Apply the auto-picked render scale BEFORE the first real render-loop
+  // frame. The settings panel can override this live afterward.
+  renderer.setRenderScale(initialDebugState.renderScale);
+  const autoRenderScale = initialDebugState.renderScale;
+  const autoTierName = tierName(probe.tier);
   console.info(
-    `[autotune] tier=${tierName(probe.tier)} avgFrameMs=${probe.avgFrameMs.toFixed(2)} ` +
+    `[autotune] tier=${autoTierName} avgFrameMs=${probe.avgFrameMs.toFixed(2)} ` +
       `samples=${probe.samples}${probe.partial ? ' (partial — wall-time cap hit)' : ''} ` +
+      `renderScale=${initialDebugState.renderScale.toFixed(2)} ` +
       `layers=${JSON.stringify({
         clouds: initialDebugState.layers.clouds,
         ocean: initialDebugState.layers.ocean,
@@ -121,15 +127,11 @@ async function boot(): Promise<void> {
     scenarioRegistry,
   );
 
-  // Floating top-left time card (pause button + 24-hour clock dial +
-  // HH:MM readout + date label) and the top-right Tweakpane toggle. All
-  // are static elements declared in index.html; here we bind them to
-  // debug state. The clock dial drags `totalDays`' fractional part —
-  // see the clock-scrub pointer handler below.
-  const timeClock = document.getElementById('time-clock');
-  const timeClockSvg = document.getElementById('time-clock-svg');
-  const timeClockHand = document.getElementById('time-clock-hand');
-  const timeClockTicks = document.getElementById('time-clock-ticks');
+  // Floating top-left time card (pause button + HH:MM readout + date
+  // label) and the top-right Tweakpane toggle. All are static elements
+  // declared in index.html; here we bind them to debug state. The
+  // 24-hour clock dial was removed — the digital readout already covers
+  // it and the dragging UX wasn't worth the visual real estate.
   const timeReadout = document.getElementById('time-readout');
   const timePause = document.getElementById('time-pause') as HTMLButtonElement | null;
   const paneToggle = document.getElementById('tweakpane-toggle') as HTMLButtonElement | null;
@@ -143,35 +145,14 @@ async function boot(): Promise<void> {
   const sealevelReadout = document.getElementById('sealevel-readout');
   const dateReadout = document.getElementById('date-readout');
 
+  // Only Clouds remains on the floating bottom bar — the rest (ocean,
+  // atmosphere, highways, planes) moved into their Tweakpane sub-folders
+  // as header toggles with reset chips.
   const toggleClouds = document.getElementById('toggle-clouds') as HTMLInputElement | null;
-  const toggleOcean = document.getElementById('toggle-ocean') as HTMLInputElement | null;
-  const toggleAtmosphere = document.getElementById('toggle-atmosphere') as HTMLInputElement | null;
-  const toggleHighways = document.getElementById('toggle-highways') as HTMLInputElement | null;
-  const togglePlanes = document.getElementById('toggle-planes') as HTMLInputElement | null;
-
-  const wireLayerToggle = (
-    el: HTMLInputElement | null,
-    key: 'clouds' | 'ocean' | 'atmosphere' | 'highways',
-  ): void => {
-    if (!el) return;
-    el.checked = debug.state.layers[key];
-    el.addEventListener('change', () => {
-      debug.state.layers[key] = el.checked;
-    });
-  };
-  wireLayerToggle(toggleClouds, 'clouds');
-  wireLayerToggle(toggleOcean, 'ocean');
-  wireLayerToggle(toggleAtmosphere, 'atmosphere');
-  wireLayerToggle(toggleHighways, 'highways');
-
-  // Planes toggle is a combined master for two state keys: heads (planes)
-  // and trails. Both flip together so the user has one obvious "show air
-  // traffic" switch — fine-grained airports/routes still live in Tweakpane.
-  if (togglePlanes) {
-    togglePlanes.checked = debug.state.layers.planes && debug.state.layers.trails;
-    togglePlanes.addEventListener('change', () => {
-      debug.state.layers.planes = togglePlanes.checked;
-      debug.state.layers.trails = togglePlanes.checked;
+  if (toggleClouds) {
+    toggleClouds.checked = debug.state.layers.clouds;
+    toggleClouds.addEventListener('change', () => {
+      debug.state.layers.clouds = toggleClouds.checked;
     });
   }
 
@@ -206,23 +187,6 @@ async function boot(): Promise<void> {
     }
   };
 
-  // Build the 24-hour clock face (24 ticks, longer at 0/6/12/18) and wire
-  // pointer drag → t01. The hand rotates 0..360° as t01 goes 0..1, with
-  // 0° at top = midnight.
-  if (timeClockTicks) {
-    const NS = 'http://www.w3.org/2000/svg';
-    for (let h = 0; h < 24; h++) {
-      const line = document.createElementNS(NS, 'line');
-      const major = h % 6 === 0;
-      line.setAttribute('x1', '0');
-      line.setAttribute('y1', '-44');
-      line.setAttribute('x2', '0');
-      line.setAttribute('y2', major ? '-37' : '-40');
-      if (major) line.setAttribute('class', 'major');
-      line.setAttribute('transform', `rotate(${h * 15})`);
-      timeClockTicks.appendChild(line);
-    }
-  }
   const formatTimeOfDay = (t01: number): string => {
     const total = t01 * 24;
     const hh = Math.floor(total) % 24;
@@ -232,48 +196,29 @@ async function boot(): Promise<void> {
     return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
   };
   const refreshClock = (t01: number): void => {
-    if (timeClockHand) timeClockHand.setAttribute('transform', `rotate(${t01 * 360})`);
     if (timeReadout) timeReadout.textContent = formatTimeOfDay(t01);
-    if (timeClock) timeClock.setAttribute('aria-valuenow', (t01 * 24).toFixed(1));
   };
   refreshClock(debug.state.timeOfDay.t01);
 
-  let timeClockDragging = false;
-  if (timeClock && timeClockSvg) {
-    const setFromEvent = (e: PointerEvent): void => {
-      const rect = timeClockSvg.getBoundingClientRect();
-      const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
-      // atan2(dx, -dy): 0 = up (midnight), increases clockwise.
-      let theta = Math.atan2(e.clientX - cx, -(e.clientY - cy));
-      if (theta < 0) theta += Math.PI * 2;
-      const t01 = theta / (Math.PI * 2);
-      // Rewrite the fractional part of `totalDays` so the derived t01
-      // matches the new dial position next frame — but keep the integer
-      // day count intact so dragging the clock doesn't bump month/year.
-      debug.state.timeOfDay.totalDays =
-        Math.floor(debug.state.timeOfDay.totalDays) + t01;
-      debug.state.timeOfDay.t01 = t01;
-      refreshClock(t01);
-    };
-    timeClock.addEventListener('pointerdown', (e) => {
-      timeClockDragging = true;
-      timeClock.setPointerCapture(e.pointerId);
-      setFromEvent(e);
-    });
-    timeClock.addEventListener('pointermove', (e) => {
-      if (timeClockDragging) setFromEvent(e);
-    });
-    const release = (e: PointerEvent): void => {
-      timeClockDragging = false;
-      if (timeClock.hasPointerCapture(e.pointerId)) timeClock.releasePointerCapture(e.pointerId);
-    };
-    timeClock.addEventListener('pointerup', release);
-    timeClock.addEventListener('pointercancel', release);
-  }
-
+  // Pause icon: two vertical bars; Play icon: right-pointing triangle
+  // offset rightward so the visual centroid sits at the circle's centre
+  // (a flat-back triangle's centroid is 1/3 from the base, not 1/2).
+  const PAUSE_SVG =
+    '<svg viewBox="0 0 20 20" aria-hidden="true">' +
+    '<rect x="5" y="3.5" width="3.5" height="13" rx="1"/>' +
+    '<rect x="11.5" y="3.5" width="3.5" height="13" rx="1"/>' +
+    '</svg>';
+  const PLAY_SVG =
+    '<svg viewBox="0 0 20 20" aria-hidden="true">' +
+    '<path d="M6 3.5 L16 10 L6 16.5 Z"/>' +
+    '</svg>';
   const refreshPauseIcon = (): void => {
-    if (timePause) timePause.textContent = debug.state.timeOfDay.paused ? '▶' : '⏸';
+    if (!timePause) return;
+    timePause.innerHTML = debug.state.timeOfDay.paused ? PLAY_SVG : PAUSE_SVG;
+    timePause.setAttribute(
+      'aria-label',
+      debug.state.timeOfDay.paused ? 'Resume time' : 'Pause time',
+    );
   };
   refreshPauseIcon();
   if (timePause) {
@@ -288,6 +233,49 @@ async function boot(): Promise<void> {
   if (paneToggle && paneHost) {
     paneToggle.addEventListener('click', () => {
       paneHost.classList.toggle('open');
+    });
+  }
+
+  // Settings panel — user-facing quality knobs. Same toggle pattern as
+  // the tweakpane host, with a render-scale slider + AUTO chip wired to
+  // the renderer.
+  const settingsToggle = document.getElementById('settings-toggle') as HTMLButtonElement | null;
+  const settingsPanel = document.getElementById('settings-panel');
+  const settingsSlider = document.getElementById(
+    'settings-renderscale-slider',
+  ) as HTMLInputElement | null;
+  const settingsReadout = document.getElementById('settings-renderscale-readout');
+  const settingsHint = document.getElementById('settings-renderscale-hint');
+  const settingsAuto = document.getElementById(
+    'settings-renderscale-auto',
+  ) as HTMLButtonElement | null;
+  const formatPct = (s: number): string => `${Math.round(s * 100)}%`;
+  const applyRenderScale = (s: number): void => {
+    debug.state.renderScale = s;
+    renderer.setRenderScale(s);
+    if (settingsReadout) settingsReadout.textContent = formatPct(s);
+  };
+  if (settingsSlider) {
+    settingsSlider.value = String(initialDebugState.renderScale);
+  }
+  if (settingsReadout) settingsReadout.textContent = formatPct(initialDebugState.renderScale);
+  if (settingsHint) {
+    settingsHint.textContent = `Auto-detected: ${autoTierName} @ ${formatPct(autoRenderScale)}`;
+  }
+  if (settingsToggle && settingsPanel) {
+    settingsToggle.addEventListener('click', () => {
+      settingsPanel.classList.toggle('open');
+    });
+  }
+  if (settingsSlider) {
+    settingsSlider.addEventListener('input', () => {
+      applyRenderScale(parseFloat(settingsSlider.value));
+    });
+  }
+  if (settingsAuto) {
+    settingsAuto.addEventListener('click', () => {
+      if (settingsSlider) settingsSlider.value = String(autoRenderScale);
+      applyRenderScale(autoRenderScale);
     });
   }
   // Smoke-test "Explode" button — detonate at a random point inside the
@@ -437,16 +425,15 @@ async function boot(): Promise<void> {
       }
     }
     // Refresh the top-left time card from the derived state that
-    // scene-graph.ts just wrote: clock hand + HH:MM (unless the user is
-    // mid-drag), the JAN 2067 / FEB 2067 / … date label, and the pause
-    // icon if Tweakpane's checkbox flipped `paused` from the side panel.
-    if (!timeClockDragging) {
-      refreshClock(debug.state.timeOfDay.t01);
-    }
+    // scene-graph.ts just wrote: HH:MM digital readout, the JAN 2067 /
+    // FEB 2067 / … date label, and the pause-icon swap if Tweakpane's
+    // checkbox flipped `paused` from the side panel.
+    refreshClock(debug.state.timeOfDay.t01);
     refreshDateReadout(debug.state.timeOfDay.timeOfYear01, debug.state.timeOfDay.yearsElapsed);
     if (timePause) {
-      const want = debug.state.timeOfDay.paused ? '▶' : '⏸';
-      if (timePause.textContent !== want) timePause.textContent = want;
+      const wantPaused = debug.state.timeOfDay.paused;
+      const hasPlayIcon = timePause.firstElementChild?.querySelector('path') !== null;
+      if (wantPaused !== hasPlayIcon) refreshPauseIcon();
     }
     if (seasonSlider && document.activeElement !== seasonSlider) {
       const v = debug.state.materials.globe.seasonOffsetC;
@@ -461,10 +448,6 @@ async function boot(): Promise<void> {
         sealevelSlider.value = String(v);
         refreshSealevelReadout(v);
       }
-    }
-    if (togglePlanes) {
-      const want = debug.state.layers.planes && debug.state.layers.trails;
-      if (togglePlanes.checked !== want) togglePlanes.checked = want;
     }
     raf = requestAnimationFrame(frame);
   });

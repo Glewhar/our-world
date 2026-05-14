@@ -43,6 +43,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Globe } from './globe/Globe.js';
 import { AtmospherePass } from './atmosphere/AtmospherePass.js';
 import { PostFXChain } from './postfx/PostFXChain.js';
+import { FxaaPass } from './postfx/FxaaPass.js';
 import { VolumetricCloudPass } from './clouds/VolumetricCloudPass.js';
 import { HighwaysLayer } from './highways/HighwaysLayer.js';
 import { AirplaneSystem } from './airplanes/AirplaneSystem.js';
@@ -148,6 +149,9 @@ export function createSceneGraph(): SceneGraph {
   function attachRenderer(r: THREE.WebGLRenderer): void {
     webglRenderer = r;
     postFx = new PostFXChain(r, scene, camera);
+    // Replace WebGLRenderer MSAA (now off) with a single fullscreen FXAA pass.
+    // Cheap on tile-based mobile GPUs; keeps the composer path active.
+    postFx.addPass(new FxaaPass());
     // Construct with the baseline (factor=5) atmosphere radius so the LUTs
     // bake at the right scale on first frame. The slider can shift it later
     // and the LUTs re-bake on change.

@@ -16,6 +16,7 @@ export class Renderer {
   readonly canvas: HTMLCanvasElement;
   readonly renderer: THREE.WebGLRenderer;
   private resizeObserver: ResizeObserver | null = null;
+  private renderScale = 1.0;
 
   constructor(
     private readonly host: HTMLElement,
@@ -26,13 +27,15 @@ export class Renderer {
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
-      antialias: true,
+      antialias: false,
       powerPreference: 'high-performance',
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.0;
+    // Apply default render scale (1.0). main.ts re-calls setRenderScale
+    // with the auto-tuned value once the GPU probe lands.
+    this.setRenderScale(1.0);
 
     // Hand the WebGLRenderer to the scene graph so it can construct the
     // PostFXChain (EffectComposer + RenderPass at M0; passes attach in
@@ -45,6 +48,26 @@ export class Renderer {
   tick(deltaSec: number, debug: DebugState): void {
     this.sceneGraph.update(deltaSec, debug);
     this.sceneGraph.render(deltaSec);
+  }
+
+  /**
+   * Set the sub-canvas render-resolution multiplier. 1.0 = native (clamped
+   * DPR); 0.5 = half-resolution upscale. The CSS canvas size is unchanged;
+   * the backing-store resolution drops, so fewer fragments are coloured.
+   */
+  setRenderScale(scale: number): void {
+    const clamped = Math.max(0.25, Math.min(2.0, scale));
+    this.renderScale = clamped;
+    const dpr = Math.min(window.devicePixelRatio, 2) * clamped;
+    this.renderer.setPixelRatio(dpr);
+    const w = this.host.clientWidth || window.innerWidth;
+    const h = this.host.clientHeight || window.innerHeight;
+    this.renderer.setSize(w, h, false);
+    this.sceneGraph.resize(w, h);
+  }
+
+  getRenderScale(): number {
+    return this.renderScale;
   }
 
   dispose(): void {

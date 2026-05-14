@@ -1,22 +1,27 @@
 /**
  * GPU auto-tune: probe rendering during loading, classify the system into a
- * tier, and disable expensive visual layers on weaker hardware before the
- * UI initializes.
+ * tier, and adjust render cost on weaker hardware before the UI initializes.
  *
  * Run between `sceneGraph.attachWorld()` and `createDebugPanel()` in main.ts —
  * the scene is fully wired, the loading overlay still covers the canvas, and
  * Tweakpane / the floating toggle bar haven't bound to state yet, so mutating
- * `initialDebugState.layers.*` here is reflected by the UI on first render.
+ * `initialDebugState.layers.*` and `initialDebugState.renderScale` here is
+ * reflected by the UI on first render.
  *
  * The probe runs a synchronous loop with `gl.finish()` after each frame to
  * force GPU completion before timing — RAF would be vsync-locked at 16.67ms
  * on a 60Hz display and couldn't distinguish a 2ms GPU from a 14ms one.
  *
- * Ordering, per user intent (visual decluttering first, not raw cost):
- *   Medium    → clouds off               (~2-4ms saved)
- *   Low       → clouds + planes off      (planes ~0.1ms — cosmetic, not perf)
- *   Very low  → clouds + planes + atmo   (atmo ~0.5-1ms)
- * Ocean and highways stay on at every tier.
+ * Cascade behaviour (only clouds toggle automatically; atmosphere / planes /
+ * trails / ocean / highways stay ON at every tier):
+ *   High      (<5ms)    → clouds ON,  renderScale 1.00
+ *   Medium    (5-12ms)  → clouds OFF, renderScale 1.00
+ *   Low       (12-22ms) → clouds OFF, renderScale 0.75
+ *   VeryLow   (>=22ms)  → clouds OFF, renderScale 0.50
+ *
+ * 4K pixel-budget guard — a weak iGPU on a 4K screen still reports DPR=1.0,
+ * so the tier alone may not catch it. If the canvas pixel budget exceeds
+ * 6M pixels AND tier is Medium or worse, clamp renderScale to <=0.7.
  */
 export var Tier;
 (function (Tier) {
@@ -34,6 +39,8 @@ const WARMUP_FRAMES = 20;
 const SAMPLE_FRAMES = 60;
 const YIELD_EVERY = 10;
 const MAX_WALL_TIME_MS = 1500;
+const PIXEL_BUDGET_4K = 6_000_000;
+const RENDER_SCALE_4K_CLAMP = 0.7;
 function classify(avgFrameMs) {
     if (avgFrameMs < TIER_THRESHOLDS_MS.high)
         return Tier.High;
@@ -55,6 +62,22 @@ function trimmedMean(samples) {
     for (const v of kept)
         sum += v;
     return sum / kept.length;
+}
+function pickRenderScale(tier) {
+    switch (tier) {
+        case Tier.High: return 1.0;
+        case Tier.Medium: return 1.0;
+        case Tier.Low: return 0.75;
+        case Tier.VeryLow: return 0.5;
+    }
+}
+function pixelBudgetGuard(scale, tier) {
+    if (tier === Tier.High)
+        return scale;
+    const pixels = window.innerWidth * window.innerHeight * Math.min(window.devicePixelRatio, 2);
+    if (pixels > PIXEL_BUDGET_4K)
+        return Math.min(scale, RENDER_SCALE_4K_CLAMP);
+    return scale;
 }
 export async function runGpuProbe(renderer, _sceneGraph, probeState) {
     const gl = renderer.renderer.getContext();
@@ -94,34 +117,38 @@ export async function runGpuProbe(renderer, _sceneGraph, probeState) {
         const elapsed = performance.now() - probeStart;
         avgFrameMs = elapsed / Math.max(1, frames);
     }
+    const tier = classify(avgFrameMs);
+    const renderScale = pixelBudgetGuard(pickRenderScale(tier), tier);
     return {
-        tier: classify(avgFrameMs),
+        tier,
         avgFrameMs,
         samples: samples.length,
         partial,
+        renderScale,
     };
 }
 export function applyTier(state, tier) {
+    // Only clouds is auto-toggled. Atmosphere / planes / trails / ocean /
+    // highways stay on at every tier — render-scale absorbs the rest of the
+    // cost on weaker hardware.
     switch (tier) {
         case Tier.High:
+            state.renderScale = 1.0;
             break;
         case Tier.Medium:
             state.layers.clouds = false;
+            state.renderScale = 1.0;
             break;
         case Tier.Low:
             state.layers.clouds = false;
-            // Floating toggle bar treats planes+trails as one switch — keep them
-            // in lockstep so the combined "Planes" toggle reflects reality.
-            state.layers.planes = false;
-            state.layers.trails = false;
+            state.renderScale = 0.75;
             break;
         case Tier.VeryLow:
             state.layers.clouds = false;
-            state.layers.planes = false;
-            state.layers.trails = false;
-            state.layers.atmosphere = false;
+            state.renderScale = 0.5;
             break;
     }
+    state.renderScale = pixelBudgetGuard(state.renderScale, tier);
 }
 export function tierName(tier) {
     return Tier[tier] ?? 'Unknown';

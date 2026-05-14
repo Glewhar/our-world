@@ -82,15 +82,17 @@
         min-height: 14px;
       }
 
-      /* Floating top-left time control: pause + 24-hour analog clock dial. */
+      /* Floating top-left time control: pause button + HH:MM / MMM YYYY
+         readout. The 24-hour analog dial was removed — the digital
+         readout already covers it. */
       #time-control {
         position: fixed;
         left: 16px;
         top: 16px;
         display: flex;
         align-items: center;
-        gap: 14px;
-        padding: 10px 18px 10px 10px;
+        gap: 12px;
+        padding: 8px 16px 8px 8px;
         background: rgba(10, 14, 22, 0.65);
         backdrop-filter: blur(8px);
         -webkit-backdrop-filter: blur(8px);
@@ -100,8 +102,8 @@
       }
       #time-pause {
         flex: 0 0 auto;
-        width: 64px;
-        height: 64px;
+        width: 48px;
+        height: 48px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -110,60 +112,17 @@
         border: 1px solid rgba(255, 255, 255, 0.12);
         border-radius: 50%;
         cursor: pointer;
-        font-size: 26px;
-        line-height: 1;
         padding: 0;
         transition: background 0.15s ease;
       }
       #time-pause:hover {
         background: rgba(255, 255, 255, 0.16);
       }
-      #time-clock {
-        position: relative;
-        width: 120px;
-        height: 120px;
-        cursor: pointer;
-        user-select: none;
-        touch-action: none;
-        flex: 0 0 auto;
-      }
-      #time-clock svg {
-        width: 100%;
-        height: 100%;
+      #time-pause svg {
+        width: 20px;
+        height: 20px;
         display: block;
-        overflow: visible;
-      }
-      #time-clock .face {
-        fill: rgba(255, 255, 255, 0.04);
-        stroke: rgba(255, 255, 255, 0.2);
-        stroke-width: 1;
-      }
-      #time-clock .ticks line {
-        stroke: rgba(230, 236, 246, 0.5);
-        stroke-width: 1.2;
-        stroke-linecap: round;
-      }
-      #time-clock .ticks line.major {
-        stroke: rgba(230, 236, 246, 0.9);
-        stroke-width: 2;
-      }
-      #time-clock .labels text {
-        fill: rgba(230, 236, 246, 0.8);
-        font-size: 9px;
-        font-weight: 700;
-        letter-spacing: 0.04em;
-        font-variant-numeric: tabular-nums;
-        text-anchor: middle;
-        dominant-baseline: middle;
-      }
-      #time-clock .hand {
-        stroke: #ffd9a0;
-        stroke-width: 2.5;
-        stroke-linecap: round;
-        filter: drop-shadow(0 0 5px rgba(255, 217, 160, 0.75));
-      }
-      #time-clock .pivot {
-        fill: #ffd9a0;
+        fill: #e6ecf6;
       }
       #time-readout-wrap {
         display: flex;
@@ -196,19 +155,19 @@
         position: fixed;
         left: 16px;
         top: 50%;
-        transform: translateY(-50%);
+        transform: translateY(calc(-100% - 6px));
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 10px;
-        padding: 12px 10px;
+        gap: 4px;
+        padding: 6px 10px;
         background: rgba(10, 14, 22, 0.65);
         backdrop-filter: blur(8px);
         -webkit-backdrop-filter: blur(8px);
         border: 1px solid rgba(255, 255, 255, 0.08);
         border-radius: 18px;
         z-index: 5;
-        width: 56px;
+        width: 76px;
         --season-color: #e6ecf6;
       }
       #season-readout {
@@ -226,11 +185,12 @@
         font-weight: 700;
         letter-spacing: 0.18em;
         color: rgba(230, 236, 246, 0.55);
+        white-space: nowrap;
       }
       #season-slider-wrap {
         position: relative;
         width: 28px;
-        height: 240px;
+        height: 140px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -253,7 +213,7 @@
       #season-slider {
         appearance: none;
         -webkit-appearance: none;
-        width: 240px;
+        width: 140px;
         height: 8px;
         transform: rotate(-90deg);
         background: linear-gradient(
@@ -291,28 +251,29 @@
         box-shadow: 0 0 10px var(--season-color);
       }
 
-      /* Sea-level companion thermostat — sits to the right of #season-control
-         with a 16 px gap (left = 16 + 56 + 16 = 88 px). Same layout as
-         #season-control but drives debug.state.materials.ocean.seaLevelOffsetM,
-         range -10000..+10000 m. Sandy at bottom (dry seafloor), deep blue at
+      /* Sea-level companion thermostat — stacked directly UNDER
+         #season-control along the left edge (both anchored at top:50%
+         with offset transforms so they sit centered as a pair). Drives
+         debug.state.materials.ocean.seaLevelOffsetM, range
+         -10000..+10000 m. Sandy at bottom (dry seafloor), deep blue at
          top (flooded). */
       #sealevel-control {
         position: fixed;
-        left: 88px;
+        left: 16px;
         top: 50%;
-        transform: translateY(-50%);
+        transform: translateY(6px);
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 10px;
-        padding: 12px 10px;
+        gap: 4px;
+        padding: 6px 10px;
         background: rgba(10, 14, 22, 0.65);
         backdrop-filter: blur(8px);
         -webkit-backdrop-filter: blur(8px);
         border: 1px solid rgba(255, 255, 255, 0.08);
         border-radius: 18px;
         z-index: 5;
-        width: 56px;
+        width: 76px;
       }
       #sealevel-readout {
         font-size: 12px;
@@ -328,11 +289,12 @@
         font-weight: 700;
         letter-spacing: 0.18em;
         color: rgba(230, 236, 246, 0.55);
+        white-space: nowrap;
       }
       #sealevel-slider-wrap {
         position: relative;
         width: 28px;
-        height: 240px;
+        height: 140px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -355,7 +317,7 @@
       #sealevel-slider {
         appearance: none;
         -webkit-appearance: none;
-        width: 240px;
+        width: 140px;
         height: 8px;
         transform: rotate(-90deg);
         background: linear-gradient(
@@ -393,22 +355,10 @@
       }
 
 
-      /* Floating bottom-left layer toggles (clouds / ocean / atmosphere). */
-      #layer-toggles {
-        position: fixed;
-        left: 16px;
-        bottom: 16px;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 8px 12px;
-        background: rgba(10, 14, 22, 0.65);
-        backdrop-filter: blur(8px);
-        -webkit-backdrop-filter: blur(8px);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 18px;
-        z-index: 5;
-      }
+      /* Cloud toggle pill — now lives inside the settings panel
+         (.settings-row-toggle stretches to the panel width). The shared
+         .layer-toggle styles stay because the pill visual vocabulary is
+         reused. */
       .layer-toggle {
         display: inline-flex;
         align-items: center;
@@ -506,11 +456,26 @@
         box-shadow: 0 0 8px rgba(255, 154, 111, 0.85);
       }
 
-      /* Top-right collapsible Tweakpane host + toggle. Matches the left-side
-         floats: dark glass, blur, 18px fillets. */
+      /* When the cloud toggle pill is dropped into the settings panel,
+         it stretches to fill the row width and pushes the toggle to the
+         far right (label on the left). */
+      .layer-toggle.settings-row-toggle {
+        display: flex;
+        justify-content: flex-start;
+        gap: 10px;
+        padding: 4px 4px;
+        margin-top: 4px;
+      }
+      .layer-toggle.settings-row-toggle .layer-name {
+        flex: 1;
+      }
+
+      /* Bottom-right collapsible Tweakpane host + toggle. Matches the left-side
+         floats: dark glass, blur, 18px fillets. The panel hangs UPWARD from
+         the toggle, sized to fit between the toggle and the top of the page. */
       #tweakpane-toggle {
         position: fixed;
-        top: 16px;
+        bottom: 16px;
         right: 16px;
         width: 36px;
         height: 36px;
@@ -533,8 +498,146 @@
       #tweakpane-toggle:hover {
         background: rgba(255, 255, 255, 0.12);
       }
+      /* User-facing settings (quality / render scale / clouds). Lives in
+         the top-right corner, aligned with the tweakpane chip in the
+         bottom-right (both at right: 16px). */
+      #settings-toggle {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        width: 36px;
+        height: 36px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(10, 14, 22, 0.65);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        color: #e6ecf6;
+        cursor: pointer;
+        font-size: 18px;
+        line-height: 1;
+        padding: 0;
+        z-index: 7;
+        transition: background 0.15s ease;
+      }
+      #settings-toggle:hover {
+        background: rgba(255, 255, 255, 0.12);
+      }
+      #settings-panel {
+        position: fixed;
+        top: 60px;
+        right: 16px;
+        width: 280px;
+        padding: 12px 14px;
+        background: rgba(10, 14, 22, 0.65);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        color: #e6ecf6;
+        font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+        font-size: 12px;
+        z-index: 7;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(-6px);
+        transition: opacity 0.15s ease, transform 0.15s ease;
+      }
+      #settings-panel.open {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateY(0);
+      }
+      #settings-panel h3 {
+        margin: 0 0 10px 0;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(230, 236, 246, 0.85);
+      }
+      #settings-panel .setting-row {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        margin-bottom: 6px;
+      }
+      #settings-panel .setting-row label {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(230, 236, 246, 0.7);
+      }
+      #settings-renderscale-readout {
+        font-size: 12px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        color: #e6ecf6;
+      }
+      #settings-renderscale-slider {
+        appearance: none;
+        -webkit-appearance: none;
+        width: 100%;
+        height: 6px;
+        background: rgba(255, 255, 255, 0.18);
+        border-radius: 999px;
+        outline: none;
+        cursor: pointer;
+        margin: 4px 0 10px 0;
+      }
+      #settings-renderscale-slider::-webkit-slider-thumb {
+        appearance: none;
+        -webkit-appearance: none;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #9cc4ff;
+        border: 2px solid rgba(0, 0, 0, 0.5);
+        cursor: pointer;
+        box-shadow: 0 0 8px rgba(127, 182, 255, 0.7);
+      }
+      #settings-renderscale-slider::-moz-range-thumb {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #9cc4ff;
+        border: 2px solid rgba(0, 0, 0, 0.5);
+        cursor: pointer;
+        box-shadow: 0 0 8px rgba(127, 182, 255, 0.7);
+      }
+      #settings-panel .setting-row-actions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      #settings-renderscale-hint {
+        font-size: 11px;
+        color: rgba(230, 236, 246, 0.55);
+        font-variant-numeric: tabular-nums;
+      }
+      #settings-renderscale-auto {
+        height: 24px;
+        padding: 0 10px;
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 999px;
+        color: #e6ecf6;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        cursor: pointer;
+        transition: background 0.15s ease;
+      }
+      #settings-renderscale-auto:hover {
+        background: rgba(255, 255, 255, 0.2);
+      }
       /* Floating "Explode" smoke-test controls — region dropdown + button,
-         sitting just left of the tweakpane toggle, reusing the same
+         sitting just left of the settings gear, reusing the same
          dark-glass tokens. */
       #explode-controls {
         position: fixed;
@@ -543,7 +646,7 @@
         display: flex;
         align-items: center;
         gap: 8px;
-        z-index: 7;
+        z-index: 6;
       }
       #explode-button,
       #region-select {
@@ -590,7 +693,7 @@
       }
       #tweakpane-host {
         position: fixed;
-        top: 64px;
+        bottom: 64px;
         right: 16px;
         z-index: 6;
         max-height: calc(100vh - 80px);
@@ -919,29 +1022,12 @@
       <span id="loading-step-label"></span>
     </div>
     <div id="time-control">
-      <button id="time-pause" type="button" aria-label="Pause time">⏸</button>
-      <div
-        id="time-clock"
-        role="slider"
-        tabindex="0"
-        aria-label="Time of day"
-        aria-valuemin="0"
-        aria-valuemax="24"
-        aria-valuenow="12"
-      >
-        <svg id="time-clock-svg" viewBox="-50 -50 100 100" aria-hidden="true">
-          <circle class="face" cx="0" cy="0" r="44" />
-          <g id="time-clock-ticks" class="ticks"></g>
-          <g class="labels">
-            <text x="0" y="-28">0</text>
-            <text x="28" y="0">6</text>
-            <text x="0" y="28">12</text>
-            <text x="-28" y="0">18</text>
-          </g>
-          <line id="time-clock-hand" class="hand" x1="0" y1="0" x2="0" y2="-32" />
-          <circle class="pivot" cx="0" cy="0" r="2.5" />
+      <button id="time-pause" type="button" aria-label="Pause time">
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <rect x="5" y="3.5" width="3.5" height="13" rx="1" />
+          <rect x="11.5" y="3.5" width="3.5" height="13" rx="1" />
         </svg>
-      </div>
+      </button>
       <div id="time-readout-wrap">
         <div id="time-readout">12:00</div>
         <div id="date-readout">JAN 2067</div>
@@ -962,8 +1048,28 @@
       <div id="sealevel-label">SEA LEVEL</div>
     </div>
 
-    <div id="layer-toggles">
-      <label class="layer-toggle clouds" for="toggle-clouds">
+    <div id="explode-controls">
+      <select id="region-select" aria-label="Detonation region">
+        <option value="USA">USA</option>
+        <option value="Europe">Europe</option>
+        <option value="China">China</option>
+      </select>
+      <button id="explode-button" type="button" aria-label="Detonate in selected region">💥 Explode</button>
+    </div>
+    <button id="settings-toggle" type="button" aria-label="Quality settings">⚙</button>
+    <div id="settings-panel">
+      <h3>Quality</h3>
+      <div class="setting-row">
+        <label for="settings-renderscale-slider">Render scale</label>
+        <span id="settings-renderscale-readout">100%</span>
+      </div>
+      <input id="settings-renderscale-slider" type="range" min="0.5" max="1.0" step="0.05" value="1.0" />
+      <div class="setting-row-actions">
+        <span id="settings-renderscale-hint">Auto-detected: —</span>
+        <button id="settings-renderscale-auto" type="button">AUTO</button>
+      </div>
+      <h3 style="margin-top: 14px;">Layers</h3>
+      <label class="layer-toggle clouds settings-row-toggle" for="toggle-clouds">
         <span class="layer-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="22" height="22" xmlns="http://www.w3.org/2000/svg">
             <path d="M7.2 18.5h10a3.9 3.9 0 0 0 .85-7.71 5.2 5.2 0 0 0-10.05-1.05A3.9 3.9 0 0 0 7.2 18.5z" fill="#f4f7fc" stroke="#cdd6e3" stroke-width="1.1" stroke-linejoin="round"/>
@@ -973,73 +1079,6 @@
         <input id="toggle-clouds" type="checkbox" checked />
         <span class="toggle-track"><span class="toggle-thumb"></span></span>
       </label>
-      <label class="layer-toggle ocean" for="toggle-ocean">
-        <span class="layer-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22" xmlns="http://www.w3.org/2000/svg" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M2.5 9.5c2.5 0 2.5-2 5-2s2.5 2 5 2 2.5-2 5-2 2.5 2 4 2" stroke="#3da6c2" stroke-width="1.7"/>
-            <path d="M2.5 14c2.5 0 2.5-2 5-2s2.5 2 5 2 2.5-2 5-2 2.5 2 4 2" stroke="#5cc8e3" stroke-width="1.7"/>
-            <path d="M2.5 18.5c2.5 0 2.5-2 5-2s2.5 2 5 2 2.5-2 5-2 2.5 2 4 2" stroke="#7fdcef" stroke-width="1.7"/>
-          </svg>
-        </span>
-        <span class="layer-name">Ocean</span>
-        <input id="toggle-ocean" type="checkbox" checked />
-        <span class="toggle-track"><span class="toggle-thumb"></span></span>
-      </label>
-      <label class="layer-toggle atmosphere" for="toggle-atmosphere">
-        <span class="layer-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22" xmlns="http://www.w3.org/2000/svg">
-            <defs>
-              <radialGradient id="atmHalo" cx="50%" cy="50%" r="50%">
-                <stop offset="55%" stop-color="#7fb6ff" stop-opacity="0"/>
-                <stop offset="100%" stop-color="#7fb6ff" stop-opacity="0.7"/>
-              </radialGradient>
-              <radialGradient id="atmCore" cx="35%" cy="35%" r="70%">
-                <stop offset="0%" stop-color="#5b88c4"/>
-                <stop offset="100%" stop-color="#1f3252"/>
-              </radialGradient>
-            </defs>
-            <circle cx="12" cy="12" r="11" fill="url(#atmHalo)"/>
-            <circle cx="12" cy="12" r="6.2" fill="url(#atmCore)"/>
-            <circle cx="12" cy="12" r="6.2" fill="none" stroke="#9cc4ff" stroke-width="0.7" opacity="0.85"/>
-          </svg>
-        </span>
-        <span class="layer-name">Atmosphere</span>
-        <input id="toggle-atmosphere" type="checkbox" checked />
-        <span class="toggle-track"><span class="toggle-thumb"></span></span>
-      </label>
-      <label class="layer-toggle highways" for="toggle-highways">
-        <span class="layer-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22" xmlns="http://www.w3.org/2000/svg" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 20 L11 4" stroke="#c9b07e" stroke-width="2.2"/>
-            <path d="M21 20 L13 4" stroke="#c9b07e" stroke-width="2.2"/>
-            <path d="M9 9 L15 9" stroke="#f3eee0" stroke-width="0.9" stroke-dasharray="1.6 1.6"/>
-            <path d="M7 14 L17 14" stroke="#f3eee0" stroke-width="0.9" stroke-dasharray="1.6 1.6"/>
-            <path d="M5 19 L19 19" stroke="#f3eee0" stroke-width="0.9" stroke-dasharray="1.6 1.6"/>
-          </svg>
-        </span>
-        <span class="layer-name">Highways</span>
-        <input id="toggle-highways" type="checkbox" checked />
-        <span class="toggle-track"><span class="toggle-thumb"></span></span>
-      </label>
-      <label class="layer-toggle planes" for="toggle-planes">
-        <span class="layer-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22" xmlns="http://www.w3.org/2000/svg">
-            <path d="M12 2 L13.4 3.4 L13.4 9.6 L22 13 L22 14.6 L13.4 12.6 L13.4 17.2 L15.4 19 L15.4 20 L12 19 L8.6 20 L8.6 19 L10.6 17.2 L10.6 12.6 L2 14.6 L2 13 L10.6 9.6 L10.6 3.4 Z"
-                  fill="#ff9a6f" stroke="#cdd6e3" stroke-width="0.7" stroke-linejoin="round" stroke-linecap="round"/>
-          </svg>
-        </span>
-        <span class="layer-name">Planes</span>
-        <input id="toggle-planes" type="checkbox" checked />
-        <span class="toggle-track"><span class="toggle-thumb"></span></span>
-      </label>
-    </div>
-    <div id="explode-controls">
-      <select id="region-select" aria-label="Detonation region">
-        <option value="USA">USA</option>
-        <option value="Europe">Europe</option>
-        <option value="China">China</option>
-      </select>
-      <button id="explode-button" type="button" aria-label="Detonate in selected region">💥 Explode</button>
     </div>
     <button id="tweakpane-toggle" type="button" aria-label="Toggle controls">≡</button>
     <div id="tweakpane-host"></div>
