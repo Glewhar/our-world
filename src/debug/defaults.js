@@ -78,7 +78,6 @@ export const DEFAULTS = {
             lerpStrengthInfection: 1.0,
             lerpStrengthPollution: 1.0,
             snowLineStrength: 0.55,
-            seasonOffsetC: 0.0,
             alpineStrength: 0.7,
             // Biome-color edge softening. 0 = hard cell-boundary palette (old
             // behaviour); 1° ≈ one HEALPix-cell feather; 5° = strong continental
@@ -86,10 +85,11 @@ export const DEFAULTS = {
             // 4096×2048 colour equirect; the land shader takes a single
             // bilinear sample for its base colour.
             biomeBlurDeg: 3.0,
-            // 15-entry palette indexed by WWF TEOW biome code (0 = no-data
-            // fallback, 1..14 = TEOW biomes). The shader reads
-            // `attribute_static.G * 255` and looks up directly. Tweakpane
-            // exposes each slot for live tuning.
+            // 16-entry palette indexed by WWF TEOW biome code (0 = no-data
+            // fallback, 1..14 = TEOW biomes, 15 = synthetic ice/glacier used
+            // only by climate-scenario biome overrides — the baked
+            // attribute_static.G never produces 15). Tweakpane exposes each
+            // slot for live tuning.
             biomePalette: [
                 '#c4bcaa', //  0  no data / fallback (old land-base)
                 '#2f6a3c', //  1  tropical moist forest
@@ -106,6 +106,7 @@ export const DEFAULTS = {
                 '#9a8e5a', // 12  mediterranean
                 '#c8b486', // 13  desert / xeric
                 '#264c40', // 14  mangroves
+                '#e8eef0', // 15  ice / glacier (override-only)
             ],
             // Per-realm HSV tint applied on top of the parent biome colour.
             // Length 9 (slot 0 unused; 1..8 = realms in the order
@@ -116,14 +117,14 @@ export const DEFAULTS = {
             // legacy 14-biome look until the user starts tuning.
             realmTint: [
                 { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 0 sentinel
-                { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 1 Australasia
+                { dHue: -13.0, satMult: 1.35, valMult: 0.99 }, // 1 Australasia
                 { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 2 Antarctic
-                { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 3 Afrotropic
+                { dHue: 0.5, satMult: 1.10, valMult: 0.90 }, // 3 Afrotropic
                 { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 4 Indomalay
-                { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 5 Nearctic
-                { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 6 Neotropic
+                { dHue: 17.0, satMult: 1.0, valMult: 1.0 }, // 5 Nearctic
+                { dHue: -11.5, satMult: 1.0, valMult: 1.0 }, // 6 Neotropic
                 { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 7 Oceania
-                { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 8 Palearctic
+                { dHue: -2.5, satMult: 0.84, valMult: 1.08 }, // 8 Palearctic
             ],
             // Strength of the per-ecoregion deterministic HSV wobble. 0 = none
             // (every ecoregion paints exactly its biome×realm colour); 1 =

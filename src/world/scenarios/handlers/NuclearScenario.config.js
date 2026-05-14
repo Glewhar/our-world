@@ -1,7 +1,7 @@
 /**
  * NuclearScenario.config — all tunables for the nuclear scenario, in one
  * place. The handler ([NuclearScenario.ts]) reads from this for wasteland
- * geometry, the renderer ([../../render/effects/nuclear/NuclearExplosion.ts])
+ * geometry, the renderer ([../../render/effects/nuclear/BlastSystem.ts])
  * receives it as its `profile`, and the debug panel ([../../debug/Tweakpane.ts])
  * sources its initial state from `DEFAULT_NUCLEAR_CONFIG` so editing values
  * here flips the live default with no other touch-points.
@@ -20,6 +20,27 @@
  *   - `decayExponent` — shared recovery curve exponent.
  *   - `visuals` — static, build-time visual constants the renderer reads
  *     at particle creation (sprite-size base, wind reference height).
+ *
+ * PERF TUNING INDEX (where to turn knobs when the war runs hot):
+ *   - Per-particle-type COUNTS: `NukeFire.count`, `NukeSmoke.count`, … in
+ *     this file. Sum × 12 = max live particles. Halving these is the
+ *     biggest direct lever (linear win in physics + sort + buffer write).
+ *     Smoke + fire are the largest spenders. To remove a sub-effect
+ *     entirely, drop it from `NUCLEAR_PARTICLE_TYPES` (see how `debris`
+ *     was removed).
+ *   - MAX CONCURRENT BLASTS: `MAX_CONCURRENT_BLASTS` in
+ *     [../../../render/effects/nuclear/BlastSystem.ts]. Sizes the shared
+ *     buffer (slots × particles). Raise = more concurrent mushrooms, more
+ *     vertex shader work; lower = some strikes evict others.
+ *   - FAR-SIDE CULL: `slot.worldOrigin.dot(camera.position) < 0` in
+ *     [../../../render/effects/nuclear/BlastSystem.ts] `update()`. Below
+ *     zero = blast on the far hemisphere, skipped. Raise the threshold
+ *     toward 0 = cull more aggressively (risk: cuts blasts that should be
+ *     visible at the horizon).
+ *   - SCAR RECOMPOSE THROTTLE: `1000` ms literal in
+ *     [../../world/scenarios/ScenarioRegistry.ts] `maybeRecompose()`. Cap
+ *     on how often the scar paint is recomposed. Lower = smoother fade,
+ *     higher CPU; higher = chunkier fade, lower CPU.
  */
 // Source values stored as base-10 in the original demo bundle:
 //   FIRE  0xA73A1E warm orange-red → 0x932601 dark red-brown
@@ -27,7 +48,7 @@
 //   DEBRIS 0xFF7420 bright orange  → 0xFFFFFF white
 const FIRE_COLOURS = { start: 0xa73a1e, end: 0x932601 };
 const SMOKE_COLOURS = { start: 0x646464, end: 0xe4e1e1 };
-const DEBRIS_COLOURS = { start: 0xff7420, end: 0xffffff };
+// DEBRIS_COLOURS removed alongside NukeDebris.
 const NukeFire = {
     name: 'fire',
     enabled: true,
@@ -40,7 +61,7 @@ const NukeFire = {
     dynamicSize: true,
     radiusMod: 0.2,
     sizeMod: 6,
-    count: 2000,
+    count: 250,
     radiusModifier: 0.95,
     startColour: FIRE_COLOURS.start,
     endColour: FIRE_COLOURS.end,
@@ -69,7 +90,7 @@ const NukeSmoke = {
     dynamicSize: true,
     radiusMod: 0.2,
     sizeMod: 1.2,
-    count: 3000,
+    count: 376,
     radiusModifier: 1.3,
     growingOnly: true,
     startColour: SMOKE_COLOURS.start,
@@ -98,7 +119,7 @@ const NukeMushroom = {
     maxRadius: 1.36,
     radiusMod: 1,
     sizeMod: 1,
-    count: 500,
+    count: 64,
     radiusModifier: 1,
     minHeight: -2.5,
     maxHeight: 2,
@@ -131,7 +152,7 @@ const NukeMushroomFire = {
     dynamicSize: true,
     radiusMod: 1,
     sizeMod: 2,
-    count: 400,
+    count: 50,
     radiusModifier: 0.5,
     minHeight: -2,
     maxHeight: 2,
@@ -163,7 +184,7 @@ const NukeColumnFire = {
     dynamicSize: true,
     radiusMod: 0.2,
     sizeMod: 3,
-    count: 250,
+    count: 30,
     radiusModifier: 2.5,
     minHeight: -5,
     maxHeight: 1,
@@ -196,7 +217,7 @@ const NukeColumnSmoke = {
     dynamicSize: true,
     radiusMod: 0.2,
     sizeMod: 3,
-    count: 50,
+    count: 14,
     radiusModifier: 0.335,
     minHeight: -5,
     maxHeight: 1,
@@ -217,39 +238,9 @@ const NukeColumnSmoke = {
         ],
     },
 };
-const NukeDebris = {
-    name: 'debris',
-    enabled: true,
-    alpha: 1,
-    lifeTime: { minLife: 2, maxLife: 3 },
-    blend: 1,
-    particleType: 2,
-    minRadius: 1,
-    maxRadius: 3,
-    dynamicSize: false,
-    sizeMod: 0.1,
-    count: 500,
-    minHeight: -1,
-    maxHeight: 1,
-    radiusModifier: 1,
-    minSize: 0,
-    maxSize: 3,
-    startColour: DEBRIS_COLOURS.start,
-    endColour: DEBRIS_COLOURS.end,
-    intervals: [0, 0.33, 0.66, 1],
-    maxValues: { alpha: 1, speed: 9, size: 1, height: 1.05 },
-    spleens: {
-        alpha: [0, 1, 1, 0],
-        speed: [1, 0.444, 0.166, 0.033],
-        size: [1, 0.832, 0.66, 0.5],
-        height: [0, 0.65, 1, 0],
-        colour: [
-            { interval: 0, value: DEBRIS_COLOURS.start },
-            { interval: 0.5, value: DEBRIS_COLOURS.end },
-            { interval: 1, value: DEBRIS_COLOURS.end },
-        ],
-    },
-};
+// Debris template removed — the spawn count cost more than it contributed
+// visually. Git history holds the previous `NukeDebris` const + colours if
+// it ever needs to come back.
 export const NUCLEAR_PARTICLE_TYPES = [
     NukeFire,
     NukeSmoke,
@@ -257,7 +248,6 @@ export const NUCLEAR_PARTICLE_TYPES = [
     NukeMushroomFire,
     NukeColumnFire,
     NukeColumnSmoke,
-    NukeDebris,
 ];
 export const DEFAULT_NUCLEAR_CONFIG = {
     particleTypes: NUCLEAR_PARTICLE_TYPES,
@@ -279,7 +269,6 @@ export const DEFAULT_NUCLEAR_CONFIG = {
             mushroomFire: true,
             columnFire: true,
             columnSmoke: true,
-            debris: true,
         },
         mushroomHeightScale: 1.0,
         columnHeightScale: 1.0,
@@ -292,11 +281,13 @@ export const DEFAULT_NUCLEAR_CONFIG = {
         radiusKm: 450,
         stretchKm: 1200,
         durationDays: 24,
+        killRadiusMultiplier: 2.0,
     },
     decayExponent: 2.5,
     visuals: {
         spriteSizeScale: 6 / 14,
         windRefHeight: 16,
+        referenceRadiusKm: 450,
     },
 };
 /**

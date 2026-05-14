@@ -32,3 +32,38 @@ export function decayQuickThenSlow(progress01, exponent = 2.5, rampEnd = 0.02) {
     const q = (p - rampEnd) / (1 - rampEnd);
     return Math.pow(1 - q, exponent);
 }
+/**
+ * Sustained-then-collapse decay. Hold near peak for `holdFrac` of the
+ * lifetime, then fall to 0 by the end with an `exponent`-shaped tail.
+ * Same `rampEnd` startup ramp as `decayQuickThenSlow` so cities and
+ * highways still vanish under the fireball at strike time. Used by
+ * Nuclear War's no-rebuild mode so wasted cells stay dead through the
+ * winter plateau.
+ */
+export function decaySustained(progress01, holdFrac = 0.85, exponent = 2.5, rampEnd = 0.02) {
+    const p = progress01 < 0 ? 0 : progress01 > 1 ? 1 : progress01;
+    if (p < rampEnd)
+        return 0.4 + 0.6 * (p / rampEnd);
+    if (p < holdFrac)
+        return 1.0;
+    const q = (p - holdFrac) / (1 - holdFrac);
+    return Math.pow(1 - q, exponent);
+}
+/**
+ * Climate envelope: linear rise → plateau at 1 → linear fall.
+ *
+ *   - 0 → 1 over first `riseFrac` of lifetime (default 10%)
+ *   - hold 1 through middle (default 60%)
+ *   - 1 → 0 over last `fallFrac` (default 30%)
+ *
+ * No 0.4 startup pop (unlike decayQuickThenSlow). Used by climate scenarios
+ * so peak temp/sea-level deviation builds smoothly and decays gracefully.
+ */
+export function climateRisePlateauFall(progress01, riseFrac = 0.10, fallFrac = 0.30) {
+    const p = progress01 < 0 ? 0 : progress01 > 1 ? 1 : progress01;
+    if (p < riseFrac)
+        return p / riseFrac;
+    if (p > 1 - fallFrac)
+        return (1 - p) / fallFrac;
+    return 1;
+}

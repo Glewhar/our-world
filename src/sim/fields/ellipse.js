@@ -27,6 +27,7 @@
  * nested loop, output is sorted by ipix ascending.
  */
 import { zPhiToPix } from '../../world/healpix.js';
+import { acquireStampScratch } from './stampScratch.js';
 const DEG = Math.PI / 180;
 const EARTH_RADIUS_KM = 6371;
 const UPWIND_TAIL_FRACTION = 0.2;
@@ -76,9 +77,12 @@ export function computeEllipseStamp(args, nside, ordering) {
     // Mark bitmap for dedupe + ascending emission. Cells touched by
     // multiple lat/lon samples keep the maximum value — sample density is
     // fine enough that this is a no-op in practice, but the max keeps
-    // the centre from getting under-stamped near grid boundaries.
-    const mark = new Uint8Array(npix);
-    const valBuf = new Float32Array(npix);
+    // the centre from getting under-stamped near grid boundaries. Buffers
+    // come from the shared scratch arena so a 70-strike Nuclear War onStart
+    // doesn't burst ~3.5 GB of ephemeral allocations at nside=1024.
+    const scratch = acquireStampScratch(npix);
+    const mark = scratch.mark;
+    const valBuf = scratch.valBuf;
     let count = 0;
     for (let i = 0; i < latSteps; i++) {
         const t = latSteps === 1 ? 0.5 : i / (latSteps - 1);
@@ -100,9 +104,10 @@ export function computeEllipseStamp(args, nside, ordering) {
             if (dKm === 0) {
                 // Centre sample. Hits at most a couple of cells (depending on
                 // step size); apply the peak value directly.
-                const ipix0 = zPhiToPix(nside, ordering, Math.sin(lat), lon);
+                const ipix0 = zPhiToPix(nside, ordering, sinLat, lon);
                 if (mark[ipix0] === 0) {
                     mark[ipix0] = 1;
+                    scratch.recordTouched(ipix0);
                     count++;
                 }
                 if (valBuf[ipix0] < args.value)
@@ -132,11 +137,12 @@ export function computeEllipseStamp(args, nside, ordering) {
             const t1 = 1 - r; // in [0, 1]
             const falloff = t1 * t1 * (3 - 2 * t1);
             const v = args.value * falloff;
-            const ipix = zPhiToPix(nside, ordering, Math.sin(lat), lon);
+            const ipix = zPhiToPix(nside, ordering, sinLat, lon);
             if (ipix < 0 || ipix >= npix)
                 continue;
             if (mark[ipix] === 0) {
                 mark[ipix] = 1;
+                scratch.recordTouched(ipix);
                 count++;
             }
             if (valBuf[ipix] < v)
@@ -155,5 +161,6 @@ export function computeEllipseStamp(args, nside, ordering) {
                 break;
         }
     }
+    scratch.release();
     return { cells, values };
 }

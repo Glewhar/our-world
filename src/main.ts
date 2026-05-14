@@ -24,12 +24,18 @@ import { runGpuProbe, applyTier, tierName } from './debug/autotune.js';
 import { setAttributeEvent } from './sim/events/primitives.js';
 import type { AttributeKey } from './world/index.js';
 import {
+  GlobalWarmingScenario,
+  IceAgeScenario,
   NuclearScenario,
+  NuclearWarScenario,
   ScenarioRegistry,
-  type NuclearScenarioPayload,
   type ScenarioContext,
+  type StartResult,
 } from './world/scenarios/index.js';
+import { DEFAULT_NUCLEAR_WAR_CONFIG } from './world/scenarios/handlers/NuclearWarScenario.config.js';
+import { DEFAULT_NUCLEAR_CONFIG } from './world/scenarios/handlers/NuclearScenario.config.js';
 import { mountScenarioCards } from './ui/scenario-cards.js';
+import { mountScenariosLauncher } from './ui/scenarios-launcher.js';
 
 const host = document.getElementById('app');
 const loading = document.getElementById('loading');
@@ -91,7 +97,7 @@ async function boot(): Promise<void> {
       elevationM: Math.max(0, world.getElevationMetersAt(lat, lon)),
       wind: world.getWindAt(lat, lon),
     }),
-    detonateAt: (latDeg, lonDeg, terrain) => {
+    detonateAt: (latDeg, lonDeg, terrain, sizeKm) => {
       // Z-up convention matches the bake's lonlat_to_xyz.
       const latRad = (latDeg * Math.PI) / 180;
       const lonRad = (lonDeg * Math.PI) / 180;
@@ -101,23 +107,69 @@ async function boot(): Promise<void> {
         cosLat * Math.sin(lonRad),
         Math.sin(latRad),
       );
-      sceneGraph.detonateAt(dir, terrain.elevationM, terrain.wind);
+      sceneGraph.detonateAt(dir, terrain.elevationM, terrain.wind, sizeKm);
     },
     paintAttributeEllipse: () => {
       // The registry intercepts paint calls during onStart so the stamp
       // is captured locally. Outside that window, fall through to a
       // no-op — handlers shouldn't paint anywhere else for v1.
     },
+    paintAttributeBand: () => {
+      // Same story as paintAttributeEllipse — the registry intercepts
+      // band paints during onStart; outside that window, no-op. Climate
+      // scenarios call this from onStart to stamp zonal biome-override
+      // belts (tundra creep, mid-latitude desert expansion, etc.).
+    },
+    paintBiomeTransition: () => {
+      // The registry intercepts biome-transition paints during onStart
+      // and walks every HEALPix cell to build per-target-biome stamps.
+      // Outside that window, no-op.
+    },
+    // The registry intercepts this internally — the user-level fallback
+    // is just a no-op so the context interface stays satisfied.
+    spawnChildScenario: () => '',
+    stopChildScenario: () => {},
+    setWorldEffect: (name, scale) => {
+      switch (name) {
+        case 'airplaneSpawn':
+          sceneGraph.setAirplaneSpawnScale(scale);
+          break;
+      }
+    },
+    getMajorCities: (maxCount) => {
+      const sorted = [...world.getCities()].sort((a, b) => b.pop - a.pop);
+      const n = Math.min(maxCount, sorted.length);
+      const out: { latDeg: number; lonDeg: number; pop: number; name: string }[] = [];
+      for (let i = 0; i < n; i++) {
+        const c = sorted[i]!;
+        out.push({ latDeg: c.lat, lonDeg: c.lon, pop: c.pop, name: c.name });
+      }
+      return out;
+    },
+    getRoadSegments: () => world.getRoads(),
   };
   const scenarioRegistry = new ScenarioRegistry({
-    sink: {
-      applyFrame: (cells, values) => world.applyWastelandFrame(cells, values),
+    attributeSinks: [
+      {
+        key: 'wasteland',
+        applyFrame: (cells, values) =>
+          world.applyDynamicAttributeFrame('wasteland', cells, values),
+      },
+    ],
+    biomeOverrideSink: {
+      bakeBiomeOverrideStamps: (input) => world.bakeBiomeOverrideStamps(input),
+      countBiomesGlobal: () => world.countBiomesGlobal(),
+      getBaselineClass: (ipix) => world.getBaselineClass(ipix),
+      getElevationMetersAtCell: (ipix) => world.getElevationMetersAtCell(ipix),
     },
     context: scenarioContext,
     nside: hpNside,
     ordering: hpOrdering,
   });
   scenarioRegistry.registerHandler('nuclear', NuclearScenario);
+  scenarioRegistry.registerHandler('globalWarming', GlobalWarmingScenario);
+  scenarioRegistry.registerHandler('iceAge', IceAgeScenario);
+  scenarioRegistry.registerHandler('nuclearWar', NuclearWarScenario);
 
   // Mount the floating scenario card stack (top-right, below the date readout).
   // The host div is declared in index.html; mountScenarioCards reconciles
@@ -136,14 +188,10 @@ async function boot(): Promise<void> {
   const timePause = document.getElementById('time-pause') as HTMLButtonElement | null;
   const paneToggle = document.getElementById('tweakpane-toggle') as HTMLButtonElement | null;
   const paneHost = document.getElementById('tweakpane-host');
-  const explodeButton = document.getElementById('explode-button') as HTMLButtonElement | null;
-  const regionSelect = document.getElementById('region-select') as HTMLSelectElement | null;
-  const seasonSlider = document.getElementById('season-slider') as HTMLInputElement | null;
-  const seasonReadout = document.getElementById('season-readout');
-  const seasonControl = document.getElementById('season-control');
   const sealevelSlider = document.getElementById('sealevel-slider') as HTMLInputElement | null;
   const sealevelReadout = document.getElementById('sealevel-readout');
   const dateReadout = document.getElementById('date-readout');
+  const seasonSun = document.getElementById('season-sun') as SVGCircleElement | null;
 
   // Only Clouds remains on the floating bottom bar — the rest (ocean,
   // atmosphere, highways, planes) moved into their Tweakpane sub-folders
@@ -168,30 +216,6 @@ async function boot(): Promise<void> {
     });
   }
 
-  // Map -30..0..+30 °C onto a blue → neutral → red tint for the thumb glow
-  // and the numeric readout. The track gradient itself is static CSS.
-  const setSeasonTint = (v: number): void => {
-    const t = Math.max(-1, Math.min(1, v / 30));
-    let r: number, g: number, b: number;
-    if (t >= 0) {
-      r = Math.round(230 + (255 - 230) * t);
-      g = Math.round(236 + (77 - 236) * t);
-      b = Math.round(246 + (61 - 246) * t);
-    } else {
-      const a = -t;
-      r = Math.round(230 + (78 - 230) * a);
-      g = Math.round(236 + (168 - 236) * a);
-      b = Math.round(246 + (255 - 246) * a);
-    }
-    if (seasonControl) seasonControl.style.setProperty('--season-color', `rgb(${r}, ${g}, ${b})`);
-  };
-  const refreshSeasonReadout = (v: number): void => {
-    if (seasonReadout) {
-      const sign = v > 0 ? '+' : '';
-      seasonReadout.textContent = `${sign}${v.toFixed(1)}°`;
-    }
-    setSeasonTint(v);
-  };
   const refreshSealevelReadout = (v: number): void => {
     if (sealevelReadout) {
       const sign = v > 0 ? '+' : '';
@@ -290,42 +314,21 @@ async function boot(): Promise<void> {
       applyRenderScale(autoRenderScale);
     });
   }
-  // Smoke-test "Explode" button — detonate at a random point inside the
-  // selected region's lat/lon bounding box. Sin(lat) sampling so a tall
-  // box doesn't oversample mid-latitudes vs. the edges (cos(lat) area
-  // weighting on the sphere).
-  const REGION_BOXES: Record<string, { latMin: number; latMax: number; lonMin: number; lonMax: number }> = {
-    USA:    { latMin: 25, latMax: 49, lonMin: -125, lonMax: -67 },
-    Europe: { latMin: 36, latMax: 71, lonMin: -10,  lonMax: 40  },
-    China:  { latMin: 18, latMax: 53, lonMin: 73,   lonMax: 135 },
-  };
-  if (explodeButton) {
-    explodeButton.addEventListener('click', () => {
-      const region = regionSelect?.value ?? 'USA';
-      const box = REGION_BOXES[region] ?? REGION_BOXES.USA!;
-      const sinMin = Math.sin((box.latMin * Math.PI) / 180);
-      const sinMax = Math.sin((box.latMax * Math.PI) / 180);
-      const latRad = Math.asin(sinMin + Math.random() * (sinMax - sinMin));
-      const lonRad = ((box.lonMin + Math.random() * (box.lonMax - box.lonMin)) * Math.PI) / 180;
-      const latDeg = (latRad * 180) / Math.PI;
-      const lonDeg = (lonRad * 180) / Math.PI;
-      const s = debug.state.scenarios.nuclear;
-      const payload: NuclearScenarioPayload = {
-        latDeg,
-        lonDeg,
-        radiusKm: s.radiusKm,
-        stretchKm: s.stretchKm,
-        windBearingDeg: 0, // overwritten by NuclearScenario.onStart
-      };
-      const label = `Nuclear strike — ${region}`;
-      scenarioRegistry.start(
-        'nuclear',
-        payload,
-        debug.state.timeOfDay.totalDays,
-        s.durationDays,
-        { label },
-      );
+  // Mount the floating Scenarios launcher. The toggle chip lives next to
+  // the Quality cog in the top-right rail; the popover is a sibling that
+  // owns three collapsible rows (Nuclear / Global Warming / Ice Age).
+  const scenariosToggle = document.getElementById('scenarios-toggle') as HTMLButtonElement | null;
+  const scenariosPanel = document.getElementById('scenarios-launcher');
+  if (scenariosToggle && scenariosPanel) {
+    scenariosToggle.addEventListener('click', () => {
+      scenariosPanel.classList.toggle('open');
     });
+    mountScenariosLauncher(
+      scenariosToggle,
+      scenariosPanel,
+      scenarioRegistry,
+      () => debug.state.timeOfDay.totalDays,
+    );
   }
   // Make Tweakpane checkbox rows fully clickable, like the floating layer-toggle
   // rows. Tweakpane's native label only wraps the small toggle visual on the
@@ -345,15 +348,6 @@ async function boot(): Promise<void> {
         if (target.closest('.tp-ckbv_l, .tp-ckbv_w')) return;
         input.click();
       });
-    });
-  }
-  if (seasonSlider) {
-    seasonSlider.value = String(debug.state.materials.globe.seasonOffsetC);
-    refreshSeasonReadout(debug.state.materials.globe.seasonOffsetC);
-    seasonSlider.addEventListener('input', () => {
-      const v = parseFloat(seasonSlider.value);
-      debug.state.materials.globe.seasonOffsetC = v;
-      refreshSeasonReadout(v);
     });
   }
   if (sealevelSlider) {
@@ -380,7 +374,19 @@ async function boot(): Promise<void> {
   const refreshDateReadout = (timeOfYear01: number, yearsElapsed: number): void => {
     if (dateReadout) dateReadout.textContent = formatDate(timeOfYear01, yearsElapsed);
   };
+  // Sub-solar latitude icon — mirrors the same sinusoid that scene-graph.ts
+  // uses to set sun declination (see MAX_SUN_TILT_RAD / YEAR_PHASE_OFFSET).
+  // Output is the normalized declination in [-1, +1]; +1 = sun over north
+  // (June solstice), -1 = sun over south (December solstice), 0 = equinox.
+  // viewBox y range [10, 30] → equator at y=20, tropics at y=10/30.
+  const SEASON_YEAR_PHASE_OFFSET = 0.221;
+  const refreshSeasonIcon = (timeOfYear01: number): void => {
+    if (!seasonSun) return;
+    const n = Math.sin((timeOfYear01 - SEASON_YEAR_PHASE_OFFSET) * Math.PI * 2);
+    seasonSun.setAttribute('cy', String(20 - n * 10));
+  };
   refreshDateReadout(debug.state.timeOfDay.timeOfYear01, debug.state.timeOfDay.yearsElapsed);
+  refreshSeasonIcon(debug.state.timeOfDay.timeOfYear01);
 
 
   const fpsCounter = document.getElementById('fps-counter');
@@ -416,6 +422,13 @@ async function boot(): Promise<void> {
     // before the tick so the next composition uses the live value.
     scenarioRegistry.tuning.decayExponent = debug.state.scenarios.decayExponent;
     scenarioRegistry.tick(debug.state.timeOfDay.totalDays);
+    sceneGraph.setClimateFrame(scenarioRegistry.getClimateFrame());
+    sceneGraph.setBiomeOverrideTextures(
+      world.getBiomeOverrideTexture(),
+      world.getBiomeOverrideStampTexture(),
+    );
+    sceneGraph.setClimateEnvelopes(scenarioRegistry.getClimateEnvelopes());
+    sceneGraph.setCloudFrame(scenarioRegistry.getCloudFrame());
     scenarioCards.update();
     if (fpsCounter) {
       const wantVisible = debug.state.debug.fpsCounter;
@@ -442,17 +455,11 @@ async function boot(): Promise<void> {
     // checkbox flipped `paused` from the side panel.
     refreshClock(debug.state.timeOfDay.t01);
     refreshDateReadout(debug.state.timeOfDay.timeOfYear01, debug.state.timeOfDay.yearsElapsed);
+    refreshSeasonIcon(debug.state.timeOfDay.timeOfYear01);
     if (timePause) {
       const wantPaused = debug.state.timeOfDay.paused;
       const hasPlayIcon = timePause.firstElementChild?.querySelector('path') !== null;
       if (wantPaused !== hasPlayIcon) refreshPauseIcon();
-    }
-    if (seasonSlider && document.activeElement !== seasonSlider) {
-      const v = debug.state.materials.globe.seasonOffsetC;
-      if (parseFloat(seasonSlider.value) !== v) {
-        seasonSlider.value = String(v);
-        refreshSeasonReadout(v);
-      }
     }
     if (sealevelSlider && document.activeElement !== sealevelSlider) {
       const v = debug.state.materials.ocean.seaLevelOffsetM;
@@ -506,7 +513,7 @@ async function boot(): Promise<void> {
     },
     nukeAt(latDeg: number, lonDeg: number): string {
       const s = debug.state.scenarios.nuclear;
-      return scenarioRegistry.start(
+      const r = scenarioRegistry.start(
         'nuclear',
         {
           latDeg,
@@ -518,6 +525,78 @@ async function boot(): Promise<void> {
         debug.state.timeOfDay.totalDays,
         s.durationDays,
         { label: `Nuclear strike — (${latDeg.toFixed(1)}, ${lonDeg.toFixed(1)})` },
+      );
+      return r.ok ? r.id : '';
+    },
+    /**
+     * Console helper — fires a Global Warming scenario with the given
+     * params. Will throw "no handler registered" until the climate-scenario
+     * wiring (see plan file) lands; harmless to call from DevTools.
+     */
+    startGlobalWarming(
+      opts: { maxTempDeltaC?: number; maxSeaLevelM?: number; durationDays?: number } = {},
+    ): StartResult {
+      const p = { maxTempDeltaC: opts.maxTempDeltaC ?? 8, maxSeaLevelM: opts.maxSeaLevelM ?? 70 };
+      const dur = opts.durationDays ?? 30;
+      return scenarioRegistry.start(
+        'globalWarming',
+        p,
+        debug.state.timeOfDay.totalDays,
+        dur,
+        { label: 'Global Warming' },
+      );
+    },
+    /**
+     * Console helper — fires an Ice Age scenario. Same caveat as
+     * startGlobalWarming until the wiring lands.
+     */
+    startIceAge(
+      opts: { maxTempDeltaC?: number; maxSeaLevelM?: number; durationDays?: number } = {},
+    ): StartResult {
+      const p = { maxTempDeltaC: opts.maxTempDeltaC ?? -10, maxSeaLevelM: opts.maxSeaLevelM ?? -120 };
+      const dur = opts.durationDays ?? 60;
+      return scenarioRegistry.start(
+        'iceAge',
+        p,
+        debug.state.timeOfDay.totalDays,
+        dur,
+        { label: 'Ice Age' },
+      );
+    },
+    /**
+     * Console helper — fires Nuclear War. Strikes are generated from the
+     * top-N populated cities; defaults match the in-UI launcher row.
+     */
+    startNuclearWar(
+      opts: {
+        strikeCount?: number;
+        strikeWindowDays?: number;
+        maxTempDeltaC?: number;
+        maxSeaLevelM?: number;
+        peakSootGlobal?: number;
+        durationDays?: number;
+        rebuildAfterWar?: boolean;
+      } = {},
+    ): StartResult {
+      const cfg = DEFAULT_NUCLEAR_WAR_CONFIG;
+      return scenarioRegistry.start(
+        'nuclearWar',
+        {
+          schedule: [],
+          strikeCount: opts.strikeCount ?? cfg.strikeCount,
+          strikeWindowDays: opts.strikeWindowDays ?? cfg.strikeFireWindowDays,
+          airplaneStopAtDay: cfg.airplaneStopAtDay,
+          maxTempDeltaC: opts.maxTempDeltaC ?? cfg.maxTempDeltaC,
+          maxSeaLevelM: opts.maxSeaLevelM ?? cfg.maxSeaLevelM,
+          peakSootGlobal: opts.peakSootGlobal ?? cfg.peakSootGlobal,
+          strikeEndFrac: cfg.strikeEndFrac,
+          winterRampEndFrac: cfg.winterRampEndFrac,
+          winterPlateauEndFrac: cfg.winterPlateauEndFrac,
+          rebuildAfterWar: opts.rebuildAfterWar ?? false,
+        },
+        debug.state.timeOfDay.totalDays,
+        opts.durationDays ?? cfg.durationDays,
+        { label: 'Nuclear War' },
       );
     },
     fireAt(latDeg: number, lonDeg: number, radiusKm = 500, value = 1.0): void {
@@ -546,7 +625,7 @@ async function boot(): Promise<void> {
         }),
       );
     },
-    detonateAt(latDeg: number, lonDeg: number): void {
+    detonateAt(latDeg: number, lonDeg: number, sizeKm?: number): void {
       // Z-up convention: +Z = north pole, equator in the XY plane.
       const latRad = (latDeg * Math.PI) / 180;
       const lonRad = (lonDeg * Math.PI) / 180;
@@ -561,7 +640,11 @@ async function boot(): Promise<void> {
       // produces an elevation-lifted, wind-driven blast.
       const elevationM = Math.max(0, world.getElevationMetersAt(latDeg, lonDeg));
       const wind = world.getWindAt(latDeg, lonDeg);
-      sceneGraph.detonateAt(dir, elevationM, wind);
+      // Default to the calibrated reference radius so legacy
+      // `__ED.detonateAt(lat, lon)` calls produce the legacy fixed-size
+      // blast (visual scale = 1.0).
+      const size = sizeKm ?? DEFAULT_NUCLEAR_CONFIG.visuals.referenceRadiusKm;
+      sceneGraph.detonateAt(dir, elevationM, wind, size);
     },
   };
 

@@ -51,7 +51,7 @@ import { loadAirplaneData } from './airplanes/data.js';
 import { SunMoon } from './sky/SunMoon.js';
 import { CitiesLayer } from './cities/CitiesLayer.js';
 import { UrbanDetailLayer } from './urban/UrbanDetailLayer.js';
-import { NuclearExplosion } from './effects/nuclear/NuclearExplosion.js';
+import { BlastSystem } from './effects/nuclear/BlastSystem.js';
 import { DEFAULT_NUCLEAR_CONFIG } from '../world/scenarios/handlers/NuclearScenario.config.js';
 import {
   ATMOSPHERE_TOP_KM,
@@ -63,7 +63,6 @@ import type { DebugState } from '../debug/Tweakpane.js';
 import { DEFAULTS } from '../debug/defaults.js';
 
 const CAMERA_RADIUS = 3.0;
-const MAX_CONCURRENT_BLASTS = 8;
 // Maximum solar declination — Earth's axial tilt. The per-frame declination
 // is a sinusoid of `timeOfDay.timeOfYear01`: +MAX at the June solstice,
 // -MAX at the December solstice, 0 at the equinoxes.
@@ -89,7 +88,50 @@ export type SceneGraph = {
     direction: THREE.Vector3,
     elevationM: number,
     wind: { u: number; v: number } | null,
+    sizeKm: number,
   ): void;
+  /**
+   * Frame-accumulated climate contribution from ScenarioRegistry. Owned by
+   * main.ts: call once per frame BEFORE `update()` so `applyMaterials` reads
+   * a fresh value. Default `{tempC:0, seaLevelM:0}` keeps the shader visually
+   * identical when no climate scenario is active.
+   */
+  setClimateFrame(frame: { tempC: number; seaLevelM: number }): void;
+  /**
+   * Per-cell biome-override textures from AttributeTextures. Both null
+   * until a climate scenario fires. The land shader gates the override
+   * pass by `uClimateEnvelope > 0` and the per-cell stamp weight, so a
+   * lingering reference is a safe no-op when envelope is 0.
+   */
+  setBiomeOverrideTextures(
+    classTex: THREE.DataTexture | null,
+    stampTex: THREE.DataTexture | null,
+  ): void;
+  /**
+   * Per-slot climate envelopes in [0, 1]. Pushed each frame from
+   * `ScenarioRegistry.getClimateEnvelopes()`. The land shader's two
+   * override slots (`uClimateEnvelope` / `uClimateEnvelopeB`)
+   * multiply each by their own baked stamp-weight channel for an
+   * independent crossfade.
+   */
+  setClimateEnvelopes(envelopes: [number, number]): void;
+  /**
+   * Cloud frame contribution from the scenario registry — nuclear-winter
+   * soot overcast tint + regional cover bump. Zero everywhere on cold
+   * boot; updated each frame by main.ts.
+   */
+  setCloudFrame(frame: {
+    sootGlobal: number;
+    sootRegionalWeight: number;
+    sootSunTint: { r: number; g: number; b: number };
+    sootAmbientTint: { r: number; g: number; b: number };
+  }): void;
+  /**
+   * Scale the airplane respawn target (0..1). Default is 1 (normal).
+   * Nuclear War sets to 0 after day 1 to stop new spawns; existing
+   * planes finish their current flight cycle.
+   */
+  setAirplaneSpawnScale(scale: number): void;
   dispose(): void;
 };
 
@@ -132,24 +174,123 @@ export function createSceneGraph(): SceneGraph {
   let airplanes: AirplaneSystem | null = null;
   const sunMoon = new SunMoon();
   scene.add(sunMoon.group);
-  // Pool so concurrent detonations don't stomp each other's particles.
-  // Every blast shares the same scenario config — the render layer does
-  // not own the tuning; it consumes it from world/scenarios/handlers.
-  const blastPool: NuclearExplosion[] = [];
-  for (let i = 0; i < MAX_CONCURRENT_BLASTS; i++) {
-    const blast = new NuclearExplosion(camera, DEFAULT_NUCLEAR_CONFIG);
-    blastPool.push(blast);
-    scene.add(blast.group);
-  }
+  // Single shared-mesh particle system carries up to MAX_CONCURRENT_BLASTS
+  // simultaneous detonations in one draw call. Per-blast state (quaternion,
+  // origin, per-strike scale, wind, particles, splines) lives in BlastSlot
+  // records inside the system. One scene-add, one update, one draw call.
+  const blastSystem = new BlastSystem(camera, DEFAULT_NUCLEAR_CONFIG);
+  scene.add(blastSystem.mesh);
   let pointerHandler: ((e: PointerEvent) => void) | null = null;
 
   const raycaster = new THREE.Raycaster();
   const tmpVec2 = new THREE.Vector2();
   const tmpSunDir = new THREE.Vector3();
   const tmpCameraDir = new THREE.Vector3();
-  // Reusable 15-entry palette buffer fed to BiomeColorEquirect each frame.
+  // Reusable 16-entry palette buffer fed to BiomeColorEquirect each frame.
   // Allocated once so the per-frame palette sync stays GC-free.
-  const paletteColors: THREE.Color[] = Array.from({ length: 15 }, () => new THREE.Color());
+  const paletteColors: THREE.Color[] = Array.from({ length: 16 }, () => new THREE.Color());
+  // Last css string per palette slot — skip `.set(css)` when unchanged so we
+  // don't re-parse a hex string 16×/frame.
+  const paletteCssCache: (string | null)[] = Array.from({ length: 16 }, () => null);
+
+  // Reusable tuning packets fed to BlastSystem each frame. Mutated in place
+  // (both setters read fields immediately or store the reference for
+  // detonate-time reads) so the per-frame nuclear handoff stays GC-free.
+  const liveTuning = {
+    worldScale: 0,
+    timeScale: 0,
+    spriteScale: 0,
+    windStrength: 0,
+    windDelay: 0,
+    windRamp: 0,
+    windJitter: 0,
+    windDrag: 0,
+  };
+  const detonateTuning = {
+    enables: {
+      fire: false,
+      smoke: false,
+      mushroom: false,
+      mushroomFire: false,
+      columnFire: false,
+      columnSmoke: false,
+    },
+    mushroomHeightScale: 0,
+    columnHeightScale: 0,
+    fireColorStart: 0,
+    fireColorEnd: 0,
+    smokeColorStart: 0,
+    smokeColorEnd: 0,
+  };
+  // CSS-hex → packed hex cache. Tweakpane hands us a small set of distinct
+  // hex strings; parsing each one through `new THREE.Color(css).getHex()`
+  // every frame allocates and walks the css parser. Lookup is O(1).
+  const cssHexCache = new Map<string, number>();
+  const cssParseColor = new THREE.Color();
+  function cssToHex(css: string): number {
+    let hex = cssHexCache.get(css);
+    if (hex === undefined) {
+      hex = cssParseColor.set(css).getHex();
+      cssHexCache.set(css, hex);
+    }
+    return hex;
+  }
+
+  // Stashed by the consolidator (main.ts) ahead of each `update()`. The
+  // climate frame is the per-tick contribution from ScenarioRegistry
+  // (warming / ice-age accumulator); the override textures carry the
+  // per-cell biome rewrite from AttributeTextures. Defaults are neutral so
+  // the shader compiles and renders identically when nothing has pushed
+  // yet (cold start, no climate scenario active).
+  let stashedClimateFrame: { tempC: number; seaLevelM: number } = { tempC: 0, seaLevelM: 0 };
+  let stashedOverrideTex: THREE.DataTexture | null = null;
+  let stashedOverrideStampTex: THREE.DataTexture | null = null;
+  const stashedClimateEnvelopes: [number, number] = [0, 0];
+  let stashedCloudFrame: {
+    sootGlobal: number;
+    sootRegionalWeight: number;
+    sootSunTint: { r: number; g: number; b: number };
+    sootAmbientTint: { r: number; g: number; b: number };
+  } = {
+    sootGlobal: 0,
+    sootRegionalWeight: 0,
+    sootSunTint: { r: 1, g: 1, b: 1 },
+    sootAmbientTint: { r: 1, g: 1, b: 1 },
+  };
+  /** Scenario-driven airplane respawn multiplier (default 1). */
+  let airplaneSpawnScale = 1;
+
+  // Wiring contract (main.ts): each rAF tick, right after `scenarioRegistry.tick()`,
+  // call `setClimateFrame(registry.getClimateFrame())`,
+  // `setBiomeOverrideTextures(world.getBiomeOverrideTexture(),
+  //  world.getBiomeOverrideStampTexture())`, and
+  // `setClimateEnvelopes(registry.getClimateEnvelopes())` so `applyMaterials`
+  // reads fresh values.
+  function setClimateFrame(frame: { tempC: number; seaLevelM: number }): void {
+    stashedClimateFrame = frame;
+  }
+  function setBiomeOverrideTextures(
+    classTex: THREE.DataTexture | null,
+    stampTex: THREE.DataTexture | null,
+  ): void {
+    stashedOverrideTex = classTex;
+    stashedOverrideStampTex = stampTex;
+  }
+  function setClimateEnvelopes(envelopes: [number, number]): void {
+    stashedClimateEnvelopes[0] = envelopes[0];
+    stashedClimateEnvelopes[1] = envelopes[1];
+  }
+  function setCloudFrame(frame: {
+    sootGlobal: number;
+    sootRegionalWeight: number;
+    sootSunTint: { r: number; g: number; b: number };
+    sootAmbientTint: { r: number; g: number; b: number };
+  }): void {
+    stashedCloudFrame = frame;
+  }
+  function setAirplaneSpawnScale(scale: number): void {
+    airplaneSpawnScale = Math.max(0, scale);
+  }
 
   function attachRenderer(r: THREE.WebGLRenderer): void {
     webglRenderer = r;
@@ -286,7 +427,7 @@ export function createSceneGraph(): SceneGraph {
   const lastPickRef = { value: '(click on the globe)' };
 
   function applyTimeOfDay(debug: DebugState): void {
-    const theta = (debug.timeOfDay.t01 - 0.5) * Math.PI * 2;
+    const theta = -(debug.timeOfDay.t01 - 0.5) * Math.PI * 2;
     const declRad =
       MAX_SUN_TILT_RAD *
       Math.sin((debug.timeOfDay.timeOfYear01 - YEAR_PHASE_OFFSET) * Math.PI * 2);
@@ -339,18 +480,31 @@ export function createSceneGraph(): SceneGraph {
         m.lerpStrengthPollution,
       );
       land.uSnowLineStrength.value = m.snowLineStrength;
-      land.uSeasonOffsetC.value = m.seasonOffsetC;
+      // Sun-locked seasonal swing in the land shader keys off the same
+      // `timeOfYear01` calendar fraction that drives the sun declination
+      // in `applyTimeOfDay`, so north winter / south summer line up with
+      // the rendered terminator.
+      land.uTimeOfYear01.value = debug.timeOfDay.timeOfYear01;
+      // Climate-scenario frame contribution. Stashed by main.ts before
+      // each tick; defaults to {0,0} when no climate scenario is active.
+      land.uClimateTempDeltaC.value = stashedClimateFrame.tempC;
+      land.uBiomeOverrideTex.value = stashedOverrideTex;
+      land.uBiomeOverrideStamp.value = stashedOverrideStampTex;
+      land.uClimateEnvelope.value = stashedClimateEnvelopes[0];
+      land.uClimateEnvelopeB.value = stashedClimateEnvelopes[1];
       land.uAlpineStrength.value = m.alpineStrength;
 
-      // Biome palette → blurred colour equirect. The Land mesh owns a
-      // BiomeColorEquirect instance with its own dirty-bit; we feed it
-      // the live palette + blur-degrees and it re-bakes only when
-      // something has actually changed. The land shader reads the
-      // baked colour with one bilinear tap, no longer needing the
-      // 15-entry palette uniform at all.
+      // Biome palette → blurred colour equirects. Both Land sub-objects
+      // own their own dirty-bits; we feed them the live palette + blur
+      // slider and they re-bake only when something has actually changed.
+      // The land shader reads the baked base colour and the baked override
+      // (RGB + stamp weight) with one bilinear tap each.
       for (let i = 0; i < paletteColors.length; i++) {
         const css = m.biomePalette[i];
-        if (css) paletteColors[i]!.set(css);
+        if (css && paletteCssCache[i] !== css) {
+          paletteColors[i]!.set(css);
+          paletteCssCache[i] = css;
+        }
       }
       if (webglRenderer) {
         globe.land.biomeColor.rebuildIfDirty(webglRenderer, paletteColors, m.biomeBlurDeg, {
@@ -358,6 +512,13 @@ export function createSceneGraph(): SceneGraph {
           realmTint: m.realmTint,
           ecoregionJitter: m.ecoregionJitter,
         });
+        // Same dirty-bit dance for the climate-scenario override equirect.
+        // Re-bakes when override textures change (scenario start/end) or
+        // when palette/blur change. The LAND shader gates this path by
+        // uClimateEnvelope > 0, so a re-bake with stamp-weight = 0 every-
+        // where (no scenario) is harmless.
+        globe.land.biomeOverride.rebuildIfDirty(webglRenderer, paletteColors, m.biomeBlurDeg);
+        globe.land.biomeOverrideB.rebuildIfDirty(webglRenderer, paletteColors, m.biomeBlurDeg);
       }
       land.uLandSpecularSmoothness.value = m.landSpecularSmoothness;
       land.uSpecularStrength.value = m.specularStrength;
@@ -396,20 +557,33 @@ export function createSceneGraph(): SceneGraph {
       water.uCurrentTintEnabled.value = o.currentTintEnabled ? 1 : 0;
       water.uShowMediumCurrents.value = o.showMediumCurrents ? 1 : 0;
       water.uShimmerCurrentDrift.value = o.shimmerCurrentDrift;
-      water.uSeaLevelOffsetM.value = o.seaLevelOffsetM;
+      // Composed sea level = slider + climate-scenario accumulator.
+      // Land mesh + water mesh + atmosphere shell all read the same
+      // value below so the three surfaces stay in vertical sync as a
+      // warming/ice-age scenario shifts the ocean up or down.
+      const finalSeaLevelM = o.seaLevelOffsetM + stashedClimateFrame.seaLevelM;
+      water.uSeaLevelOffsetM.value = finalSeaLevelM;
       // Mirror the sea-level slider on the land material so the
       // fragment shader can reclassify cells as exposed (baked-ocean
       // now above water) or drowned (baked-land now below water).
-      land.uSeaLevelOffsetM.value = o.seaLevelOffsetM;
+      land.uSeaLevelOffsetM.value = finalSeaLevelM;
     }
 
     if (cloudsPass) {
       const c = debug.materials.clouds;
       cloudsPass.setDensity(c.density);
-      cloudsPass.setCoverage(c.coverage);
+      // Soot stacks an additive bump onto the Tweakpane coverage so the
+      // panel slider stays the baseline of truth (no clobbering on rebind).
+      cloudsPass.setCoverage(c.coverage + stashedCloudFrame.sootGlobal * 0.5);
       cloudsPass.setBeer(c.beer);
       cloudsPass.setHenyey(c.henyey);
       cloudsPass.setAdvection(c.advection);
+      cloudsPass.setSootFrame(
+        stashedCloudFrame.sootGlobal,
+        stashedCloudFrame.sootRegionalWeight,
+        stashedCloudFrame.sootSunTint,
+        stashedCloudFrame.sootAmbientTint,
+      );
     }
 
     // Zoom-fade factor for highways. Camera position length to the origin
@@ -468,9 +642,11 @@ export function createSceneGraph(): SceneGraph {
     // Atmosphere physics tracks the rendered ocean surface. The water vertex
     // shader displaces the unit icosphere by `seaLevelOffsetM * elevScale`,
     // so the atmosphere's inner radius and outer shell ride the same offset
-    // — drop sea level, and the halo sinks with the water rather than
-    // bleeding above exposed seafloor.
-    const planetRadius = 1.0 + debug.materials.ocean.seaLevelOffsetM * elevScale;
+    // — drop sea level (slider or climate accumulator), and the halo sinks
+    // with the water rather than bleeding above exposed seafloor.
+    const finalSeaLevelM =
+      debug.materials.ocean.seaLevelOffsetM + stashedClimateFrame.seaLevelM;
+    const planetRadius = 1.0 + finalSeaLevelM * elevScale;
     const atmRadius = planetRadius + ATMOSPHERE_TOP_KM * 1000 * elevScale;
     if (globe) {
       globe.uniforms.land.uElevationScale.value = elevScale;
@@ -628,42 +804,33 @@ export function createSceneGraph(): SceneGraph {
     // the blast (consistent with every other time-driven layer). Dormant
     // when no detonation is active — `update` is an early-out then.
     const n = debug.nuclear;
-    const liveTuning = {
-      worldScale: n.worldScale,
-      timeScale: n.timeScale,
-      spriteScale: n.spriteScale,
-      windStrength: n.windStrength,
-      windDelay: n.windDelay,
-      windRamp: n.windRamp,
-      windJitter: n.windJitter,
-      windDrag: n.windDrag,
-    };
-    const detonateTuning = {
-      enables: {
-        fire: n.enableFire,
-        smoke: n.enableSmoke,
-        mushroom: n.enableMushroom,
-        mushroomFire: n.enableMushroomFire,
-        columnFire: n.enableColumnFire,
-        columnSmoke: n.enableColumnSmoke,
-        debris: n.enableDebris,
-      },
-      mushroomHeightScale: n.mushroomHeightScale,
-      columnHeightScale: n.columnHeightScale,
-      fireColorStart: new THREE.Color(n.fireColorStart).getHex(),
-      fireColorEnd: new THREE.Color(n.fireColorEnd).getHex(),
-      smokeColorStart: new THREE.Color(n.smokeColorStart).getHex(),
-      smokeColorEnd: new THREE.Color(n.smokeColorEnd).getHex(),
-    };
-    for (const blast of blastPool) {
-      blast.setLiveTuning(liveTuning);
-      blast.setDetonateTuning(detonateTuning);
-      blast.update(simDelta);
-    }
+    liveTuning.worldScale = n.worldScale;
+    liveTuning.timeScale = n.timeScale;
+    liveTuning.spriteScale = n.spriteScale;
+    liveTuning.windStrength = n.windStrength;
+    liveTuning.windDelay = n.windDelay;
+    liveTuning.windRamp = n.windRamp;
+    liveTuning.windJitter = n.windJitter;
+    liveTuning.windDrag = n.windDrag;
+    detonateTuning.enables.fire = n.enableFire;
+    detonateTuning.enables.smoke = n.enableSmoke;
+    detonateTuning.enables.mushroom = n.enableMushroom;
+    detonateTuning.enables.mushroomFire = n.enableMushroomFire;
+    detonateTuning.enables.columnFire = n.enableColumnFire;
+    detonateTuning.enables.columnSmoke = n.enableColumnSmoke;
+    detonateTuning.mushroomHeightScale = n.mushroomHeightScale;
+    detonateTuning.columnHeightScale = n.columnHeightScale;
+    detonateTuning.fireColorStart = cssToHex(n.fireColorStart);
+    detonateTuning.fireColorEnd = cssToHex(n.fireColorEnd);
+    detonateTuning.smokeColorStart = cssToHex(n.smokeColorStart);
+    detonateTuning.smokeColorEnd = cssToHex(n.smokeColorEnd);
+    blastSystem.setLiveTuning(liveTuning);
+    blastSystem.setDetonateTuning(detonateTuning);
+    blastSystem.update(simDelta);
 
     if (airplanes) {
       airplanes.setSpeed(debug.airplanes.speed);
-      airplanes.setTargetInFlight(debug.airplanes.targetInFlight);
+      airplanes.setTargetInFlight(debug.airplanes.targetInFlight * airplaneSpawnScale);
       airplanes.scaffold.setOpacity(debug.airplanes.scaffoldOpacity);
       airplanes.trails.setOpacity(debug.airplanes.trailOpacity);
       // Sun longitude derived from the existing time-of-day knob — same θ
@@ -703,15 +870,16 @@ export function createSceneGraph(): SceneGraph {
     cloudsPass?.setSize(width, height);
     airplanes?.setViewport(width, height);
     highways?.setViewportSize(width, height);
-    for (const blast of blastPool) blast.setViewportHeight(height);
+    blastSystem.setViewportHeight(height);
   }
 
   function detonateAt(
     direction: THREE.Vector3,
     elevationM: number,
     wind: { u: number; v: number } | null,
+    sizeKm: number,
   ): void {
-    // Lift the blast group off the unit sphere so it sits on top of the
+    // Lift the blast origin off the unit sphere so it sits on top of the
     // displaced land mesh — without this, tall terrain (Himalayas, Andes)
     // pokes through and clips the fireball. Elevation comes in metres
     // from the caller (scenario handler sampled it via ctx.sampleTerrainAt);
@@ -721,26 +889,9 @@ export function createSceneGraph(): SceneGraph {
     if (globe) {
       radius += Math.max(0, elevationM) * globe.uniforms.land.uElevationScale.value;
     }
-    // Pick a free instance; fall back to the one with the fewest particles
-    // (closest to finishing) so the visible disruption is minimised.
-    let slot: NuclearExplosion | null = null;
-    for (const blast of blastPool) {
-      if (!blast.isRunning()) {
-        slot = blast;
-        break;
-      }
-    }
-    if (!slot) {
-      let lowest = Infinity;
-      for (const blast of blastPool) {
-        const count = blast.getParticleCount();
-        if (count < lowest) {
-          lowest = count;
-          slot = blast;
-        }
-      }
-    }
-    slot!.detonate(direction, radius, wind);
+    // BlastSystem owns slot-picking (free slot first, then lowest particle
+    // count) and per-strike scale conversion (sizeKm / referenceRadiusKm).
+    blastSystem.detonateAt(direction, radius, wind, sizeKm);
   }
 
   function dispose(): void {
@@ -763,7 +914,7 @@ export function createSceneGraph(): SceneGraph {
     airplanes = null;
     atmosphere?.dispose();
     atmosphere = null;
-    for (const blast of blastPool) blast.dispose();
+    blastSystem.dispose();
     sunMoon.dispose();
     controls?.dispose();
     controls = null;
@@ -772,5 +923,20 @@ export function createSceneGraph(): SceneGraph {
     webglRenderer = null;
   }
 
-  return { scene, camera, attachRenderer, attachWorld, update, render, resize, detonateAt, dispose };
+  return {
+    scene,
+    camera,
+    attachRenderer,
+    attachWorld,
+    update,
+    render,
+    resize,
+    detonateAt,
+    setClimateFrame,
+    setBiomeOverrideTextures,
+    setClimateEnvelopes,
+    setCloudFrame,
+    setAirplaneSpawnScale,
+    dispose,
+  };
 }

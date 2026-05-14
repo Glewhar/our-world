@@ -14,10 +14,10 @@ import { DEFAULT_NUCLEAR_CONFIG, hexNumberToCss, } from '../world/scenarios/hand
 import { DEFAULTS } from './defaults.js';
 // Build initialDebugState from the centralized defaults table — see
 // [./defaults.ts]. The arrays are copied so per-frame writes don't mutate
-// the frozen-at-source defaults. Nuclear scenario values still come from
-// `DEFAULT_NUCLEAR_CONFIG` (per-scenario tuning surface), and
+// the defaults table. Per-scenario tuning (e.g. `DEFAULT_NUCLEAR_CONFIG`)
+// owns its own surface — handlers read from those configs directly, and
 // `scenarios.{wasteland*, decayExponent}` are sourced from the central
-// table or scenario config respectively.
+// table or the relevant scenario config.
 export const initialDebugState = {
     camera: { ...DEFAULTS.camera },
     scene: { ...DEFAULTS.scene },
@@ -72,7 +72,6 @@ export const initialDebugState = {
         enableMushroomFire: DEFAULT_NUCLEAR_CONFIG.detonate.enables.mushroomFire ?? true,
         enableColumnFire: DEFAULT_NUCLEAR_CONFIG.detonate.enables.columnFire ?? true,
         enableColumnSmoke: DEFAULT_NUCLEAR_CONFIG.detonate.enables.columnSmoke ?? true,
-        enableDebris: DEFAULT_NUCLEAR_CONFIG.detonate.enables.debris ?? true,
         mushroomHeightScale: DEFAULT_NUCLEAR_CONFIG.detonate.mushroomHeightScale,
         columnHeightScale: DEFAULT_NUCLEAR_CONFIG.detonate.columnHeightScale,
         fireColorStart: hexNumberToCss(DEFAULT_NUCLEAR_CONFIG.detonate.fireColorStart),
@@ -139,7 +138,6 @@ export function createDebugPanel(state = initialDebugState) {
     }));
     updatePlanesDisabled();
     const mat = pane.addFolder({ title: 'Materials' });
-    // `seasonOffsetC` is driven by the floating thermostat (#season-control).
     // Header row = layer toggle + reset chip; sub-folders below are
     // greyed out when the toggle is off.
     const globeMat = mat.addFolder({ title: 'Globe', expanded: false });
@@ -181,6 +179,7 @@ export function createDebugPanel(state = initialDebugState) {
         '12 mediterranean',
         '13 desert/xeric',
         '14 mangroves',
+        '15 ice/glacier',
     ];
     const biomeFolder = globeMat.addFolder({ title: 'Biome palette', expanded: false });
     globeSubFolders.push(biomeFolder);
@@ -413,9 +412,9 @@ export function createDebugPanel(state = initialDebugState) {
     oDepth.addBinding(state.materials.ocean, 'trenchEnd', {
         min: 0, max: 12000, step: 100, label: 'trench end (m)',
     });
-    // Sea-level offset has its own floating vertical slider next to
-    // #season-control (see index.html #sealevel-control). Tweakpane binding
-    // removed so the two surfaces can't race against each other.
+    // Sea-level offset has its own floating vertical slider (#sealevel-control
+    // in index.html). Tweakpane binding removed so the two surfaces can't
+    // race against each other.
     const oCoast = oceanMat.addFolder({ title: 'Coastal tint', expanded: false });
     oceanSubFolders.push(oCoast);
     oCoast.addBinding(state.materials.ocean, 'coastalTintColor', { label: 'color' });
@@ -595,33 +594,38 @@ export function createDebugPanel(state = initialDebugState) {
     cLook.addBinding(state.materials.cities, 'minPopulation', {
         min: 0, max: 5_000_000, step: 1000, label: 'min population',
     });
-    // Nuclear explosion knobs. "Size & timing" live-applies every frame;
-    // the other groups only take effect on the next detonation because they
-    // alter the configs the particle list is built from.
+    // Nuclear explosion knobs. "Calibration (baseline)" + "Wind dynamics"
+    // live-apply every frame; the other groups only take effect on the next
+    // detonation because they alter the configs the particle list is built
+    // from. The launcher's Blast radius slider scales the visual relative
+    // to `visuals.referenceRadiusKm` (config-only constant), so the
+    // baseline-size slider here is what an artist tunes the calibrated
+    // 450 km strike against — the per-strike multiplier composes with it.
     const nukeFolder = pane.addFolder({ title: 'Nuclear', expanded: false });
-    const nSize = nukeFolder.addFolder({ title: 'Size & timing', expanded: false });
-    nSize.addBinding(state.nuclear, 'worldScale', {
-        min: 0.001, max: 0.010, step: 0.0001, label: 'size',
+    const nCalib = nukeFolder.addFolder({ title: 'Calibration (baseline)', expanded: false });
+    nCalib.addBinding(state.nuclear, 'worldScale', {
+        min: 0.001, max: 0.010, step: 0.0001, label: 'baseline size',
     });
-    nSize.addBinding(state.nuclear, 'timeScale', {
+    nCalib.addBinding(state.nuclear, 'timeScale', {
         min: 0.1, max: 3, step: 0.05, label: 'time speed',
     });
-    nSize.addBinding(state.nuclear, 'spriteScale', {
+    nCalib.addBinding(state.nuclear, 'spriteScale', {
         min: 0.25, max: 12, step: 0.05, label: 'sprite size',
     });
-    nSize.addBinding(state.nuclear, 'windStrength', {
+    const nWind = nukeFolder.addFolder({ title: 'Wind dynamics', expanded: false });
+    nWind.addBinding(state.nuclear, 'windStrength', {
         min: 0, max: 4, step: 0.01, label: 'wind strength',
     });
-    nSize.addBinding(state.nuclear, 'windDelay', {
+    nWind.addBinding(state.nuclear, 'windDelay', {
         min: 0, max: 10, step: 0.1, label: 'wind delay (s)',
     });
-    nSize.addBinding(state.nuclear, 'windRamp', {
+    nWind.addBinding(state.nuclear, 'windRamp', {
         min: 0, max: 10, step: 0.1, label: 'wind ramp (s)',
     });
-    nSize.addBinding(state.nuclear, 'windJitter', {
+    nWind.addBinding(state.nuclear, 'windJitter', {
         min: 0, max: 1, step: 0.01, label: 'wind jitter',
     });
-    nSize.addBinding(state.nuclear, 'windDrag', {
+    nWind.addBinding(state.nuclear, 'windDrag', {
         min: 0, max: 5, step: 0.05, label: 'wind drag',
     });
     const nSubs = nukeFolder.addFolder({ title: 'Sub-effects (redetonate)', expanded: false });
@@ -631,34 +635,53 @@ export function createDebugPanel(state = initialDebugState) {
     nSubs.addBinding(state.nuclear, 'enableMushroomFire', { label: 'cap fire' });
     nSubs.addBinding(state.nuclear, 'enableColumnFire', { label: 'column fire' });
     nSubs.addBinding(state.nuclear, 'enableColumnSmoke', { label: 'column smoke' });
-    nSubs.addBinding(state.nuclear, 'enableDebris', { label: 'debris' });
-    const nShape = nukeFolder.addFolder({ title: 'Shape (redetonate)', expanded: false });
+    // Debris particle template was removed for perf — no toggle here.
+    const nShape = nukeFolder.addFolder({ title: 'Shape proportions (redetonate)', expanded: false });
     nShape.addBinding(state.nuclear, 'mushroomHeightScale', {
-        min: 0.25, max: 3, step: 0.05, label: 'mushroom height',
+        min: 0.25, max: 3, step: 0.05, label: 'mushroom height ×',
     });
     nShape.addBinding(state.nuclear, 'columnHeightScale', {
-        min: 0.25, max: 3, step: 0.05, label: 'column height',
+        min: 0.25, max: 3, step: 0.05, label: 'column height ×',
     });
     const nCols = nukeFolder.addFolder({ title: 'Colours (redetonate)', expanded: false });
     nCols.addBinding(state.nuclear, 'fireColorStart', { label: 'fire start' });
     nCols.addBinding(state.nuclear, 'fireColorEnd', { label: 'fire end' });
     nCols.addBinding(state.nuclear, 'smokeColorStart', { label: 'smoke start' });
     nCols.addBinding(state.nuclear, 'smokeColorEnd', { label: 'smoke end' });
-    // Scenario-system bindings. The Nuclear sub-folder drives the wasteland
-    // ellipse shape + duration for new strikes (live changes only affect the
-    // NEXT detonation; in-flight scenarios keep their captured payload).
+    // Reset — restores baseline + wind + sub-effects + shape + colours from
+    // DEFAULT_NUCLEAR_CONFIG. Does NOT touch the launcher's per-strike
+    // sliders (Blast radius / Fallout stretch / Fallout duration) — those
+    // are user-facing scenario inputs, not artist calibration knobs.
+    nukeFolder.addButton({ title: 'Reset' }).on('click', () => {
+        const live = DEFAULT_NUCLEAR_CONFIG.live;
+        const det = DEFAULT_NUCLEAR_CONFIG.detonate;
+        state.nuclear.worldScale = live.worldScale;
+        state.nuclear.timeScale = live.timeScale;
+        state.nuclear.spriteScale = live.spriteScale;
+        state.nuclear.windStrength = live.windStrength;
+        state.nuclear.windDelay = live.windDelay;
+        state.nuclear.windRamp = live.windRamp;
+        state.nuclear.windJitter = live.windJitter;
+        state.nuclear.windDrag = live.windDrag;
+        state.nuclear.enableFire = det.enables.fire ?? true;
+        state.nuclear.enableSmoke = det.enables.smoke ?? true;
+        state.nuclear.enableMushroom = det.enables.mushroom ?? true;
+        state.nuclear.enableMushroomFire = det.enables.mushroomFire ?? true;
+        state.nuclear.enableColumnFire = det.enables.columnFire ?? true;
+        state.nuclear.enableColumnSmoke = det.enables.columnSmoke ?? true;
+        state.nuclear.mushroomHeightScale = det.mushroomHeightScale;
+        state.nuclear.columnHeightScale = det.columnHeightScale;
+        state.nuclear.fireColorStart = hexNumberToCss(det.fireColorStart);
+        state.nuclear.fireColorEnd = hexNumberToCss(det.fireColorEnd);
+        state.nuclear.smokeColorStart = hexNumberToCss(det.smokeColorStart);
+        state.nuclear.smokeColorEnd = hexNumberToCss(det.smokeColorEnd);
+        pane.refresh();
+    });
+    // Scenario-system bindings. Per-scenario shape/duration knobs moved to
+    // the floating Scenarios launcher (#scenarios-launcher); the folder here
+    // keeps the global decay-exponent slider + wasteland look palette.
     // Wasteland uniforms are pushed every frame from scene-graph.applyMaterials.
     const scnFolder = pane.addFolder({ title: 'Scenarios', expanded: false });
-    const scnNuke = scnFolder.addFolder({ title: 'Nuclear', expanded: false });
-    scnNuke.addBinding(state.scenarios.nuclear, 'radiusKm', {
-        min: 50, max: 2000, step: 10, label: 'radius (km)',
-    });
-    scnNuke.addBinding(state.scenarios.nuclear, 'stretchKm', {
-        min: 0, max: 3000, step: 10, label: 'stretch (km)',
-    });
-    scnNuke.addBinding(state.scenarios.nuclear, 'durationDays', {
-        min: 2, max: 120, step: 1, label: 'duration (days)',
-    });
     scnFolder.addBinding(state.scenarios, 'decayExponent', {
         min: 0.5, max: 6, step: 0.05, label: 'decay exponent',
     });

@@ -2,8 +2,11 @@
  * Composes the per-ecoregion colour palette from three knobs the user
  * can tune in Tweakpane:
  *
- *   - `biomePalette[15]`  — 14 hand-picked biome colours (+ slot 0
- *                           fallback). Already exists in defaults.ts.
+ *   - `biomePalette[16]`  — 14 hand-picked biome colours (+ slot 0
+ *                           fallback + slot 15 synthetic ice for the
+ *                           climate-scenario override path; the eco
+ *                           palette ignores slot 15). Already exists in
+ *                           defaults.ts.
  *   - `realmTint[8]`      — 8 HSV deltas, one per realm. Defaults are
  *                           neutral (no tint) so existing visuals match
  *                           the legacy 14-biome look out of the box.

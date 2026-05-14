@@ -27,16 +27,21 @@
  */
 
 import type { Scenario, ScenarioContext, ScenarioKindHandler } from '../types.js';
+import { DEFAULT_NUCLEAR_CONFIG } from './NuclearScenario.config.js';
 
 export const NuclearScenario: ScenarioKindHandler<'nuclear'> = {
+  hasDestructionCensus: true,
+
   onStart(scn: Scenario<'nuclear'>, ctx: ScenarioContext): void {
-    const { latDeg, lonDeg, radiusKm, stretchKm } = scn.payload;
+    const { latDeg, lonDeg, radiusKm, stretchKm, decayMode } = scn.payload;
 
     // 1) Single terrain sample — feeds blast altitude + smoke drift below.
     const terrain = ctx.sampleTerrainAt(latDeg, lonDeg);
 
     // 2) Visual blast at the surface, with elevation lift + wind drift.
-    ctx.detonateAt(latDeg, lonDeg, terrain);
+    //    The render layer scales the fireball by `radiusKm` relative to
+    //    its calibrated reference radius — see BlastSystem.detonateAt.
+    ctx.detonateAt(latDeg, lonDeg, terrain, radiusKm);
 
     // 3) Freeze the wind bearing onto the payload.
     // Bearing convention: 0 = blowing toward north, 90 = east. `u` is
@@ -52,24 +57,37 @@ export const NuclearScenario: ScenarioKindHandler<'nuclear'> = {
     scn.payload.windBearingDeg = bearingDeg;
 
     // 4) Paint the wasteland ellipse. The registry captures this as the
-    // scenario's peak stamp via the paint hook on ctx.
+    //    scenario's peak stamp via the paint hook on ctx. Scaled by the
+    //    config's killRadiusMultiplier so the urban-destruction footprint
+    //    (cities + highways sample this same texture) can be tuned wider
+    //    than the slider value without touching the fireball visual.
+    const killScale = DEFAULT_NUCLEAR_CONFIG.wasteland.killRadiusMultiplier;
     ctx.paintAttributeEllipse({
       attribute: 'wasteland',
       value: 1.0,
       centreLatDeg: latDeg,
       centreLonDeg: lonDeg,
-      radiusKm,
-      stretchKm,
+      radiusKm: radiusKm * killScale,
+      stretchKm: stretchKm * killScale,
       bearingDeg,
       falloff: 'smoothstep',
+      ...(decayMode ? { decayMode } : {}),
     });
   },
 
   onTick(_scn: Scenario<'nuclear'>, _progress01: number, _ctx: ScenarioContext): void {
-    // No per-frame work for v1. Decay is owned by the registry's composer.
+    // No per-frame work — decay is owned by the registry's composer.
   },
 
   onEnd(_scn: Scenario<'nuclear'>, _ctx: ScenarioContext): void {
-    // No teardown for v1. Stamp removal is handled by the registry.
+    // No teardown — stamp removal is handled by the registry.
+  },
+
+  getStrikePoints(scn: Scenario<'nuclear'>): readonly { latDeg: number; lonDeg: number }[] {
+    return [{ latDeg: scn.payload.latDeg, lonDeg: scn.payload.lonDeg }];
+  },
+
+  getStrikeProgress(_scn: Scenario<'nuclear'>): { fired: number; scheduled: number } {
+    return { fired: 1, scheduled: 1 };
   },
 };

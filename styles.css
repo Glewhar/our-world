@@ -57,6 +57,12 @@
   --slider-track-len: 140px;
   --slider-track-thk: 8px;
   --slider-wrap-w:    28px;
+
+  /* Left rail footprint (sea-level chip width incl. padding + border).
+     The top-right popovers use this to cap their width so they never
+     reach across the screen into the slider's column. Overridden at the
+     phone breakpoint where the slider shrinks. */
+  --rail-left: 100px;
 }
 
 
@@ -345,6 +351,16 @@ body {
   font-size: 9px; font-weight: 700; letter-spacing: 0.18em;
   color: var(--text-mute);
 }
+#season-icon {
+  flex: 0 0 auto;
+  width: 16px; height: 40px;
+  display: block;
+  overflow: visible;
+}
+#season-sun {
+  transition: cy 0.2s ease-out;
+  filter: drop-shadow(0 0 3px rgba(245, 184, 64, 0.55));
+}
 
 
 /* -------------------------------------------------------------------------
@@ -372,48 +388,166 @@ body {
   gap: var(--gap);
   pointer-events: auto;
 }
-#explode-controls {
-  display: flex;
-  align-items: center;
-  gap: var(--gap);
-}
-#explode-button {
-  padding: 0 14px;
-  height: 36px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-}
-#region-select {
-  height: 36px;
-  padding: 0 28px 0 12px;
-  appearance: none;
-  -webkit-appearance: none;
-  background-image:
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%23e6ecf6' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
-  background-color: var(--glass-bg);
-}
-#region-select:focus { outline: none; border-color: var(--glass-border-strong); }
-#region-select option { background: #0a0e16; color: var(--text); }
 
-/* Popover: anchored under the chip row, clamped to the rail or
-   viewport-minus-gutters. Lives as a child of .area.top-right so it
-   physically cannot escape the grid cell. */
-#settings-panel {
-  position: absolute;
-  top: calc(100% + var(--gap));
-  right: 0;
-  width: min(280px, calc(100vw - 2 * var(--gutter)));
+/* Popovers stack inline below the chip row inside .area.top-right. Width is
+   capped so the panel never crosses the sea-level rail on the left, and the
+   collapsed state has zero height + transparent chrome so it doesn't claim
+   any layout space when closed. box-sizing: border-box so padding+border are
+   counted in the width — otherwise the 28px padding pushes the panel left of
+   the viewport on narrow screens. The active-scenario stack (#scenario-stack)
+   lives in .area.middle-right, the row below, so an open launcher stacks
+   neatly above the toasts instead of overlapping them. */
+#settings-panel,
+#scenarios-launcher {
+  box-sizing: border-box;
+  width: min(320px, calc(100vw - 2 * var(--gutter) - var(--rail-left, 76px) - var(--gap)));
   font-size: 12px;
+  max-height: 0;
   opacity: 0;
-  pointer-events: none;
-  transform: translateY(-6px);
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  overflow: hidden;
+  padding: 0 14px;
+  border-color: transparent;
+  /* max-height intentionally NOT transitioned — Chromium fails to interpolate
+     it from 0 to a non-zero value here (the element gets stuck at 0). */
+  transition: opacity 0.15s ease, padding 0.2s ease, border-color 0.2s ease;
 }
-#settings-panel.open { opacity: 1; pointer-events: auto; transform: translateY(0); }
+#settings-panel { width: min(280px, calc(100vw - 2 * var(--gutter) - var(--rail-left, 76px) - var(--gap))); }
+#settings-panel.open,
+#scenarios-launcher.open {
+  /* 70dvh leaves the sea-level rail + tweakpane chip visible in the
+     bottom rows of the grid even when every scenario card is expanded.
+     Internal `overflow-y: auto` handles content longer than that. */
+  max-height: 70dvh;
+  opacity: 1;
+  padding: 12px 14px;
+  border-color: var(--glass-border-color);
+  overflow-y: auto;
+}
+#scenarios-launcher h3 {
+  margin: 0 0 10px 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: var(--label-letter);
+  text-transform: uppercase;
+  color: rgba(230, 236, 246, 0.85);
+}
+.scenario-launcher-row {
+  border-top: 1px solid var(--glass-border-color);
+  padding: 8px 0 4px 0;
+}
+.scenario-launcher-row:first-of-type { border-top: 0; padding-top: 0; }
+.scenario-launcher-row-header {
+  display: grid;
+  grid-template-columns: 18px 1fr 14px;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 0;
+}
+.scenario-launcher-row-icon {
+  font-size: 14px; line-height: 1; text-align: center;
+  color: #ffd9a0;
+}
+.scenario-launcher-row-title {
+  font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 11px;
+  color: var(--text);
+}
+.scenario-launcher-row-caret {
+  font-size: 10px;
+  color: var(--text-mute);
+  text-align: center;
+  transition: transform 0.15s ease;
+}
+.scenario-launcher-row.expanded .scenario-launcher-row-caret { transform: rotate(90deg); }
+.scenario-launcher-row-body {
+  max-height: 0; opacity: 0;
+  padding: 0;
+  overflow: hidden;
+  display: flex; flex-direction: column; gap: 6px;
+  /* max-height transition omitted — see #scenarios-launcher comment. */
+  transition: opacity 0.18s ease, padding 0.18s ease;
+}
+.scenario-launcher-row.expanded .scenario-launcher-row-body {
+  max-height: 360px; opacity: 1; padding: 6px 0 8px 0;
+}
+.scenario-launcher-field {
+  display: flex; flex-direction: column; gap: 2px;
+}
+.scenario-launcher-field-label {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(230, 236, 246, 0.7);
+}
+.scenario-launcher-field-value {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.scenario-launcher-field input[type='range'] {
+  appearance: none; -webkit-appearance: none;
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: var(--r-pill);
+  outline: none;
+  cursor: pointer;
+}
+.scenario-launcher-field input[type='range']::-webkit-slider-thumb {
+  appearance: none; -webkit-appearance: none;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  box-shadow: 0 0 6px rgba(127, 182, 255, 0.55);
+}
+.scenario-launcher-field input[type='range']::-moz-range-thumb {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+.scenario-launcher-field select {
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 8px;
+  background: var(--glass-bg);
+  border: var(--glass-border);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+}
+.scenario-launcher-field select option { background: #0a0e16; color: var(--text); }
+.scenario-launcher-launch {
+  align-self: stretch;
+  margin-top: 4px;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+.scenario-launcher-launch:hover:not(:disabled) { background: rgba(255, 255, 255, 0.2); }
+.scenario-launcher-launch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 #settings-panel h3 {
   margin: 0 0 10px 0;
   font-size: 10px;
@@ -489,10 +623,8 @@ body {
 
 
 /* -------------------------------------------------------------------------
-   6d. Middle-left — temperature + sea-level sliders
-   The two sliders only differ in their --track-gradient and --thumb-color.
+   6d. Middle-left — sea-level slider
    ------------------------------------------------------------------------- */
-#season-control,
 #sealevel-control {
   display: flex;
   flex-direction: column;
@@ -501,19 +633,10 @@ body {
   padding: 6px 10px;
   width: 76px;
   --thumb-color: var(--text);
-}
-#season-control {
-  --track-gradient: linear-gradient(
-    to right,
-    #4ea8ff 0%, #6fb6ff 22%, rgba(230, 236, 246, 0.35) 50%, #ff8a5a 78%, #ff4d3d 100%);
-  --thumb-color: var(--season-color, var(--text));
-}
-#sealevel-control {
   --track-gradient: linear-gradient(
     to right,
     #d4b885 0%, #c9b186 22%, rgba(230, 236, 246, 0.35) 50%, #4ea8ff 78%, #1a3a6b 100%);
 }
-#season-readout,
 #sealevel-readout {
   font-size: 12px;
   font-weight: 600;
@@ -523,8 +646,6 @@ body {
   min-height: 14px;
   color: var(--text);
 }
-#season-readout { color: var(--season-color, var(--text)); transition: color 0.15s ease; }
-#season-label,
 #sealevel-label {
   font-size: 9px; font-weight: 700;
   letter-spacing: 0.18em;
@@ -607,13 +728,38 @@ body {
   display: flex; flex-direction: column; gap: 3px;
   font-size: 11px; line-height: 1.5;
   color: rgba(230, 236, 246, 0.75);
-  transition: max-height 0.18s ease, opacity 0.18s ease, padding-bottom 0.18s ease;
+  /* max-height transition omitted — see #scenarios-launcher comment. */
+  transition: opacity 0.18s ease, padding-bottom 0.18s ease;
   overflow: hidden;
 }
 .scenario-card.expanded .scenario-card-body {
-  max-height: 160px; opacity: 1; padding-bottom: 10px;
+  max-height: 480px; opacity: 1; padding-bottom: 10px;
+  overflow-y: auto;
 }
 .scenario-card-row { font-variant-numeric: tabular-nums; }
+.scenario-card-census {
+  width: 100%;
+  margin-top: 6px;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+}
+.scenario-card-census th {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  text-align: left;
+  padding: 2px 4px;
+  border-bottom: 1px solid var(--glass-border-color);
+}
+.scenario-card-census th:last-child { text-align: right; }
+.scenario-card-census td {
+  padding: 2px 4px;
+  color: rgba(230, 236, 246, 0.85);
+}
+.scenario-card-census td:last-child { text-align: right; }
 .scenario-card-stop {
   align-self: flex-start;
   margin-top: 6px;
@@ -779,7 +925,7 @@ body {
   #tweakpane-host { width: 260px; }
 }
 
-/* Phone (<640 px): shrink sliders, time chip; hide Tweakpane and Explode label */
+/* Phone (<640 px): shrink sliders, time chip; hide Tweakpane */
 @media (max-width: 639px) {
   :root {
     --gutter: 10px;
@@ -787,11 +933,8 @@ body {
     --slider-track-thk: 6px;
     --slider-wrap-w:    20px;
   }
-  #season-control,
   #sealevel-control { width: 52px; padding: 4px 6px; }
-  #season-label,
   #sealevel-label   { font-size: 8px; letter-spacing: 0.14em; }
-  #season-readout,
   #sealevel-readout { font-size: 10px; }
 
   #time-control     { padding: 4px 10px 4px 4px; gap: 8px; }
@@ -800,9 +943,16 @@ body {
   #time-readout     { font-size: 14px; }
   #date-readout     { font-size: 8px; letter-spacing: 0.14em; }
   #time-readout-wrap { min-width: 44px; }
+  #season-icon       { width: 12px; height: 30px; }
 
-  #explode-button .explode-label { display: none; }
-  #explode-button { padding: 0 10px; }
+  :root { --rail-left: 68px; }
+  .scenario-launcher-launch { min-height: 44px; }
+  .scenario-launcher-field input[type='range']::-webkit-slider-thumb {
+    width: 20px; height: 20px;
+  }
+  .scenario-launcher-field input[type='range']::-moz-range-thumb {
+    width: 20px; height: 20px;
+  }
 
   #scenario-stack   { width: min(220px, 60vw); }
 

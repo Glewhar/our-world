@@ -51,10 +51,11 @@
  */
 import * as THREE from 'three';
 import { buildEcoregionPalette, } from './ecoregionPalette.js';
+import { PALETTE_AT_GLSL } from './paletteAt.glsl.js';
 import { source as healpixGlsl } from './shaders/healpix.glsl.js';
 const TEX_WIDTH = 4096;
 const TEX_HEIGHT = 2048;
-const LEGACY_PALETTE_SIZE = 15;
+const LEGACY_PALETTE_SIZE = 16;
 const FULLSCREEN_VERT = /* glsl */ `
 out vec2 vEquirectUv;
 void main() {
@@ -118,7 +119,8 @@ void main() {
   fragColor = vec4(lohi.r, lohi.g, 0.0, 1.0);
 }
 `;
-// Legacy horizontal blur — palette-uniform path with 15 entries.
+// Legacy horizontal blur — palette-uniform path with 16 entries (slot 0
+// fallback, 1..14 TEOW biomes, 15 synthetic ice for override path only).
 const H_BLUR_FRAG_LEGACY = /* glsl */ `
 precision highp float;
 precision highp int;
@@ -133,25 +135,7 @@ uniform int uKernelHalf;
 uniform float uSigma;
 uniform int uTexWidth;
 uniform int uTexHeight;
-
-vec3 paletteAt(int idx) {
-  if (idx <= 0)  return uPalette[0];
-  if (idx == 1)  return uPalette[1];
-  if (idx == 2)  return uPalette[2];
-  if (idx == 3)  return uPalette[3];
-  if (idx == 4)  return uPalette[4];
-  if (idx == 5)  return uPalette[5];
-  if (idx == 6)  return uPalette[6];
-  if (idx == 7)  return uPalette[7];
-  if (idx == 8)  return uPalette[8];
-  if (idx == 9)  return uPalette[9];
-  if (idx == 10) return uPalette[10];
-  if (idx == 11) return uPalette[11];
-  if (idx == 12) return uPalette[12];
-  if (idx == 13) return uPalette[13];
-  return uPalette[14];
-}
-
+${PALETTE_AT_GLSL}
 void main() {
   ivec2 base = ivec2(vEquirectUv * vec2(float(uTexWidth), float(uTexHeight)));
   int kH = uKernelHalf;
@@ -167,6 +151,10 @@ void main() {
     float idxF = texelFetch(uIndexEquirect, ivec2(u, base.y), 0).r;
     int idx = int(idxF * 255.0 + 0.5);
     if (idx < 0) idx = 0;
+    // Baseline biome ids only run 0..14; synthetic ice id 15 lives in
+    // the override path, never in attribute_static.G. Clamping an
+    // out-of-range tap to 15 would bleed near-white into every blurred
+    // fragment whose kernel touched an undefined neighbour.
     if (idx > 14) idx = 14;
     float w = (uSigma > 0.0)
       ? exp(-float(i * i) * invTwoSig2)
@@ -460,8 +448,8 @@ export class BiomeColorEquirect {
      * Run the blur passes if dirty. Called once per frame from the scene
      * graph; cheap when nothing changed.
      *
-     * `palette` is the 14-biome palette (15 entries with the no-data
-     * fallback). In ecoregion mode `eco` carries the realm-tint table and
+     * `palette` is the 16-entry biome palette (slot 0 fallback, 1..14 TEOW
+     * biomes, 15 override-only ice). In ecoregion mode `eco` carries the realm-tint table and
      * jitter strength used to compose the 826-entry palette texture; the
      * legacy biome colours still drive the per-ecoregion HSV bases. In
      * legacy mode `eco` is ignored.
@@ -509,7 +497,7 @@ export class BiomeColorEquirect {
             this.cachedJitter = eco.ecoregionJitter;
         }
         else {
-            // Legacy path: push the 15-entry vec3 palette directly.
+            // Legacy path: push the 16-entry vec3 palette directly.
             const pUni = this.hMat.uniforms['uPalette'].value;
             for (let i = 0; i < LEGACY_PALETTE_SIZE; i++) {
                 const c = palette[i];

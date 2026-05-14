@@ -264,8 +264,18 @@ export async function createWorldRuntime(
     getEcoregionTexture: () => (ecoregion ? ecoregion.getTexture() : null),
     getEcoregionLookup: () => (ecoregion ? ecoregion.lookup : null),
 
+    registerDynamicR8Attribute: (key) => attributes.registerDynamicR8Attribute(key),
+    getDynamicAttributeTexture: (key) => attributes.getDynamicAttributeTexture(key),
+    applyDynamicAttributeFrame: (key, cells, values) =>
+      attributes.applyDynamicAttributeFrame(key, cells, values),
     getWastelandTexture: () => attributes.getWastelandTexture(),
     applyWastelandFrame: (cells, values) => attributes.applyWastelandFrame(cells, values),
+
+    getBiomeOverrideTexture: () => attributes.getBiomeOverrideTexture(),
+    getBiomeOverrideStampTexture: () => attributes.getBiomeOverrideStampTexture(),
+    bakeBiomeOverrideStamps: (input) => attributes.bakeBiomeOverrideStamps(input),
+    countBiomesGlobal: () => attributes.countBiomesGlobal(),
+    getBaselineClass: (ipix) => attributes.getBaselineClass(ipix),
 
     getCities: () => cities,
     getRoads: () => roads,

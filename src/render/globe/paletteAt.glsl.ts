@@ -1,15 +1,15 @@
 /**
- * Shared GLSL `paletteAt(int idx)` function for the legacy 15-entry biome
- * palette. Both BiomeColorEquirect's horizontal-blur pass and LandMaterial's
- * fragment shader concatenate this string into their source so they look up
- * biome colours the same way.
+ * Shared GLSL `paletteAt(int idx)` function for the 16-entry biome
+ * palette. BiomeColorEquirect's horizontal-blur pass and
+ * BiomeOverrideEquirect's index-bake pass concatenate this string into
+ * their source so they look up biome colours the same way.
  *
- * Each consuming shader must declare its own `uniform vec3 uPalette[15];`
- * line — this file owns only the function body. Keeping the uniform decl
- * at the call site means callers can size the array themselves if needed
- * (currently 15 in both call sites).
+ * Each consuming shader must declare its own `uniform vec3 uPalette[16];`
+ * line — this file owns only the function body. Slots: 0 = fallback,
+ * 1..14 = TEOW biomes, 15 = synthetic ice/glacier used by climate-scenario
+ * overrides.
  *
- * The legacy unrolled if-chain dodges the GPU subset that disallows dynamic
+ * The unrolled if-chain dodges the GPU subset that disallows dynamic
  * uniform-array indexing in fragment shaders.
  */
 
@@ -29,6 +29,7 @@ vec3 paletteAt(int idx) {
   if (idx == 11) return uPalette[11];
   if (idx == 12) return uPalette[12];
   if (idx == 13) return uPalette[13];
-  return uPalette[14];
+  if (idx == 14) return uPalette[14];
+  return uPalette[15];
 }
 `;

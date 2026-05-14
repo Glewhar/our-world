@@ -31,6 +31,13 @@
             <div id="time-readout">12:00</div>
             <div id="date-readout">JAN 2067</div>
           </div>
+          <svg id="season-icon" viewBox="0 0 16 40" aria-label="Sub-solar latitude">
+            <line x1="8" y1="4" x2="8" y2="36" stroke="rgba(230,236,246,0.55)" stroke-width="1" stroke-linecap="round" />
+            <line x1="5" y1="10" x2="11" y2="10" stroke="rgba(230,236,246,0.55)" stroke-width="1" stroke-linecap="round" />
+            <line x1="3" y1="20" x2="13" y2="20" stroke="rgba(230,236,246,0.55)" stroke-width="1" stroke-linecap="round" />
+            <line x1="5" y1="30" x2="11" y2="30" stroke="rgba(230,236,246,0.55)" stroke-width="1" stroke-linecap="round" />
+            <circle id="season-sun" cx="8" cy="20" r="3" fill="#f5b840" />
+          </svg>
         </div>
       </div>
 
@@ -40,18 +47,12 @@
 
       <div class="area top-right">
         <div id="top-right-chips">
-          <div id="explode-controls">
-            <select id="region-select" class="chip is-button" aria-label="Detonation region">
-              <option value="USA">USA</option>
-              <option value="Europe">Europe</option>
-              <option value="China">China</option>
-            </select>
-            <button id="explode-button" class="chip is-button" type="button" aria-label="Detonate in selected region">
-              <span aria-hidden="true">💥</span>
-              <span class="explode-label">Explode</span>
-            </button>
-          </div>
+          <button id="scenarios-toggle" class="chip is-button is-square" type="button" aria-label="Scenarios">⚡</button>
           <button id="settings-toggle" class="chip is-button is-square" type="button" aria-label="Quality settings">⚙</button>
+        </div>
+        <div id="scenarios-launcher" class="chip is-panel">
+          <h3>Scenarios</h3>
+          <!-- Rows injected by scenarios-launcher.ts -->
         </div>
         <div id="settings-panel" class="chip is-panel">
           <h3>Quality</h3>
@@ -86,13 +87,6 @@
       </div>
 
       <div class="area middle-left">
-        <div id="season-control" class="chip is-panel">
-          <div id="season-readout">0.0°</div>
-          <div id="season-slider-wrap" class="slider-vert-wrap">
-            <input id="season-slider" class="slider-vert" type="range" min="-30" max="30" step="0.5" value="0" aria-label="Season temperature offset" />
-          </div>
-          <div id="season-label">TEMPERATURE</div>
-        </div>
         <div id="sealevel-control" class="chip is-panel">
           <div id="sealevel-readout">0 m</div>
           <div id="sealevel-slider-wrap" class="slider-vert-wrap">

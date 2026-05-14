@@ -15,12 +15,9 @@
  *   - `getElevationMetersTexture()` returns the R16F continuous-elevation
  *     texture (used by the vertex shader for displacement).
  *
- * Phase 2's globe shader does NOT sample these (palette + flat shading is the
- * exit-gate look). They're loaded to lock the file format end-to-end so Phase
- * 3 can plug in attribute lerps without re-touching loaders. C2 attributes
- * not present in the bake (vegetation, albedo, population_density,
- * ocean_health) return 0 from `getValue` and a shared zero texture from
- * `getTexture` — Phase 4's sim will populate them.
+ * C2 attributes not present in the bake (vegetation, albedo,
+ * population_density, ocean_health) return 0 from `getValue` and a shared
+ * zero texture from `getTexture` — the sim layer populates them at runtime.
  */
 
 import * as THREE from 'three';
@@ -55,7 +52,12 @@ function clampByte(v: number): number {
   return v | 0;
 }
 
-type ChannelSource = 'static' | 'climate' | 'dynamic' | 'wasteland';
+type ChannelSource =
+  | 'static'
+  | 'climate'
+  | 'dynamic'
+  | 'biomeOverride'
+  | 'biomeOverrideStamp';
 
 type ChannelSpec = {
   source: ChannelSource;
@@ -112,13 +114,37 @@ export class AttributeTextures {
   private readonly dynamicBytes: Uint8Array;
   private readonly elevMetersBytes: Uint8Array;
   /**
-   * Wasteland attribute byte-buffer (one R8 per HEALPix cell). Owned by
-   * this class for symmetry with the other attribute storage, but writes
-   * come from the main-thread `ScenarioRegistry` (NOT the sim worker) —
-   * scenarios compose stamps on the fly and call `applyWastelandFrame`.
-   * Zero on a fresh bake; never persisted.
+   * One R8 byte-buffer per registered dynamic attribute key (one byte
+   * per HEALPix cell). Writes come from the main-thread
+   * `ScenarioRegistry` — scenarios compose stamps on the fly and the
+   * registry calls `applyDynamicAttributeFrame(key, …)`. The companion
+   * `DataTexture`s live in `dynamicAttrTextures`. Zero on a fresh
+   * bake; never persisted. `'wasteland'` is pre-registered in the
+   * constructor; further keys plug in via `registerDynamicR8Attribute`.
    */
-  private readonly wastelandBytes: Uint8Array;
+  private readonly dynamicAttrBytes: Map<string, Uint8Array> = new Map();
+  private readonly dynamicAttrTextures: Map<string, THREE.DataTexture> = new Map();
+  /**
+   * Biome-override class buffer (RG8, 2 bytes per cell). Two slots so
+   * two concurrent climate scenarios can co-paint the planet:
+   *   R = class id for slot 0 (first active climate scenario)
+   *   G = class id for slot 1 (second active climate scenario)
+   * Byte value 0 = no override in that slot; 1..14 = TEOW biome.
+   * Baked ONCE at climate-scenario start/end by
+   * `bakeBiomeOverrideStamps`; never written per frame.
+   */
+  private readonly biomeOverrideClassBytes: Uint8Array;
+  /**
+   * Biome-override stamp buffer (RGBA8, 4 bytes per cell):
+   *   R = slot 0 weight (multiplied by `uClimateEnvelope` per fragment)
+   *   G = slot 0 per-cell onset `tStart01 × 255`
+   *   B = slot 1 weight (multiplied by `uClimateEnvelopeB` per fragment)
+   *   A = slot 1 per-cell onset `tStart01 × 255`
+   * The land shader's two slots crossfade independently; each cell can
+   * carry an override in 0, 1, or 2 slots simultaneously. Baked once
+   * alongside the class buffer; never written per frame.
+   */
+  private readonly biomeOverrideStampBytes: Uint8Array;
   private readonly textures = new Map<
     ChannelSource | 'zero' | 'elevMeters',
     THREE.DataTexture
@@ -136,14 +162,108 @@ export class AttributeTextures {
     this.climateBytes = new Uint8Array(climateBuf);
     this.dynamicBytes = new Uint8Array(dynamicBuf);
     this.elevMetersBytes = new Uint8Array(elevMetersBuf);
-    this.wastelandBytes = new Uint8Array(12 * nside * nside);
+    // 'wasteland' is the historical first dynamic R8 attribute. Pre-
+    // registered here so existing render layers (Land / Cities /
+    // Highways / VolumetricCloudPass) can resolve it via the same
+    // generic path used by future kinds.
+    this.registerDynamicR8Attribute('wasteland');
+    // RG8 class buffer — 2 bytes per cell (R = slot 0 class, G = slot 1 class).
+    this.biomeOverrideClassBytes = new Uint8Array(12 * nside * nside * 2);
+    // RGBA8 stamp buffer — 4 bytes per cell
+    // (R = slot 0 weight, G = slot 0 tStart, B = slot 1 weight, A = slot 1 tStart).
+    this.biomeOverrideStampBytes = new Uint8Array(12 * nside * nside * 4);
+  }
+
+  /**
+   * Register a new dynamic R8 attribute by key. Allocates one byte per
+   * HEALPix cell + a companion R8 `DataTexture`. Idempotent —
+   * re-registering an existing key is a no-op so callers can register
+   * at boot without coordinating order. Pre-called for `'wasteland'`
+   * in the constructor; scenario kinds that need their own dynamic
+   * field (e.g. `'infectionLevel'`, `'ashDeposit'`) call this at boot
+   * and wire a sink in the registry.
+   *
+   * Lives on a dedicated texture per key because the static `dynamic`
+   * slot (fire/ice/infection/pollution) is fully packed; new kinds
+   * would require a new texture either way, and a single-channel R8
+   * is the smallest the GPU side needs.
+   */
+  registerDynamicR8Attribute(key: string): void {
+    if (this.dynamicAttrBytes.has(key)) return;
+    const bytes = new Uint8Array(12 * this.nside * this.nside);
+    this.dynamicAttrBytes.set(key, bytes);
+    const w = 4 * this.nside;
+    const h = 3 * this.nside;
+    const data = bytes as Uint8Array<ArrayBuffer>;
+    const tex = new THREE.DataTexture(data, w, h, THREE.RedFormat, THREE.UnsignedByteType);
+    tex.minFilter = THREE.NearestFilter;
+    tex.magFilter = THREE.NearestFilter;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.needsUpdate = true;
+    this.dynamicAttrTextures.set(key, tex);
+  }
+
+  /**
+   * R8 texture for a registered dynamic attribute, one byte per
+   * HEALPix cell scaled `byte / 255` ∈ [0, 1]. Driven by the
+   * ScenarioRegistry's per-sink frame composer — every active
+   * scenario's stamp targeting this key is summed and clamped each
+   * frame; cells outside any active stamp stay at 0. Throws when
+   * `key` was never registered.
+   */
+  getDynamicAttributeTexture(key: string): THREE.DataTexture {
+    const tex = this.dynamicAttrTextures.get(key);
+    if (!tex) {
+      throw new Error(`AttributeTextures: dynamic R8 attribute '${key}' not registered`);
+    }
+    return tex;
+  }
+
+  /**
+   * Push a frame of values for a registered dynamic R8 attribute.
+   * `cells` and `values` line up index-for-index; `values` are floats
+   * in [0, 1]. Cells not in the list keep whatever they already had —
+   * the registry includes cells transitioning back to zero so the
+   * texture clears them.
+   *
+   * Full-buffer upload via `needsUpdate = true` (no `texSubImage2D`
+   * in Three.js's DataTexture API). `tex.needsUpdate` flips strictly
+   * when at least one byte's value actually changed; smooth-decay
+   * frames where no byte crosses the round() step skip the upload.
+   */
+  applyDynamicAttributeFrame(key: string, cells: Uint32Array, values: Float32Array): void {
+    if (cells.length !== values.length) return;
+    if (cells.length === 0) return;
+    const bytes = this.dynamicAttrBytes.get(key);
+    if (!bytes) return;
+    let changed = false;
+    for (let i = 0; i < cells.length; i++) {
+      const ipix = cells[i]!;
+      if (ipix >= bytes.length) continue;
+      const next = clampByte(Math.round(values[i]! * 255));
+      if (bytes[ipix] !== next) {
+        bytes[ipix] = next;
+        changed = true;
+      }
+    }
+    if (changed) {
+      const tex = this.dynamicAttrTextures.get(key);
+      if (tex) tex.needsUpdate = true;
+    }
+  }
+
+  /** Read a dynamic R8 attribute byte at a cell (0..255). Debug helper. */
+  getDynamicAttributeByte(key: string, ipix: number): number {
+    const bytes = this.dynamicAttrBytes.get(key);
+    if (!bytes) return 0;
+    return bytes[ipix] ?? 0;
   }
 
   /**
    * Return the R16F continuous-elevation texture in metres. One value per
    * HEALPix cell, half-float; consumed by the unified globe shader's
-   * vertex displacement path. NearestFilter — bilinear smoothing is a
-   * v1.1 follow-up.
+   * vertex displacement path. NearestFilter.
    */
   getElevationMetersTexture(): THREE.DataTexture {
     const cached = this.textures.get('elevMeters');
@@ -166,71 +286,183 @@ export class AttributeTextures {
   }
 
   getTexture(attr: AttributeKey): THREE.DataTexture {
-    if (attr === 'wasteland') return this.getWastelandTexture();
+    if (attr === 'wasteland') return this.getDynamicAttributeTexture('wasteland');
     const spec = CHANNEL_MAP[attr];
     if (!spec) return this._zeroTexture();
     return this._sourceTexture(spec.source);
   }
 
   /**
-   * R8 texture, one byte per HEALPix cell, value scaled `byte / 255` ∈
-   * [0, 1]. Driven by the ScenarioRegistry's frame composer — every active
-   * scenario's stamp is summed and clamped each frame; cells outside any
-   * active stamp stay at 0.
-   *
-   * Lives on a dedicated texture because the existing `dynamic` slot
-   * (fire/ice/infection/pollution) is fully packed; adding a fifth channel
-   * would require a new texture either way, and a single-channel R8 is
-   * the smallest the GPU side needs.
+   * Back-compat alias for `getDynamicAttributeTexture('wasteland')`.
+   * Render layers (Land / Cities / Highways / VolumetricCloudPass)
+   * bind by the typed name.
    */
   getWastelandTexture(): THREE.DataTexture {
-    const cached = this.textures.get('wasteland');
+    return this.getDynamicAttributeTexture('wasteland');
+  }
+
+  /** Back-compat alias for `applyDynamicAttributeFrame('wasteland', …)`. */
+  applyWastelandFrame(cells: Uint32Array, values: Float32Array): void {
+    this.applyDynamicAttributeFrame('wasteland', cells, values);
+  }
+
+  /** Back-compat alias for `getDynamicAttributeByte('wasteland', …)`. */
+  getWastelandByte(ipix: number): number {
+    return this.getDynamicAttributeByte('wasteland', ipix);
+  }
+
+  /**
+   * RG8 texture, two bytes per HEALPix cell:
+   *   R = slot 0 override class id (0 = no override; 1..14 = TEOW biome)
+   *   G = slot 1 override class id (same encoding)
+   * Each slot tracks one active climate scenario. Baked atomically by
+   * `bakeBiomeOverrideStamps`; companion to `getBiomeOverrideStampTexture`.
+   */
+  getBiomeOverrideTexture(): THREE.DataTexture {
+    const cached = this.textures.get('biomeOverride');
     if (cached) return cached;
     const w = 4 * this.nside;
     const h = 3 * this.nside;
-    const data = this.wastelandBytes as Uint8Array<ArrayBuffer>;
-    const tex = new THREE.DataTexture(data, w, h, THREE.RedFormat, THREE.UnsignedByteType);
+    const data = this.biomeOverrideClassBytes as Uint8Array<ArrayBuffer>;
+    const tex = new THREE.DataTexture(data, w, h, THREE.RGFormat, THREE.UnsignedByteType);
     tex.minFilter = THREE.NearestFilter;
     tex.magFilter = THREE.NearestFilter;
     tex.wrapS = THREE.ClampToEdgeWrapping;
     tex.wrapT = THREE.ClampToEdgeWrapping;
     tex.needsUpdate = true;
-    this.textures.set('wasteland', tex);
+    this.textures.set('biomeOverride', tex);
     return tex;
   }
 
   /**
-   * Push a frame of wasteland values from the ScenarioRegistry. `cells`
-   * and `values` line up index-for-index; `values` are floats in [0, 1].
-   * Cells not in the list keep whatever they already had — the registry
-   * is expected to include cells transitioning back to zero in the list
-   * so the texture clears them.
-   *
-   * Full-buffer upload via `needsUpdate = true` (no `texSubImage2D` in
-   * Three.js's DataTexture API). Cost: O(touched cells) for the byte
-   * write + one full buffer GPU push.
+   * RGBA8 texture, four bytes per HEALPix cell:
+   *   R = slot 0 stamp weight `round(weight × 255)`. Multiplied by
+   *       `uClimateEnvelope` to derive the slot 0 crossfade strength.
+   *   G = slot 0 onset time `round(tStart01 × 255)`. Per-cell remap so
+   *       vulnerable biomes start transforming early.
+   *   B = slot 1 stamp weight; multiplied by `uClimateEnvelopeB`.
+   *   A = slot 1 onset time.
+   * Static for each scenario's lifetime — no per-frame writes.
    */
-  applyWastelandFrame(cells: Uint32Array, values: Float32Array): void {
-    if (cells.length !== values.length) return;
-    let changed = false;
-    for (let i = 0; i < cells.length; i++) {
-      const ipix = cells[i]!;
-      if (ipix >= this.wastelandBytes.length) continue;
-      const next = clampByte(Math.round(values[i]! * 255));
-      if (this.wastelandBytes[ipix] !== next) {
-        this.wastelandBytes[ipix] = next;
-        changed = true;
+  getBiomeOverrideStampTexture(): THREE.DataTexture {
+    const cached = this.textures.get('biomeOverrideStamp');
+    if (cached) return cached;
+    const w = 4 * this.nside;
+    const h = 3 * this.nside;
+    const data = this.biomeOverrideStampBytes as Uint8Array<ArrayBuffer>;
+    const tex = new THREE.DataTexture(data, w, h, THREE.RGBAFormat, THREE.UnsignedByteType);
+    tex.minFilter = THREE.NearestFilter;
+    tex.magFilter = THREE.NearestFilter;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.needsUpdate = true;
+    this.textures.set('biomeOverrideStamp', tex);
+    return tex;
+  }
+
+  /**
+   * Bake the union of every active climate scenario's biome-override
+   * stamps into the two-slot class + stamp textures. Called by the
+   * registry at scenario start, end, and auto-repeat — NEVER per frame.
+   *
+   * The two slots are independent: slot 0 stamps write into class.R
+   * (channel byte 0) and stamp.R/G (weight + tStart bytes 0/1); slot 1
+   * stamps write into class.G (byte 1) and stamp.B/A (bytes 2/3). For
+   * each slot, the highest-weight stamp per cell wins its class id.
+   *
+   * Both slots are zeroed before either is written, so passing
+   * `{ slotA: [], slotB: [] }` clears the textures. One GPU upload per
+   * call regardless of stamp size.
+   */
+  bakeBiomeOverrideStamps(input: {
+    slotA: readonly {
+      cells: Uint32Array;
+      values: Float32Array;
+      biomeId: number;
+      tStart01s?: Float32Array;
+    }[];
+    slotB: readonly {
+      cells: Uint32Array;
+      values: Float32Array;
+      biomeId: number;
+      tStart01s?: Float32Array;
+    }[];
+  }): void {
+    this.biomeOverrideClassBytes.fill(0);
+    this.biomeOverrideStampBytes.fill(0);
+    this.bakeOverrideSlot(input.slotA, 0);
+    this.bakeOverrideSlot(input.slotB, 1);
+    const clsTex = this.textures.get('biomeOverride');
+    if (clsTex) clsTex.needsUpdate = true;
+    const stampTex = this.textures.get('biomeOverrideStamp');
+    if (stampTex) stampTex.needsUpdate = true;
+  }
+
+  private bakeOverrideSlot(
+    stamps: readonly {
+      cells: Uint32Array;
+      values: Float32Array;
+      biomeId: number;
+      tStart01s?: Float32Array;
+    }[],
+    slot: 0 | 1,
+  ): void {
+    const classStride = 2;
+    const stampStride = 4;
+    const classChannel = slot;                       // 0 = R, 1 = G
+    const weightChannel = slot === 0 ? 0 : 2;        // R or B
+    const tStartChannel = slot === 0 ? 1 : 3;        // G or A
+    const nCells = this.biomeOverrideClassBytes.length / classStride;
+    for (let s = 0; s < stamps.length; s++) {
+      const stamp = stamps[s]!;
+      const cells = stamp.cells;
+      const values = stamp.values;
+      const tStart01s = stamp.tStart01s ?? null;
+      const biomeId = stamp.biomeId & 0xff;
+      if (biomeId === 0) continue;
+      for (let i = 0; i < cells.length; i++) {
+        const ipix = cells[i]!;
+        if (ipix >= nCells) continue;
+        const v = values[i]!;
+        const byte = clampByte(Math.round(v * 255));
+        const stampIdx = ipix * stampStride;
+        if (byte > this.biomeOverrideStampBytes[stampIdx + weightChannel]!) {
+          this.biomeOverrideStampBytes[stampIdx + weightChannel] = byte;
+          this.biomeOverrideClassBytes[ipix * classStride + classChannel] = biomeId;
+          const tStart = tStart01s ? tStart01s[i]! : 0;
+          this.biomeOverrideStampBytes[stampIdx + tStartChannel] = clampByte(Math.round(tStart * 255));
+        }
       }
-    }
-    if (changed) {
-      const tex = this.textures.get('wasteland');
-      if (tex) tex.needsUpdate = true;
     }
   }
 
-  /** Read the wasteland byte at a cell (0..255). Debug helper. */
-  getWastelandByte(ipix: number): number {
-    return this.wastelandBytes[ipix] ?? 0;
+  /**
+   * Walk the static attribute buffer once and bin cells by their biome
+   * class (G channel, offset 1, stride 4). Returns a class-id → cell-count
+   * map. Used by the scenario registry to snapshot the baseline biome
+   * census at every climate-class scenario start so per-cell hysteresis
+   * flips can drive a live "Forest -3.2M km² / Desert +3.2M km²" readout.
+   */
+  countBiomesGlobal(): Record<number, number> {
+    const counts: Record<number, number> = {};
+    const buf = this.staticBytes;
+    const npix = buf.length >>> 2;
+    for (let i = 0; i < npix; i++) {
+      const cls = buf[i * 4 + 1]!;
+      counts[cls] = (counts[cls] ?? 0) + 1;
+    }
+    return counts;
+  }
+
+  /**
+   * Baseline biome class for a single cell (R-channel-style read of the
+   * G byte from the static attribute buffer). The scenario registry uses
+   * this per dirty cell during the override hysteresis to decide which
+   * class to restore a cell to when its intensity falls below 0.3.
+   */
+  getBaselineClass(ipix: number): number {
+    const idx = ipix * 4 + 1;
+    return this.staticBytes[idx] ?? 0;
   }
 
   /**

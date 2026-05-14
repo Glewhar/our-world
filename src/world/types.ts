@@ -346,19 +346,85 @@ export interface WorldRuntime {
   getEcoregionLookup(): EcoregionLookup | null;
 
   /**
-   * Wasteland R8 attribute texture (one byte per HEALPix cell, value
-   * normalized as `byte / 255` ∈ [0, 1]). Driven by the scenario registry
-   * on the main thread; zero everywhere on a fresh bake.
+   * Register a new dynamic R8 attribute by key. Allocates one byte
+   * per HEALPix cell + a companion R8 `DataTexture`; idempotent so
+   * callers can register at boot in any order. Pre-called for
+   * `'wasteland'`. Scenario kinds that need their own dynamic field
+   * plug in here before wiring a sink into the registry.
+   */
+  registerDynamicR8Attribute(key: string): void;
+
+  /**
+   * R8 attribute texture for a registered key, one byte per HEALPix
+   * cell normalized as `byte / 255` ∈ [0, 1]. Driven by the scenario
+   * registry's per-sink frame composer; zero everywhere on a fresh
+   * bake. Throws when `key` was never registered.
+   */
+  getDynamicAttributeTexture(key: string): THREE.DataTexture;
+
+  /**
+   * Push a frame for a registered dynamic R8 attribute. `cells` and
+   * `values` line up index-for-index; cells not in the list keep
+   * their prior value. The render layer doesn't call this — the
+   * scenario registry does, via a sink it gets from createWorldRuntime.
+   */
+  applyDynamicAttributeFrame(key: string, cells: Uint32Array, values: Float32Array): void;
+
+  /**
+   * Wasteland R8 attribute texture — back-compat alias for
+   * `getDynamicAttributeTexture('wasteland')`.
    */
   getWastelandTexture(): THREE.DataTexture;
 
   /**
-   * Push a wasteland-attribute frame produced by the scenario registry.
-   * `cells` and `values` line up index-for-index; cells not in the list
-   * keep their prior value. The render layer doesn't call this — the
-   * scenario registry does, via a sink it gets from createWorldRuntime.
+   * Back-compat alias for
+   * `applyDynamicAttributeFrame('wasteland', cells, values)`.
    */
   applyWastelandFrame(cells: Uint32Array, values: Float32Array): void;
+
+  /**
+   * Biome-override class texture (RG8, two bytes per HEALPix cell).
+   * R = slot 0 class id, G = slot 1 class id (0 = no override; 1..14 =
+   * TEOW biome). Two slots so two concurrent climate scenarios can
+   * co-paint the planet. Baked atomically by `bakeBiomeOverrideStamps`;
+   * zero everywhere before any climate-class scenario fires.
+   */
+  getBiomeOverrideTexture(): THREE.DataTexture;
+
+  /**
+   * Companion stamp-weight texture (RGBA8). R/G = slot 0 (weight, tStart01),
+   * B/A = slot 1 (weight, tStart01). Multiplied per slot by
+   * `uClimateEnvelope` / `uClimateEnvelopeB` in the land shader to
+   * derive each slot's crossfade strength.
+   */
+  getBiomeOverrideStampTexture(): THREE.DataTexture;
+
+  /**
+   * Bake the union of every active climate scenario's biome-override
+   * stamps into the two-slot class + stamp textures. Called by the
+   * scenario registry at scenario start / end / auto-repeat. The two
+   * slots are independent; pass empty arrays for both to clear.
+   */
+  bakeBiomeOverrideStamps(input: {
+    slotA: readonly {
+      cells: Uint32Array;
+      values: Float32Array;
+      biomeId: number;
+      tStart01s?: Float32Array;
+    }[];
+    slotB: readonly {
+      cells: Uint32Array;
+      values: Float32Array;
+      biomeId: number;
+      tStart01s?: Float32Array;
+    }[];
+  }): void;
+
+  /** Walk the static attribute buffer once and bin every cell by biome class. */
+  countBiomesGlobal(): Record<number, number>;
+
+  /** Baseline biome class at the given HEALPix cell (R channel of static attr). */
+  getBaselineClass(ipix: number): number;
 
   // HEALPix spec exposed to render-side shaders that sample the id raster
   // (Phase 3+). `nside` lets the GLSL port know the grid resolution; `ordering`

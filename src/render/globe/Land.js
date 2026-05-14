@@ -14,6 +14,7 @@
 import * as THREE from 'three';
 import { bakeElevationEquirectTexture } from './ElevationEquirectPrebake.js';
 import { BiomeColorEquirect } from './BiomeColorEquirect.js';
+import { BiomeOverrideEquirect } from './BiomeOverrideEquirect.js';
 import { createLandMaterial } from './LandMaterial.js';
 const ICOSPHERE_SUBDIVISION = 64;
 const UNIT_RADIUS = 1.0;
@@ -21,6 +22,8 @@ export class Land {
     group = new THREE.Group();
     mesh;
     biomeColor;
+    biomeOverride;
+    biomeOverrideB;
     geometry;
     material;
     constructor(world, renderer) {
@@ -31,6 +34,13 @@ export class Land {
         // colour; scene-graph drives palette + blur slider through it each
         // frame and triggers a rebake when anything changes.
         this.biomeColor = new BiomeColorEquirect(world);
+        // Two climate-scenario biome-override equirects, one per slot. Both
+        // bind the same class (RG8) + stamp (RGBA8) source textures and
+        // pick out their slot's channels in the index bake — slot 0 reads
+        // class.r + stamp.r, slot 1 reads class.g + stamp.b. The LAND
+        // shader samples each independently for a soft per-scenario frontier.
+        this.biomeOverride = new BiomeOverrideEquirect(world, 0);
+        this.biomeOverrideB = new BiomeOverrideEquirect(world, 1);
         const u = this.material._landUniforms;
         // `attribute_static` shares one RGBA8 texture across its four channels.
         // The 'elevation' AttributeKey resolves to that texture; the fragment
@@ -42,6 +52,8 @@ export class Land {
         u.uElevationEquirect.value = bakeElevationEquirectTexture(renderer, world);
         u.uWastelandTex.value = world.getWastelandTexture();
         u.uBiomeColorEquirect.value = this.biomeColor.colorTexture;
+        u.uBiomeOverrideEquirect.value = this.biomeOverride.colorTexture;
+        u.uBiomeOverrideEquirectB.value = this.biomeOverrideB.colorTexture;
         const { nside, ordering } = world.getHealpixSpec();
         u.uHealpixNside.value = nside;
         u.uHealpixOrdering.value = ordering === 'ring' ? 0 : 1;
@@ -65,6 +77,8 @@ export class Land {
         this.geometry.dispose();
         this.material.dispose();
         this.biomeColor.dispose();
+        this.biomeOverride.dispose();
+        this.biomeOverrideB.dispose();
         while (this.group.children.length > 0) {
             this.group.remove(this.group.children[0]);
         }

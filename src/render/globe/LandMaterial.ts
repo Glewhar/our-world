@@ -119,7 +119,12 @@ uniform vec4 uLerpStrength;
 
 uniform float uSnowLineStrength;
 
-uniform float uSeasonOffsetC;
+uniform float uTimeOfYear01;
+uniform float uClimateTempDeltaC;
+uniform sampler2D uBiomeOverrideTex;
+uniform sampler2D uBiomeOverrideStamp;
+uniform float uClimateEnvelope;
+uniform float uClimateEnvelopeB;
 uniform float uAlpineStrength;
 
 // Pre-blurred biome-colour equirect. Built by BiomeColorEquirect — palette
@@ -128,6 +133,11 @@ uniform float uAlpineStrength;
 // climate, dynamic-recolor, and wasteland tints all stack on top per
 // fragment with their own per-cell sharp boundaries.
 uniform sampler2D uBiomeColorEquirect;
+// Pre-blurred climate-scenario override equirects, one per slot. RGB =
+// blurred override colour, A = blurred stamp weight. Two slots so two
+// concurrent climate scenarios can each crossfade independently.
+uniform sampler2D uBiomeOverrideEquirect;
+uniform sampler2D uBiomeOverrideEquirectB;
 uniform float uLandSpecularSmoothness;
 uniform float uSpecularStrength;
 
@@ -154,7 +164,6 @@ in vec3 vWorldPos;
 in vec3 vSphereDir;
 
 out vec4 fragColor;
-
 vec3 sampleSkyViewHaze(vec3 dir, vec3 camPos, vec3 sunDir) {
   vec3 cUp = normalize(camPos);
   vec3 sunInPlane = sunDir - dot(sunDir, cUp) * cUp;
@@ -226,7 +235,19 @@ void main() {
   base = mix(base, uAlpineBareColor, altThin * clamp(uAlpineStrength, 0.0, 1.0));
 
   float temperatureC = texelFetch(uAttrClimate, tx, 0).r;
-  float effTempC = temperatureC + uSeasonOffsetC;
+  // Sun-locked seasonal swing. Hemisphere-mirrored sinusoid scaled by
+  // |sin(lat)|^E so the equator stays static and the poles swing
+  // hardest. declNorm = -1 -> north winter, +1 -> north summer.
+  const float MAX_SEASON_C = 25.0;
+  const float SEASON_LAT_EXP = 1.7;
+  const float YEAR_PHASE_OFFSET = 0.221; // matches scene-graph.ts
+  float declNorm = sin((uTimeOfYear01 - YEAR_PHASE_OFFSET) * 6.28318530);
+  float sinLat = vSphereDir.z;
+  float seasonalDeltaC = MAX_SEASON_C
+                         * pow(abs(sinLat), SEASON_LAT_EXP)
+                         * sign(sinLat)
+                         * declNorm;
+  float effTempC = temperatureC + seasonalDeltaC + uClimateTempDeltaC;
 
   // Cold tint.
   float coldBlend = smoothstep(22.0, -2.0, effTempC);
@@ -239,6 +260,45 @@ void main() {
   // Snow line.
   float snowMix = uSnowLineStrength * (1.0 - smoothstep(-10.0, -1.0, effTempC));
   base = mix(base, uColorIce, clamp(snowMix, 0.0, 1.0));
+
+  // Biome override (climate scenarios). Sits ON TOP of the seasonal
+  // cold/hot/snow tints so a tundra override in winter still reads
+  // tundra-coloured rather than the snow-blue of the underlying base.
+  // Two slots so two concurrent climate scenarios can co-paint the
+  // planet — the stamp texture (RGBA8) packs slot A in .rg and slot B
+  // in .ba. Each slot crossfades independently on its own envelope;
+  // when both slots cover the same cell, baseline + slot A + slot B
+  // mix with weights wA, wB, and wBase = max(0, 1 - wA - wB).
+  if (uClimateEnvelope > 0.0 || uClimateEnvelopeB > 0.0) {
+    vec4 stampSample = texelFetch(uBiomeOverrideStamp, tx, 0);
+    float wA = 0.0;
+    vec3 colorA = vec3(0.0);
+    if (uClimateEnvelope > 0.0) {
+      vec4 ovrA = texture(uBiomeOverrideEquirect, dfUv);
+      float tStartA = stampSample.g;
+      float remainingA = max(1.0 - tStartA, 0.05);
+      float cellEnvA = clamp((uClimateEnvelope - tStartA) / remainingA, 0.0, 1.0);
+      cellEnvA *= step(tStartA, uClimateEnvelope);
+      float intensityA = ovrA.a * cellEnvA;
+      wA = smoothstep(0.0, 0.7, intensityA);
+      colorA = ovrA.rgb;
+    }
+    float wB = 0.0;
+    vec3 colorB = vec3(0.0);
+    if (uClimateEnvelopeB > 0.0) {
+      vec4 ovrB = texture(uBiomeOverrideEquirectB, dfUv);
+      float tStartB = stampSample.a;
+      float remainingB = max(1.0 - tStartB, 0.05);
+      float cellEnvB = clamp((uClimateEnvelopeB - tStartB) / remainingB, 0.0, 1.0);
+      cellEnvB *= step(tStartB, uClimateEnvelopeB);
+      float intensityB = ovrB.a * cellEnvB;
+      wB = smoothstep(0.0, 0.7, intensityB);
+      colorB = ovrB.rgb;
+    }
+    float wBase = max(0.0, 1.0 - wA - wB);
+    float total = wBase + wA + wB;
+    base = (base * wBase + colorA * wA + colorB * wB) / max(total, 1e-6);
+  }
 
   // Dynamic recolor.
   vec4 dyn = clamp(texelFetch(uAttrDynamic, tx, 0) * uLerpStrength,
@@ -325,7 +385,18 @@ export type LandUniforms = {
 
   uSnowLineStrength: { value: number };
 
-  uSeasonOffsetC: { value: number };
+  /** 0..1 calendar position from `debug.timeOfDay.timeOfYear01`. */
+  uTimeOfYear01: { value: number };
+  /** Frame-accumulated climate temp shift (degC), from ScenarioRegistry.getClimateFrame(). */
+  uClimateTempDeltaC: { value: number };
+  /** R8 per-cell biome class index (HEALPix). null = no override active. */
+  uBiomeOverrideTex: { value: THREE.DataTexture | null };
+  /** RG8 per-cell stamp (HEALPix): R = peak weight, G = per-cell tStart01. null = no override active. */
+  uBiomeOverrideStamp: { value: THREE.DataTexture | null };
+  /** Slot 0 climate envelope from `ScenarioRegistry.getClimateEnvelopes()[0]`. */
+  uClimateEnvelope: { value: number };
+  /** Slot 1 climate envelope from `ScenarioRegistry.getClimateEnvelopes()[1]`. */
+  uClimateEnvelopeB: { value: number };
   uAlpineStrength: { value: number };
 
   /**
@@ -336,6 +407,19 @@ export type LandUniforms = {
    * top per fragment.
    */
   uBiomeColorEquirect: { value: THREE.Texture | null };
+  /**
+   * Pre-blurred climate-scenario override equirect. Built by
+   * BiomeOverrideEquirect on scenario start/end + palette/blur changes.
+   * RGB = blurred `paletteAt(overrideClass[cell])`; A = blurred
+   * `stampWeight[cell]`. Sampled bilinearly by the override block for a
+   * soft scenario frontier. Two per-slot bakes — `uBiomeOverrideEquirect`
+   * for slot 0 (climate slot A), `uBiomeOverrideEquirectB` for slot 1
+   * (climate slot B). Both share the same class + stamp source textures
+   * (RG8 / RGBA8 packed) and the same palette + blur slider; only the
+   * channel each samples differs.
+   */
+  uBiomeOverrideEquirect: { value: THREE.Texture | null };
+  uBiomeOverrideEquirectB: { value: THREE.Texture | null };
   /** Single Blinn-Phong smoothness for all land (snow override stays in shader). */
   uLandSpecularSmoothness: { value: number };
   /** Master multiplier on the specular contribution; 0 disables the highlight entirely. */
@@ -447,10 +531,17 @@ export function createLandMaterial(): THREE.ShaderMaterial & {
 
     uSnowLineStrength: { value: g.snowLineStrength },
 
-    uSeasonOffsetC: { value: g.seasonOffsetC },
+    uTimeOfYear01: { value: 0 },
+    uClimateTempDeltaC: { value: 0 },
+    uBiomeOverrideTex: { value: null },
+    uBiomeOverrideStamp: { value: null },
+    uClimateEnvelope: { value: 0 },
+    uClimateEnvelopeB: { value: 0 },
     uAlpineStrength: { value: g.alpineStrength },
 
     uBiomeColorEquirect: { value: null },
+    uBiomeOverrideEquirect: { value: null },
+    uBiomeOverrideEquirectB: { value: null },
     uLandSpecularSmoothness: { value: g.landSpecularSmoothness },
     uSpecularStrength: { value: g.specularStrength },
 

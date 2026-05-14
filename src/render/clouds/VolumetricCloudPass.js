@@ -242,6 +242,17 @@ uniform float uAdvection;           // wind-shift multiplier
 uniform vec3 uSunColor;             // direct sun lighting colour
 uniform vec3 uAmbientColor;         // ambient sky tint applied to shaded cloud faces
 
+// Nuclear-winter soot — default zero/white so the shader is a no-op
+// when no scenario pushes soot. uSootGlobal weights the sun + ambient
+// tint and the global overcast bump (applied scene-graph-side);
+// uSootRegionalWeight gates the per-cell wasteland-driven cover bump
+// inside biomeProfileAt.
+uniform float uSootGlobal;
+uniform float uSootRegionalWeight;
+uniform vec3 uSootSunTint;
+uniform vec3 uSootAmbientTint;
+uniform sampler2D uWastelandTex;
+
 // Per-biome octave-weight profiles for cn_fbm_weighted. Modulating
 // *which octaves dominate* — rather than the noise scale or sampling
 // position — changes the visual "feel" (small busy puffs vs big smooth
@@ -285,7 +296,6 @@ uniform float uElevationScale;
 // terrain response (wind curving around ranges, piling up on windward
 // sides) comes from the wind data itself.
 uniform sampler2D uAttrStatic;     // RGBA8: elevClass / biomeClass / soilClass / urbanization
-uniform sampler2D uAttrClimate;    // RG16F: temperature_c / moisture_frac
 uniform sampler2D uElevationMeters; // R16F: continuous elevation in metres (read in biomeProfileAt)
 uniform int uHealpixNside;
 uniform int uHealpixOrdering;
@@ -515,60 +525,83 @@ float henyeyGreenstein(float cosTheta, float g) {
 // Per-cell biome → CoverSample. One HEALPix lookup, returns a discrete
 // per-cell pair (cover scalar + octave-weight vec4).
 //
-// Cover values:
-//   forest / wetland   → 1.2   (cloudier than ocean — humid convection)
-//   ocean (warm/cold)  → 1.0   (ITCZ + storm tracks)
-//   moss / tundra      → 0.8
-//   ice                → 0.5   (broad polar fronts, but thin)
-//   default land       → smoothstep on moistureFrac (real precipitation cut)
-//   desert             → 0.1   (Hadley descent, near-cloudless)
+// Biome codes (TEOW — Terrestrial Ecoregions of the World, encoded into
+// G channel × 255 by the data pipeline). No water class — ocean cells
+// (and any no-data cells outside every TEOW polygon) are code 0.
 //
-// Weight profiles (assigned alongside cover):
-//   forest / wetland   → W_TROPICAL (busier puffs, more high-freq detail)
-//   ice / tundra       → W_POLAR    (big smooth low-freq sheets)
-//   desert             → W_ARID     (sparse broad low-freq shapes)
-//   ocean / default    → W_TEMPERATE (current look — balanced)
+//   0  ocean / no-data            8  temperate grassland
+//   1  tropical moist forest      9  flooded grassland
+//   2  tropical dry forest       10  montane grassland
+//   3  tropical coniferous       11  tundra
+//   4  temperate broadleaf       12  mediterranean
+//   5  temperate conifer         13  desert / xeric
+//   6  boreal / taiga            14  mangroves
+//   7  tropical savanna
+//
+// Cover values feed the coverage threshold
+// (effectiveCoverage = uCoverage * cover); > 1.0 means cloudier than
+// the global Tweakpane slider alone would give:
+//   1.20  trop moist forest, flooded grassland, mangroves
+//   1.10  trop coniferous, temperate broadleaf
+//   1.00  ocean, temperate conifer
+//   0.90  boreal
+//   0.80  trop dry forest, temperate grassland, montane grassland, tundra
+//   0.70  tropical savanna
+//   0.40  mediterranean
+//   0.10  desert / xeric
+//
+// Weight profiles:
+//   W_TROPICAL  trop moist/dry/coniferous, flooded grassland, mangroves
+//   W_POLAR     boreal, tundra
+//   W_ARID      mediterranean, desert
+//   W_TEMPERATE everything else (ocean, temperate broadleaf/conifer,
+//               savanna, temperate/montane grassland)
 //
 // Mountain boundary: cells above 2500 m elevation get their cover faded
 // to zero (full suppression by 3000 m). The 19-tap blur softens the
 // boundary further so the suppression doesn't read as a hard outline.
 //
-// Biome codes (from \`attrs.yaml\`, encoded into G channel × 255):
-//   1=tree-cover  6=bare/desert  7=snow/ice  8=water (ocean)
-//   9=wetland     10=mangroves   11=moss/tundra
-//
 // Returns per-cell discrete values. Callers MUST blur (see
-// \`sampleBiomeProfile\`) so coastlines don't stamp a hard step into
-// either cover or weights.
+// \`sampleBiomeProfile\`) so biome boundaries don't stamp a hard step
+// into either cover or weights.
 CoverSample biomeProfileAt(vec3 dir) {
   int ipix = healpixZPhiToPix(uHealpixNside, uHealpixOrdering, dir.z, atan(dir.y, dir.x));
   ivec2 tx = healpixIpixToTexel(ipix, uAttrTexWidth);
   float biomeF = texelFetch(uAttrStatic, tx, 0).g * 255.0;
-  vec2 climate = texelFetch(uAttrClimate, tx, 0).rg;
-  float moistureFrac = climate.g;
   float elevM = texelFetch(uElevationMeters, tx, 0).r;
 
-  float isOcean   = step(7.5, biomeF) * step(biomeF, 8.5);
-  float isDesert  = step(5.5, biomeF) * step(biomeF, 6.5);
-  float isForest  = step(0.5, biomeF) * step(biomeF, 1.5);
-  float isWetland = step(8.5, biomeF) * step(biomeF, 10.5);
-  float isIce     = step(6.5, biomeF) * step(biomeF, 7.5);
-  float isTundra  = step(10.5, biomeF) * step(biomeF, 11.5);
+  // Per-TEOW-code flag. Mutually exclusive — at most one is 1.0.
+  float is1  = step(0.5,  biomeF) * step(biomeF, 1.5);
+  float is2  = step(1.5,  biomeF) * step(biomeF, 2.5);
+  float is3  = step(2.5,  biomeF) * step(biomeF, 3.5);
+  float is4  = step(3.5,  biomeF) * step(biomeF, 4.5);
+  float is5  = step(4.5,  biomeF) * step(biomeF, 5.5);
+  float is6  = step(5.5,  biomeF) * step(biomeF, 6.5);
+  float is7  = step(6.5,  biomeF) * step(biomeF, 7.5);
+  float is8  = step(7.5,  biomeF) * step(biomeF, 8.5);
+  float is9  = step(8.5,  biomeF) * step(biomeF, 9.5);
+  float is10 = step(9.5,  biomeF) * step(biomeF, 10.5);
+  float is11 = step(10.5, biomeF) * step(biomeF, 11.5);
+  float is12 = step(11.5, biomeF) * step(biomeF, 12.5);
+  float is13 = step(12.5, biomeF) * step(biomeF, 13.5);
+  float is14 = step(13.5, biomeF) * step(biomeF, 14.5);
 
-  // Default land: precipitation-driven cover.
-  float landCover = smoothstep(0.05, 0.35, moistureFrac);
-
-  // Each \`is*\` flag (mutually exclusive) overrides defaults. Cover
-  // values can exceed 1.0 — feeds the coverage threshold
-  // (effectiveCoverage = uCoverage * cover), so > 1.0 means "more
-  // covered than the global Tweakpane setting alone would give."
-  float cover = landCover;
-  cover = mix(cover, 0.10, isDesert);
-  cover = mix(cover, 1.20, isForest);
-  cover = mix(cover, 1.20, isWetland);
-  cover = mix(cover, 0.50, isIce);
-  cover = mix(cover, 0.80, isTundra);
-  cover = mix(cover, 1.00, isOcean);
+  // Default = ocean (code 0): cover 1.00, W_TEMPERATE.
+  float cover = 1.00;
+  cover = mix(cover, 1.20, is1);   // tropical moist forest
+  cover = mix(cover, 0.80, is2);   // tropical dry forest
+  cover = mix(cover, 1.10, is3);   // tropical coniferous
+  cover = mix(cover, 1.10, is4);   // temperate broadleaf
+  cover = mix(cover, 1.00, is5);   // temperate conifer
+  cover = mix(cover, 0.90, is6);   // boreal / taiga
+  cover = mix(cover, 0.70, is7);   // tropical savanna
+  cover = mix(cover, 0.80, is8);   // temperate grassland
+  cover = mix(cover, 1.20, is9);   // flooded grassland
+  cover = mix(cover, 0.80, is10);  // montane grassland
+  cover = mix(cover, 0.80, is11);  // tundra
+  cover = mix(cover, 0.40, is12);  // mediterranean
+  cover = mix(cover, 0.10, is13);  // desert / xeric
+  cover = mix(cover, 1.20, is14);  // mangroves
 
   // Mountain boundary: peaks above 2500 m suppress cloud formation,
   // fully cloud-free above 3000 m. The 500-m soft band keeps the edge
@@ -576,14 +609,26 @@ CoverSample biomeProfileAt(vec3 dir) {
   float mountainMask = 1.0 - smoothstep(2500.0, 3000.0, elevM);
   cover *= mountainMask;
 
-  // Per-biome octave-weight profile. Same flags drive the choice;
-  // ocean and default land both fall through to W_TEMPERATE.
+  // Regional soot — wasteland cells get extra cover so cloud cover
+  // thickens above the strike footprint. Branch is uniform-conditional;
+  // zero cost when no scenario pushes regional soot.
+  if (uSootRegionalWeight > 0.0) {
+    float waste = texelFetch(uWastelandTex, tx, 0).r;
+    cover += waste * uSootRegionalWeight * 0.8;
+  }
+
+  // Per-biome octave-weight profile. Default = W_TEMPERATE (ocean
+  // plus the temperate-leaning land classes).
   vec4 weights = W_TEMPERATE;
-  weights = mix(weights, W_ARID,     isDesert);
-  weights = mix(weights, W_TROPICAL, isForest);
-  weights = mix(weights, W_TROPICAL, isWetland);
-  weights = mix(weights, W_POLAR,    isIce);
-  weights = mix(weights, W_POLAR,    isTundra);
+  weights = mix(weights, W_TROPICAL, is1);
+  weights = mix(weights, W_TROPICAL, is2);
+  weights = mix(weights, W_TROPICAL, is3);
+  weights = mix(weights, W_POLAR,    is6);
+  weights = mix(weights, W_TROPICAL, is9);
+  weights = mix(weights, W_POLAR,    is11);
+  weights = mix(weights, W_ARID,     is12);
+  weights = mix(weights, W_ARID,     is13);
+  weights = mix(weights, W_TROPICAL, is14);
 
   return CoverSample(cover, weights);
 }
@@ -742,9 +787,13 @@ void main() {
       vec3 nP = normalize(p);
       float wrap = smoothstep(-0.25, 0.55, dot(nP, sunDir));
 
-      // In-scattering: directly-lit term + ambient sky tint.
-      vec3 inscatter = uSunColor * lightTransmit * phase * 4.0 * PI * mix(0.05, 1.0, wrap);
-      inscatter += uAmbientColor * mix(0.20, 0.80, wrap);
+      // In-scattering: directly-lit term + ambient sky tint. Both
+      // colours mix toward the soot tints when a nuclear-winter
+      // scenario is active.
+      vec3 sunC = mix(uSunColor, uSootSunTint, uSootGlobal);
+      vec3 ambC = mix(uAmbientColor, uSootAmbientTint, uSootGlobal);
+      vec3 inscatter = sunC * lightTransmit * phase * 4.0 * PI * mix(0.05, 1.0, wrap);
+      inscatter += ambC * mix(0.20, 0.80, wrap);
 
       // Front-to-back integration. Beer extinction across this step,
       // then accumulate emitted/scattered light premultiplied by the
@@ -830,11 +879,17 @@ export class VolumetricCloudPass {
                 // Elevation suppresses cover over high mountains (2500–3000 m fade
                 // band; zero above 3000 m).
                 uAttrStatic: { value: world.getAttributeTexture('elevation') },
-                uAttrClimate: { value: world.getAttributeTexture('temperature') },
                 uElevationMeters: { value: world.getElevationMetersTexture() },
+                // Same R8 wasteland texture the land + cities + highways shaders
+                // sample — read here for the nuclear-winter regional cover bump.
+                uWastelandTex: { value: world.getWastelandTexture() },
                 uHealpixNside: { value: nside },
                 uHealpixOrdering: { value: ordering === 'ring' ? 0 : 1 },
                 uAttrTexWidth: { value: 4 * nside },
+                uSootGlobal: { value: 0 },
+                uSootRegionalWeight: { value: 0 },
+                uSootSunTint: { value: new THREE.Color(1, 1, 1) },
+                uSootAmbientTint: { value: new THREE.Color(1, 1, 1) },
                 // Same metres → unit-sphere scale Land/Water use. Drives the cloud
                 // shell altitude so the cloud base sits at exactly CLOUD_BASE_M
                 // (see clouds.frag.glsl.ts) above the rendered sea-level radius.
@@ -945,6 +1000,13 @@ export class VolumetricCloudPass {
     }
     setElevationScale(v) {
         this.cloudMaterial.uniforms.uElevationScale.value = v;
+    }
+    /** Push per-frame soot contribution. Default zero = shader no-op. */
+    setSootFrame(sootGlobal, sootRegionalWeight, sunTint, ambientTint) {
+        this.cloudMaterial.uniforms.uSootGlobal.value = sootGlobal;
+        this.cloudMaterial.uniforms.uSootRegionalWeight.value = sootRegionalWeight;
+        this.cloudMaterial.uniforms.uSootSunTint.value.setRGB(sunTint.r, sunTint.g, sunTint.b);
+        this.cloudMaterial.uniforms.uSootAmbientTint.value.setRGB(ambientTint.r, ambientTint.g, ambientTint.b);
     }
     /**
      * Refresh the view-ray reconstruction matrix + camera position. Call
