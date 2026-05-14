@@ -334,12 +334,14 @@ export type AtmosphereLutsOptions = {
   mieScale?: number;
   solarIrradiance?: THREE.Vector3;
   atmosphereRadius?: number;
+  planetRadius?: number;
 };
 
 function createTransmittanceMaterial(opts: {
   rayleighScale: number;
   mieScale: number;
   atmosphereRadius: number;
+  planetRadius: number;
 }): THREE.RawShaderMaterial {
   return new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3,
@@ -349,6 +351,7 @@ function createTransmittanceMaterial(opts: {
       uRayleighScale: { value: opts.rayleighScale },
       uMieScale: { value: opts.mieScale },
       uAtmosphereRadius: { value: opts.atmosphereRadius },
+      uPlanetRadius: { value: opts.planetRadius },
     },
     depthTest: false,
     depthWrite: false,
@@ -361,6 +364,7 @@ function createMultiScatteringMaterial(
     rayleighScale: number;
     mieScale: number;
     atmosphereRadius: number;
+    planetRadius: number;
     solarIrradiance: THREE.Vector3;
   },
 ): THREE.RawShaderMaterial {
@@ -374,6 +378,7 @@ function createMultiScatteringMaterial(
       uMieScale: { value: opts.mieScale },
       uSolarIrradiance: { value: opts.solarIrradiance },
       uAtmosphereRadius: { value: opts.atmosphereRadius },
+      uPlanetRadius: { value: opts.planetRadius },
     },
     depthTest: false,
     depthWrite: false,
@@ -387,6 +392,7 @@ function createSkyViewMaterial(
     rayleighScale: number;
     mieScale: number;
     atmosphereRadius: number;
+    planetRadius: number;
     solarIrradiance: THREE.Vector3;
   },
 ): THREE.RawShaderMaterial {
@@ -403,6 +409,7 @@ function createSkyViewMaterial(
       uMieScale: { value: opts.mieScale },
       uSolarIrradiance: { value: opts.solarIrradiance },
       uAtmosphereRadius: { value: opts.atmosphereRadius },
+      uPlanetRadius: { value: opts.planetRadius },
     },
     depthTest: false,
     depthWrite: false,
@@ -426,6 +433,7 @@ export class AtmosphereLuts {
   private rayleighScale: number;
   private mieScale: number;
   private atmosphereRadius: number;
+  private planetRadius: number;
 
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
@@ -438,6 +446,7 @@ export class AtmosphereLuts {
     this.rayleighScale = opts.rayleighScale ?? 1;
     this.mieScale = opts.mieScale ?? 1;
     this.atmosphereRadius = opts.atmosphereRadius ?? 1.07;
+    this.planetRadius = opts.planetRadius ?? 1.0;
 
     this.transmittance = makeRT(
       TRANSMITTANCE_LUT_WIDTH,
@@ -459,11 +468,13 @@ export class AtmosphereLuts {
       rayleighScale: this.rayleighScale,
       mieScale: this.mieScale,
       atmosphereRadius: this.atmosphereRadius,
+      planetRadius: this.planetRadius,
     });
     this.multiScatteringMat = createMultiScatteringMaterial(this.transmittance.texture, {
       rayleighScale: this.rayleighScale,
       mieScale: this.mieScale,
       atmosphereRadius: this.atmosphereRadius,
+      planetRadius: this.planetRadius,
       solarIrradiance: irradiance,
     });
     this.skyViewMat = createSkyViewMaterial(
@@ -473,6 +484,7 @@ export class AtmosphereLuts {
         rayleighScale: this.rayleighScale,
         mieScale: this.mieScale,
         atmosphereRadius: this.atmosphereRadius,
+        planetRadius: this.planetRadius,
         solarIrradiance: irradiance,
       },
     );
@@ -540,24 +552,29 @@ export class AtmosphereLuts {
   recomputeAll(
     cameraPos: THREE.Vector3,
     sunDir: THREE.Vector3,
-    scales: { rayleigh: number; mie: number; atmosphereRadius: number },
+    scales: { rayleigh: number; mie: number; atmosphereRadius: number; planetRadius: number },
   ): void {
     const radiusChanged = scales.atmosphereRadius !== this.atmosphereRadius;
+    const planetRadiusChanged = scales.planetRadius !== this.planetRadius;
     const scalesChanged =
       scales.rayleigh !== this.rayleighScale || scales.mie !== this.mieScale;
-    if (scalesChanged || radiusChanged) {
+    if (scalesChanged || radiusChanged || planetRadiusChanged) {
       this.rayleighScale = scales.rayleigh;
       this.mieScale = scales.mie;
       this.atmosphereRadius = scales.atmosphereRadius;
+      this.planetRadius = scales.planetRadius;
       this.transmittanceMat.uniforms.uRayleighScale!.value = scales.rayleigh;
       this.transmittanceMat.uniforms.uMieScale!.value = scales.mie;
       this.transmittanceMat.uniforms.uAtmosphereRadius!.value = scales.atmosphereRadius;
+      this.transmittanceMat.uniforms.uPlanetRadius!.value = scales.planetRadius;
       this.multiScatteringMat.uniforms.uRayleighScale!.value = scales.rayleigh;
       this.multiScatteringMat.uniforms.uMieScale!.value = scales.mie;
       this.multiScatteringMat.uniforms.uAtmosphereRadius!.value = scales.atmosphereRadius;
+      this.multiScatteringMat.uniforms.uPlanetRadius!.value = scales.planetRadius;
       this.skyViewMat.uniforms.uRayleighScale!.value = scales.rayleigh;
       this.skyViewMat.uniforms.uMieScale!.value = scales.mie;
       this.skyViewMat.uniforms.uAtmosphereRadius!.value = scales.atmosphereRadius;
+      this.skyViewMat.uniforms.uPlanetRadius!.value = scales.planetRadius;
       this.precomputeTwoStaticLuts();
     }
     this.recompute(cameraPos, sunDir);

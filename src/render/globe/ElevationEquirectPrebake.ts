@@ -9,10 +9,10 @@
  * the gradient kernel reads neighbours at cell granularity and produces
  * visible cell-grid lighting bands as fragments cross cell boundaries.
  *
- * The fix is the same shape as `BiomeColorPrebake`: bake the per-cell
- * value into an equirect texture once at startup, sample it bilinearly
- * in the land shader. With a continuously-filterable source the
- * 4-tap Sobel produces a smooth per-pixel gradient with no banding.
+ * The fix: bake the per-cell value into an equirect texture once at
+ * startup, sample it bilinearly in the land shader. With a continuously-
+ * filterable source the 4-tap Sobel produces a smooth per-pixel gradient
+ * with no banding.
  *
  * Size: 4096 × 2048 — at 2π·6371/4096 ≈ 9.8 km/px equator pitch this is
  * slightly oversampled vs the ~6.4 km HEALPix cell pitch at Nside=1024,
@@ -51,8 +51,7 @@ uniform int uAttrTexWidth;
 
 void main() {
   // Equirect UV → sphere direction → HEALPix cell. Same convention as
-  // the land shader's sphereDirToEquirectUv inverse — and identical to
-  // BiomeColorPrebake so the two equirect textures align.
+  // the land shader's sphereDirToEquirectUv inverse.
   float u = vEquirectUv.x;
   float v = vEquirectUv.y;
   float phi = u * 6.28318530 - 3.14159265;

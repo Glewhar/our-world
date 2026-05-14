@@ -22,6 +22,7 @@ import * as THREE from 'three';
 import { AttributeTextures } from './AttributeTextures.js';
 import { BodyRegistry } from './BodyRegistry.js';
 import { DistanceFieldTexture } from './DistanceFieldTexture.js';
+import { EcoregionTexture } from './EcoregionTexture.js';
 import { IdRaster } from './IdRaster.js';
 import { WorkerBridge } from './WorkerBridge.js';
 import { xyzToLatLon } from './coordinates.js';
@@ -55,7 +56,7 @@ export async function createWorldRuntime(opts = {}) {
     const manifest = await loadManifest(manifestUrl).then(step('manifest'));
     const baseUrl = manifestUrl.slice(0, manifestUrl.lastIndexOf('/'));
     const { nside, ordering } = manifest.healpix;
-    const [idRaster, attributes, windField, oceanCurrents, cities, roads, urbanAreas, distanceField] = await Promise.all([
+    const [idRaster, attributes, windField, oceanCurrents, cities, roads, urbanAreas, distanceField, ecoregion,] = await Promise.all([
         IdRaster.load(`${baseUrl}/${manifest.artifacts.id_raster.path}`, nside, ordering)
             .then(step('id raster')),
         AttributeTextures.load({
@@ -101,6 +102,15 @@ export async function createWorldRuntime(opts = {}) {
         (manifest.artifacts.distance_field.size_bytes > 32
             ? DistanceFieldTexture.load(`${baseUrl}/${manifest.artifacts.distance_field.path}`)
             : Promise.resolve(null)).then(step('terrain detail')),
+        // ecoregion — optional. Phase 2.B replaces the 14-biome palette
+        // path with 825 dense ecoregion indices. Both artifacts must be
+        // present (and non-placeholder) to load; otherwise the land
+        // shader falls back to the legacy 14-biome path automatically.
+        (manifest.artifacts.attribute_eco &&
+            manifest.artifacts.ecoregion_lookup &&
+            manifest.artifacts.attribute_eco.size_bytes > 32
+            ? EcoregionTexture.load(manifest.artifacts.attribute_eco, manifest.artifacts.ecoregion_lookup, baseUrl, nside)
+            : Promise.resolve(null)).then(step('ecoregions')),
     ]);
     const registry = new BodyRegistry(manifest.bodies);
     const bridge = new WorkerBridge();
@@ -161,6 +171,8 @@ export async function createWorldRuntime(opts = {}) {
         getWindFieldTexture: () => (windField ? windField.texture : null),
         getOceanCurrentsTexture: () => (oceanCurrents ? oceanCurrents.texture : null),
         getDistanceFieldTexture: () => (distanceField ? distanceField.texture : null),
+        getEcoregionTexture: () => (ecoregion ? ecoregion.getTexture() : null),
+        getEcoregionLookup: () => (ecoregion ? ecoregion.lookup : null),
         getWastelandTexture: () => attributes.getWastelandTexture(),
         applyWastelandFrame: (cells, values) => attributes.applyWastelandFrame(cells, values),
         getCities: () => cities,

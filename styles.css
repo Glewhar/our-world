@@ -1,0 +1,812 @@
+/* =========================================================================
+   Earth-Destroyer · floating UI overlay
+   -------------------------------------------------------------------------
+   One CSS Grid scaffold (#overlay) over the 3D canvas. Nine named cells.
+   Every floating chip / panel lives in a cell and expands inside it.
+
+     ┌────────────────┬───────────────┬─────────────────┐
+     │ top-left       │ top-center    │ top-right       │
+     ├────────────────┼───────────────┼─────────────────┤
+     │ middle-left    │ center        │ middle-right    │
+     ├────────────────┼───────────────┼─────────────────┤
+     │ bottom-left    │ bottom-center │ bottom-right    │
+     └────────────────┴───────────────┴─────────────────┘
+
+   Layout invariant across breakpoints. Phone shrinks contents only.
+   ========================================================================= */
+
+
+/* -------------------------------------------------------------------------
+   1. Design tokens
+   ------------------------------------------------------------------------- */
+:root {
+  color-scheme: dark;
+
+  /* Surface */
+  --glass-bg:            rgba(10, 14, 22, 0.65);
+  --glass-blur:          8px;
+  --glass-border-color:  rgba(255, 255, 255, 0.08);
+  --glass-border:        1px solid var(--glass-border-color);
+  --glass-border-strong: rgba(255, 255, 255, 0.14);
+
+  /* Radii */
+  --r-chip:  12px;
+  --r-panel: 18px;
+  --r-pill:  999px;
+
+  /* Spacing */
+  --gutter:   16px;
+  --gap:       8px;
+  --pad-chip:  8px 12px;
+
+  /* Type */
+  --text:        #e6ecf6;
+  --text-dim:    rgba(230, 236, 246, 0.6);
+  --text-mute:   rgba(230, 236, 246, 0.4);
+  --text-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
+  --label-letter: 0.14em;
+
+  /* States */
+  --hover-bg:  rgba(255, 255, 255, 0.12);
+  --active-bg: rgba(255, 255, 255, 0.22);
+
+  /* Accent (Bruneton sky-blue — matches atmosphere halo) */
+  --accent: #9cc4ff;
+
+  /* Slider dimensions — overridden at breakpoints */
+  --slider-track-len: 140px;
+  --slider-track-thk: 8px;
+  --slider-wrap-w:    28px;
+}
+
+
+/* -------------------------------------------------------------------------
+   2. Page reset
+   ------------------------------------------------------------------------- */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  color: #cdd6e3;
+}
+#app          { width: 100vw; height: 100vh; display: block; }
+#app canvas   { display: block; width: 100%; height: 100%; }
+
+
+/* -------------------------------------------------------------------------
+   3. Loading overlay
+   ------------------------------------------------------------------------- */
+#loading {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #06080c;
+  font-size: 14px;
+  letter-spacing: 0.05em;
+  z-index: 10;
+}
+#loading.hidden { display: none; }
+#loading.error {
+  color: #ff8a8a;
+  white-space: pre-wrap;
+  text-align: left;
+  padding: 24px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+#loading-progress-wrap {
+  width: 220px;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: var(--r-pill);
+  margin-top: 22px;
+  overflow: hidden;
+}
+#loading-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(to right, #4a8fd4, #9cc4ff);
+  border-radius: var(--r-pill);
+  box-shadow: 0 0 8px rgba(127, 182, 255, 0.6);
+  transition: width 0.25s ease;
+}
+#loading-step-label {
+  margin-top: 12px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: var(--label-letter);
+  text-transform: uppercase;
+  color: var(--text-mute);
+  min-height: 14px;
+}
+
+
+/* -------------------------------------------------------------------------
+   4. Primitives — .chip, .chip.is-*, .slider-vert, .layer-toggle
+   These three rules replace ~7 duplicated dark-glass boxes.
+   ------------------------------------------------------------------------- */
+.chip {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: var(--glass-border);
+  border-radius: var(--r-chip);
+  color: var(--text);
+  padding: var(--pad-chip);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1;
+}
+.chip.is-pill   { border-radius: var(--r-pill); }
+.chip.is-panel  { border-radius: var(--r-panel); padding: 12px 14px; display: block; }
+.chip.is-button { cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease; }
+.chip.is-button:hover { background: var(--hover-bg); }
+.chip.is-square {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  justify-content: center;
+  font-size: 18px;
+}
+
+/* Reusable vertical slider (temperature + sea-level share this). Each
+   instance sets its own --track-gradient and --thumb-color via inline
+   custom properties or extending classes. */
+.slider-vert-wrap {
+  position: relative;
+  width: var(--slider-wrap-w);
+  height: var(--slider-track-len);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.slider-vert-wrap::before,
+.slider-vert-wrap::after {
+  content: '';
+  position: absolute;
+  left: -2px; right: -2px;
+  height: 1px;
+  background: rgba(230, 236, 246, 0.18);
+}
+.slider-vert-wrap::before { top: 0; }
+.slider-vert-wrap::after  { bottom: 0; }
+.slider-vert {
+  appearance: none;
+  -webkit-appearance: none;
+  width: var(--slider-track-len);
+  height: var(--slider-track-thk);
+  transform: rotate(-90deg);
+  background: var(--track-gradient, linear-gradient(to right, #555, #aaa));
+  border-radius: var(--r-pill);
+  outline: none;
+  cursor: pointer;
+  margin: 0;
+}
+.slider-vert::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 24px;
+  border-radius: 5px;
+  background: var(--thumb-color, var(--text));
+  border: 2px solid rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+  box-shadow: 0 0 10px var(--thumb-color, var(--text));
+  transition: box-shadow 0.15s ease, background 0.15s ease;
+}
+.slider-vert::-moz-range-thumb {
+  width: 14px;
+  height: 24px;
+  border-radius: 5px;
+  background: var(--thumb-color, var(--text));
+  border: 2px solid rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+  box-shadow: 0 0 10px var(--thumb-color, var(--text));
+}
+
+/* Reusable horizontal toggle pill (used in settings panel and Tweakpane). */
+.layer-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 4px 4px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease;
+  margin-top: 4px;
+}
+.layer-toggle:hover { background: rgba(255, 255, 255, 0.06); }
+.layer-toggle .layer-icon {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+}
+.layer-toggle .layer-name {
+  flex: 1;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-weight: 600;
+  transition: color 0.15s ease;
+}
+.layer-toggle input[type='checkbox'] {
+  position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none;
+}
+.layer-toggle .toggle-track {
+  position: relative;
+  width: 32px; height: 18px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.12);
+  transition: background 0.15s ease;
+  flex: 0 0 auto;
+}
+.layer-toggle .toggle-thumb {
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: rgba(230, 236, 246, 0.85);
+  transition: left 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.layer-toggle input[type='checkbox']:checked + .toggle-track .toggle-thumb { left: 16px; }
+.layer-toggle:has(input[type='checkbox']:checked) .layer-icon { opacity: 1; }
+.layer-toggle:has(input[type='checkbox']:checked) .layer-name { color: var(--text); }
+.layer-toggle.clouds:has(input:checked) .toggle-track { background: rgba(220, 230, 245, 0.45); }
+.layer-toggle.clouds:has(input:checked) .toggle-thumb {
+  background: #ffffff;
+  box-shadow: 0 0 8px rgba(220, 230, 245, 0.7);
+}
+
+
+/* -------------------------------------------------------------------------
+   5. Layout scaffold — #overlay grid + per-area placement
+   ------------------------------------------------------------------------- */
+#overlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-areas:
+    "top-left    top-center    top-right"
+    "middle-left center        middle-right"
+    "bottom-left bottom-center bottom-right";
+  grid-template-columns: auto 1fr auto;
+  grid-template-rows:    auto 1fr auto;
+  padding:
+    max(var(--gutter), env(safe-area-inset-top))
+    max(var(--gutter), env(safe-area-inset-right))
+    max(var(--gutter), env(safe-area-inset-bottom))
+    max(var(--gutter), env(safe-area-inset-left));
+  gap: var(--gutter);
+  pointer-events: none;
+  z-index: 5;
+}
+.area              { pointer-events: none; display: flex; position: relative; min-width: 0; min-height: 0; }
+.area > *          { pointer-events: auto; }
+.area.top-left     { grid-area: top-left;     align-items: flex-start; }
+.area.top-center   { grid-area: top-center;   justify-content: center; align-items: flex-start; }
+.area.top-right    { grid-area: top-right;    flex-direction: column;  align-items: flex-end;   gap: var(--gap); }
+.area.middle-left  { grid-area: middle-left;  flex-direction: column;  align-self: center; gap: var(--gap); }
+.area.middle-right { grid-area: middle-right; flex-direction: column;  align-items: flex-end;   gap: var(--gap); max-height: 100%; }
+.area.bottom-right { grid-area: bottom-right; flex-direction: column;  align-items: flex-end;   gap: var(--gap); justify-content: flex-end; }
+
+
+/* -------------------------------------------------------------------------
+   6a. Time control (top-left)
+   ------------------------------------------------------------------------- */
+#time-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px 8px 8px;
+}
+#time-pause {
+  flex: 0 0 auto;
+  width: 48px; height: 48px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 50%;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.15s ease;
+}
+#time-pause:hover { background: rgba(255, 255, 255, 0.16); }
+#time-pause svg   { width: 20px; height: 20px; display: block; fill: var(--text); }
+#time-readout-wrap {
+  display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 58px;
+}
+#time-readout {
+  font-size: 18px; font-weight: 700; letter-spacing: 0.04em;
+  color: rgba(230, 236, 246, 0.55);
+  font-variant-numeric: tabular-nums;
+  text-shadow: var(--text-shadow);
+  text-align: center;
+}
+#date-readout {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.18em;
+  color: var(--text-mute);
+}
+
+
+/* -------------------------------------------------------------------------
+   6b. FPS counter (top-center) — hidden by default, toggled visible
+   ------------------------------------------------------------------------- */
+#fps-counter {
+  display: none;
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+#fps-counter.visible { display: block; }
+
+
+/* -------------------------------------------------------------------------
+   6c. Top-right chip row + settings popover
+   ------------------------------------------------------------------------- */
+#top-right-chips {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  pointer-events: auto;
+}
+#explode-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+}
+#explode-button {
+  padding: 0 14px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+#region-select {
+  height: 36px;
+  padding: 0 28px 0 12px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%23e6ecf6' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-color: var(--glass-bg);
+}
+#region-select:focus { outline: none; border-color: var(--glass-border-strong); }
+#region-select option { background: #0a0e16; color: var(--text); }
+
+/* Popover: anchored under the chip row, clamped to the rail or
+   viewport-minus-gutters. Lives as a child of .area.top-right so it
+   physically cannot escape the grid cell. */
+#settings-panel {
+  position: absolute;
+  top: calc(100% + var(--gap));
+  right: 0;
+  width: min(280px, calc(100vw - 2 * var(--gutter)));
+  font-size: 12px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-6px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+#settings-panel.open { opacity: 1; pointer-events: auto; transform: translateY(0); }
+#settings-panel h3 {
+  margin: 0 0 10px 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: var(--label-letter);
+  text-transform: uppercase;
+  color: rgba(230, 236, 246, 0.85);
+}
+#settings-panel h3 + .setting-row { margin-top: 0; }
+#settings-panel h3.subhead { margin-top: 14px; }
+#settings-panel .setting-row {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin-bottom: 6px;
+}
+#settings-panel .setting-row label {
+  font-size: 11px; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: rgba(230, 236, 246, 0.7);
+}
+#settings-renderscale-readout {
+  font-size: 12px; font-weight: 600;
+  font-variant-numeric: tabular-nums; color: var(--text);
+}
+#settings-renderscale-slider {
+  appearance: none; -webkit-appearance: none;
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: var(--r-pill);
+  outline: none;
+  cursor: pointer;
+  margin: 4px 0 10px 0;
+}
+#settings-renderscale-slider::-webkit-slider-thumb {
+  appearance: none; -webkit-appearance: none;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(127, 182, 255, 0.7);
+}
+#settings-renderscale-slider::-moz-range-thumb {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(127, 182, 255, 0.7);
+}
+#settings-panel .setting-row-actions {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+#settings-renderscale-hint {
+  font-size: 11px;
+  color: rgba(230, 236, 246, 0.55);
+  font-variant-numeric: tabular-nums;
+}
+#settings-renderscale-auto {
+  height: 24px;
+  padding: 0 10px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--r-pill);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+#settings-renderscale-auto:hover { background: rgba(255, 255, 255, 0.2); }
+
+
+/* -------------------------------------------------------------------------
+   6d. Middle-left — temperature + sea-level sliders
+   The two sliders only differ in their --track-gradient and --thumb-color.
+   ------------------------------------------------------------------------- */
+#season-control,
+#sealevel-control {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  width: 76px;
+  --thumb-color: var(--text);
+}
+#season-control {
+  --track-gradient: linear-gradient(
+    to right,
+    #4ea8ff 0%, #6fb6ff 22%, rgba(230, 236, 246, 0.35) 50%, #ff8a5a 78%, #ff4d3d 100%);
+  --thumb-color: var(--season-color, var(--text));
+}
+#sealevel-control {
+  --track-gradient: linear-gradient(
+    to right,
+    #d4b885 0%, #c9b186 22%, rgba(230, 236, 246, 0.35) 50%, #4ea8ff 78%, #1a3a6b 100%);
+}
+#season-readout,
+#sealevel-readout {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  text-shadow: var(--text-shadow);
+  min-height: 14px;
+  color: var(--text);
+}
+#season-readout { color: var(--season-color, var(--text)); transition: color 0.15s ease; }
+#season-label,
+#sealevel-label {
+  font-size: 9px; font-weight: 700;
+  letter-spacing: 0.18em;
+  color: rgba(230, 236, 246, 0.55);
+  white-space: nowrap;
+}
+
+
+/* -------------------------------------------------------------------------
+   6e. Middle-right — scenario card stack
+   ------------------------------------------------------------------------- */
+#scenario-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 320px;
+  max-height: 100%;
+  overflow-y: auto;
+  pointer-events: none;
+}
+#scenario-stack > * { pointer-events: auto; }
+.scenario-card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: var(--glass-border);
+  border-radius: var(--r-chip);
+  color: #cdd6e3;
+  font-family: inherit;
+  font-size: 11px;
+  overflow: hidden;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.scenario-card:hover {
+  background: rgba(20, 26, 38, 0.7);
+  border-color: var(--glass-border-strong);
+}
+.scenario-card-header {
+  display: grid;
+  grid-template-columns: 18px 1fr 80px 36px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.scenario-card-icon {
+  font-size: 14px; line-height: 1; text-align: center;
+  color: #ffd9a0;
+  text-shadow: 0 0 6px rgba(255, 217, 160, 0.55);
+}
+.scenario-card-title {
+  font-weight: 600; letter-spacing: 0.04em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--text);
+}
+.scenario-card-progress {
+  position: relative;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: var(--r-pill);
+  overflow: hidden;
+}
+.scenario-card-progress-fill {
+  height: 100%; width: 0%;
+  background: linear-gradient(to right, #ffb37a, #ff7a4d);
+  box-shadow: 0 0 6px rgba(255, 122, 77, 0.45);
+  transition: width 0.18s linear;
+}
+.scenario-card-days {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  text-align: right;
+  color: rgba(230, 236, 246, 0.7);
+}
+.scenario-card-body {
+  padding: 0 10px 0 36px;
+  max-height: 0; opacity: 0;
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: 11px; line-height: 1.5;
+  color: rgba(230, 236, 246, 0.75);
+  transition: max-height 0.18s ease, opacity 0.18s ease, padding-bottom 0.18s ease;
+  overflow: hidden;
+}
+.scenario-card.expanded .scenario-card-body {
+  max-height: 160px; opacity: 1; padding-bottom: 10px;
+}
+.scenario-card-row { font-variant-numeric: tabular-nums; }
+.scenario-card-stop {
+  align-self: flex-start;
+  margin-top: 6px;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.scenario-card-stop:hover {
+  background: rgba(255, 122, 77, 0.25);
+  border-color: rgba(255, 122, 77, 0.5);
+}
+
+
+/* -------------------------------------------------------------------------
+   6f. Bottom-right — Tweakpane chip + host panel
+   Chip lives in the flex flow at the bottom. Host is absolutely positioned
+   inside the cell, anchored above the chip — so a closed host doesn't claim
+   any layout height.
+   ------------------------------------------------------------------------- */
+#tweakpane-toggle  { flex: 0 0 auto; }
+#tweakpane-host {
+  position: absolute;
+  bottom: calc(100% + var(--gap));
+  right: 0;
+  width: 288px;
+  max-width: calc(100vw - 2 * var(--gutter));
+  padding: 8px;
+  max-height: calc(100dvh - 2 * var(--gutter) - 44px);
+  overflow-y: auto;
+  font-family: inherit;
+  font-size: 11px;
+  transform: translateX(calc(100% + 32px));
+  transition: transform 0.2s ease;
+
+  /* Tweakpane theme overrides — match dim/bright palette */
+  --tp-base-font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --tp-base-background-color: transparent;
+  --tp-base-shadow-color: rgba(0, 0, 0, 0);
+  --tp-button-background-color: rgba(255, 255, 255, 0.1);
+  --tp-button-background-color-active: rgba(255, 255, 255, 0.28);
+  --tp-button-background-color-focus: rgba(255, 255, 255, 0.22);
+  --tp-button-background-color-hover: rgba(255, 255, 255, 0.18);
+  --tp-button-foreground-color: var(--text);
+  --tp-container-background-color: rgba(255, 255, 255, 0.05);
+  --tp-container-background-color-active: rgba(255, 255, 255, 0.2);
+  --tp-container-background-color-focus: rgba(255, 255, 255, 0.14);
+  --tp-container-background-color-hover: rgba(255, 255, 255, 0.1);
+  --tp-container-foreground-color: #cdd6e3;
+  --tp-groove-foreground-color: rgba(255, 255, 255, 0.08);
+  --tp-input-background-color: rgba(255, 255, 255, 0.08);
+  --tp-input-background-color-active: rgba(255, 255, 255, 0.22);
+  --tp-input-background-color-focus: rgba(255, 255, 255, 0.16);
+  --tp-input-background-color-hover: rgba(255, 255, 255, 0.12);
+  --tp-input-foreground-color: var(--text);
+  --tp-label-foreground-color: rgba(230, 236, 246, 0.7);
+  --tp-monitor-background-color: rgba(0, 0, 0, 0.25);
+  --tp-monitor-foreground-color: rgba(230, 236, 246, 0.78);
+}
+#tweakpane-host.open { transform: translateX(0); }
+
+#tweakpane-host .tp-rotv,
+#tweakpane-host .tp-dfwv { background: transparent; box-shadow: none; border-radius: 0; }
+#tweakpane-host .tp-rotv_t,
+#tweakpane-host .tp-fldv_t {
+  font-size: 11px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: rgba(230, 236, 246, 0.85);
+}
+#tweakpane-host .tp-lblv_l {
+  font-size: 11px; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-dim);
+}
+#tweakpane-host .tp-txtv_i,
+#tweakpane-host .tp-sldtxtv_i {
+  font-size: 11px; font-variant-numeric: tabular-nums;
+}
+/* Tweakpane checkbox → pill switch */
+#tweakpane-host .tp-ckbv,
+#tweakpane-host .tp-ckbv_l {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+#tweakpane-host .tp-ckbv_l {
+  display: flex !important; align-items: center !important;
+  justify-content: flex-end !important;
+  cursor: pointer;
+}
+#tweakpane-host .tp-ckbv_w {
+  position: relative !important;
+  width: 32px !important; height: 18px !important;
+  min-width: 32px !important; min-height: 18px !important;
+  border-radius: var(--r-pill) !important;
+  background: rgba(255, 255, 255, 0.18) !important;
+  border: 0 !important; box-shadow: none !important;
+  padding: 0 !important; display: block !important;
+  transition: background 0.15s ease;
+}
+#tweakpane-host .tp-ckbv_w::before {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: rgba(230, 236, 246, 0.9);
+  transition: left 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+  pointer-events: none;
+}
+#tweakpane-host .tp-ckbv_m,
+#tweakpane-host .tp-ckbv_w > *,
+#tweakpane-host .tp-ckbv_w svg,
+#tweakpane-host .tp-ckbv svg { display: none !important; }
+#tweakpane-host .tp-ckbv_i:checked + .tp-ckbv_w,
+#tweakpane-host .tp-ckbv_l:has(.tp-ckbv_i:checked) .tp-ckbv_w {
+  background: rgba(127, 182, 255, 0.55) !important;
+}
+#tweakpane-host .tp-ckbv_i:checked + .tp-ckbv_w::before,
+#tweakpane-host .tp-ckbv_l:has(.tp-ckbv_i:checked) .tp-ckbv_w::before {
+  left: 16px;
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(127, 182, 255, 0.7);
+}
+#tweakpane-host .tp-ckbv_i:disabled + .tp-ckbv_w,
+#tweakpane-host .tp-ckbv_l:has(.tp-ckbv_i:disabled) .tp-ckbv_w { opacity: 0.35; }
+#tweakpane-host .tp-lblv:has(.tp-ckbv) {
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+#tweakpane-host .tp-lblv:has(.tp-ckbv):hover { background: rgba(255, 255, 255, 0.04); }
+#tweakpane-host .tp-lblv:has(.tp-ckbv) .tp-lblv_l { cursor: pointer; }
+
+/* Shared scrollbar style for stack + tweakpane host */
+#tweakpane-host::-webkit-scrollbar,
+#scenario-stack::-webkit-scrollbar       { width: 6px; }
+#tweakpane-host::-webkit-scrollbar-thumb,
+#scenario-stack::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: var(--r-pill); }
+#tweakpane-host::-webkit-scrollbar-track,
+#scenario-stack::-webkit-scrollbar-track { background: transparent; }
+
+
+/* -------------------------------------------------------------------------
+   7. Breakpoints — same grid, smaller children
+   ------------------------------------------------------------------------- */
+
+/* Tablet (640–1023 px): narrower rails, modest slider shrink */
+@media (max-width: 1023px) {
+  :root {
+    --slider-track-len: 120px;
+    --slider-wrap-w:    24px;
+  }
+  #scenario-stack { width: 280px; }
+  #tweakpane-host { width: 260px; }
+}
+
+/* Phone (<640 px): shrink sliders, time chip; hide Tweakpane and Explode label */
+@media (max-width: 639px) {
+  :root {
+    --gutter: 10px;
+    --slider-track-len: 110px;
+    --slider-track-thk: 6px;
+    --slider-wrap-w:    20px;
+  }
+  #season-control,
+  #sealevel-control { width: 52px; padding: 4px 6px; }
+  #season-label,
+  #sealevel-label   { font-size: 8px; letter-spacing: 0.14em; }
+  #season-readout,
+  #sealevel-readout { font-size: 10px; }
+
+  #time-control     { padding: 4px 10px 4px 4px; gap: 8px; }
+  #time-pause       { width: 36px; height: 36px; }
+  #time-pause svg   { width: 16px; height: 16px; }
+  #time-readout     { font-size: 14px; }
+  #date-readout     { font-size: 8px; letter-spacing: 0.14em; }
+  #time-readout-wrap { min-width: 44px; }
+
+  #explode-button .explode-label { display: none; }
+  #explode-button { padding: 0 10px; }
+
+  #scenario-stack   { width: min(220px, 60vw); }
+
+  /* Debug panel off on phone — too cramped to be useful */
+  #tweakpane-toggle,
+  #tweakpane-host   { display: none; }
+}

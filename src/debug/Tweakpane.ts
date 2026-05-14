@@ -2,8 +2,8 @@
  * Tweakpane orchestrator.
  *
  * Layout:
- *   Camera | Scene | Time of day | Layers | Materials/{Globe, Atmosphere,
- *   Ocean, Clouds, PostFX} | Pick
+ *   Camera | Airplanes | Materials/{Globe, Atmosphere, Ocean, Clouds,
+ *   Highways, Cities} | Nuclear | Scenarios | Pick
  *
  * The debug state is a plain mutable object that the scene graph reads
  * each frame to push uniforms. Tweakpane mutates it in-place via its
@@ -97,21 +97,42 @@ export type DebugState = {
       lerpStrengthIce: number;
       lerpStrengthInfection: number;
       lerpStrengthPollution: number;
-      biomeStrength: number;
       snowLineStrength: number;
       seasonOffsetC: number;
       alpineStrength: number;
-      // Distance in km over which biome colour fades to neutral at borders.
-      biomeEdgeSharpness: number;
-      // Per-biome surface variation. Master = 0 → identical to pre-feature look.
-      biomeSurfaceStrength: number;
-      biomeColorVar: number;
-      biomeBumpStrength: number;
-      biomeNoiseFreq: number;
-      // 12-entry per-biome amplitude (0..2). Index = biome class.
-      biomeSurfaceAmps: number[];
+      /**
+       * Biome edge softening, in degrees of longitude. 0 = hard
+       * cell-boundary palette; 1° ≈ one HEALPix-cell feather; 5° = strong
+       * continental smearing. Drives a separable gaussian blur baked into
+       * the biome-colour equirect; the land shader takes a single
+       * bilinear sample.
+       */
+      biomeBlurDeg: number;
+      /**
+       * 15-entry WWF TEOW biome palette. Index 0 = fallback / no-data
+       * (cells outside every polygon); indices 1..14 = TEOW biome codes.
+       * Each entry is a hex CSS colour. In ecoregion mode the entry is
+       * the HSV base for every ecoregion that descends from that biome;
+       * in legacy mode the entry is sampled directly via
+       * `attribute_static.G * 255`.
+       */
+      biomePalette: string[];
+      /**
+       * Per-realm HSV tint applied on top of the parent biome colour
+       * (ecoregion mode only). Length 9; slot 0 unused; 1..8 = realms
+       * (1 Australasia .. 8 Palearctic). Defaults are neutral so the
+       * legacy 14-biome look ships out of the box.
+       */
+      realmTint: { dHue: number; satMult: number; valMult: number }[];
+      /**
+       * Per-ecoregion HSV wobble strength (ecoregion mode only). 0 =
+       * none; 1 = ±8° hue / ±10% sat / ±10% value variance per
+       * ecoregion. Splits Amazon ≠ Atlantic Forest etc. without
+       * touching the biome / realm knobs.
+       */
+      ecoregionJitter: number;
+      landSpecularSmoothness: number;
       specularStrength: number;
-      biomeSpecAmps: number[];
     };
     atmosphere: {
       preset: string;
@@ -275,8 +296,12 @@ export const initialDebugState: DebugState = {
   materials: {
     globe: {
       ...DEFAULTS.materials.globe,
-      biomeSurfaceAmps: [...DEFAULTS.materials.globe.biomeSurfaceAmps],
-      biomeSpecAmps: [...DEFAULTS.materials.globe.biomeSpecAmps],
+      // Clone the palette array — Tweakpane mutates entries in place via
+      // the per-slot color picker, and DEFAULTS is frozen-at-source.
+      biomePalette: [...DEFAULTS.materials.globe.biomePalette],
+      // Same story for realm tints — clone each entry so per-slider
+      // writes don't bleed into the frozen defaults table.
+      realmTint: DEFAULTS.materials.globe.realmTint.map((t) => ({ ...t })),
     },
     atmosphere: { ...DEFAULTS.materials.atmosphere },
     ocean: { ...DEFAULTS.materials.ocean },
@@ -340,38 +365,12 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
   // is missing (tests, alternate hosts).
   const host = document.getElementById('tweakpane-host');
   const pane = host
-    ? new Pane({ title: 'earth-destroyer', expanded: true, container: host })
-    : new Pane({ title: 'earth-destroyer', expanded: true });
+    ? new Pane({ title: 'earth-destroyer', expanded: false, container: host })
+    : new Pane({ title: 'earth-destroyer', expanded: false });
 
   const cameraFolder: FolderApi = pane.addFolder({ title: 'Camera' });
   cameraFolder.addBinding(state.camera, 'autoOrbit');
   cameraFolder.addBinding(state.camera, 'orbitSpeed', { min: 0, max: 0.5, step: 0.001 });
-
-  const sceneFolder = pane.addFolder({ title: 'Scene' });
-  sceneFolder.addBinding(state.scene, 'background');
-  sceneFolder.addBinding(state.scene, 'showGrid', { disabled: true, label: 'showGrid (n/a)' });
-  sceneFolder.addBinding(state.debug, 'fpsCounter', { label: 'FPS counter' });
-
-  const altitudeFolder = pane.addFolder({ title: 'Altitude', expanded: false });
-  altitudeFolder.addBinding(state.altitude, 'scaleFactor', {
-    min: 1, max: 10, step: 0.1, label: 'scale (×)',
-  });
-
-  // Time of day: the floating bottom-center slider drives `t01` and the
-  // pause button toggles `paused`. Tweakpane mirrors the pause toggle so
-  // it can also be flipped from here.
-  const todFolder = pane.addFolder({ title: 'Time of day' });
-  todFolder.addBinding(state.timeOfDay, 'paused', { label: 'pause' });
-
-  // Clouds toggle still lives on the floating bottom toggle bar
-  // (#layer-toggles in index.html). Ocean / atmosphere / highways /
-  // planes have been merged into their respective Materials sub-folders
-  // (header toggle + reset button + disabled-on-off settings). Airports
-  // + routes remain here as the fine-grained airline-overlay knobs;
-  // globe stays here; postFx is n/a.
-  const layersFolder = pane.addFolder({ title: 'Layers' });
-  layersFolder.addBinding(state.layers, 'globe');
-  layersFolder.addBinding(state.layers, 'postFx', { disabled: true, label: 'postFx (n/a)' });
 
   // Airplanes folder: layer toggle (combined master for planes + trails)
   // and a reset chip stay at the top — the speed/density/opacity bindings
@@ -423,75 +422,129 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
 
   const mat = pane.addFolder({ title: 'Materials' });
 
-  // Globe live bindings live outside the panel: `seasonOffsetC` is driven by
-  // the floating left-center thermostat (#season-control in index.html). The
-  // older globe knobs (ambient, night tint, dynamic recolour, biomeStrength,
-  // snowLineStrength, alpineStrength) are tuned via DebugState defaults and
-  // pushed to uniforms each frame via `applyMaterials`. The Globe folder
-  // below exposes the new coast / biome-edge / biome-surface knobs that
-  // arrived with the distance-field bake — these need live tuning.
+  // `seasonOffsetC` is driven by the floating thermostat (#season-control).
+  // Header row = layer toggle + reset chip; sub-folders below are
+  // greyed out when the toggle is off.
   const globeMat = mat.addFolder({ title: 'Globe', expanded: false });
-
-  const gEdges = globeMat.addFolder({ title: 'Edges & coastline', expanded: false });
-  gEdges.addBinding(state.materials.globe, 'biomeEdgeSharpness', {
-    min: 0, max: 100, step: 0.5, label: 'biome edge fade (km)',
+  const globeSubFolders: { disabled: boolean }[] = [];
+  const updateGlobeDisabled = (): void => {
+    const off = !state.layers.globe;
+    for (const f of globeSubFolders) f.disabled = off;
+  };
+  globeMat.addBinding(state.layers, 'globe', { label: 'enabled' }).on('change', () => {
+    updateGlobeDisabled();
+  });
+  globeMat.addButton({ title: 'Reset' }).on('click', () => {
+    state.layers.globe = DEFAULTS.layers.globe;
+    const d = DEFAULTS.materials.globe;
+    Object.assign(state.materials.globe, d, {
+      biomePalette: [...d.biomePalette],
+    });
+    pane.refresh();
+    updateGlobeDisabled();
   });
 
-  const gBiome = globeMat.addFolder({ title: 'Biome surface', expanded: false });
-  gBiome.addBinding(state.materials.globe, 'biomeSurfaceStrength', {
-    min: 0, max: 1, step: 0.01, label: 'master strength',
-  });
-  gBiome.addBinding(state.materials.globe, 'biomeColorVar', {
-    min: 0, max: 1, step: 0.01, label: 'color variation',
-  });
-  gBiome.addBinding(state.materials.globe, 'biomeBumpStrength', {
-    min: 0, max: 1, step: 0.01, label: 'bump',
-  });
-  gBiome.addBinding(state.materials.globe, 'biomeNoiseFreq', {
-    min: 1, max: 40, step: 0.5, label: 'noise frequency',
-  });
-  // Per-biome amplitudes — 12 sliders. Tweakpane needs each entry as a
-  // distinct binding key, so wrap each index in a small per-entry proxy
-  // object whose mutation writes back into the array.
-  const BIOME_LABELS = [
+  // Biome palette — one color picker per WWF TEOW slot. Index 0 is the
+  // no-data fallback (cells outside every polygon); 1..14 are TEOW
+  // biome codes. Labels mirror `wwf_biomes.py` so the UI maps onto the
+  // pipeline taxonomy.
+  const biomeLabels: readonly string[] = [
     '0 fallback',
-    '1 forest',
-    '2 shrubland',
-    '3 grassland',
-    '4 cropland',
-    '5 built-up',
-    '6 desert',
-    '7 snow/ice',
-    '8 water',
-    '9 wetland',
-    '10 mangroves',
-    '11 tundra/alpine',
+    '1 trop moist',
+    '2 trop dry',
+    '3 trop conifer',
+    '4 temp broadleaf',
+    '5 temp conifer',
+    '6 boreal/taiga',
+    '7 trop savanna',
+    '8 temp grass',
+    '9 flooded grass',
+    '10 montane grass',
+    '11 tundra',
+    '12 mediterranean',
+    '13 desert/xeric',
+    '14 mangroves',
   ];
-  const ampsFolder = gBiome.addFolder({ title: 'Per-biome amplitude', expanded: false });
-  for (let i = 0; i < 12; i++) {
-    const proxy = { v: state.materials.globe.biomeSurfaceAmps[i]! };
-    ampsFolder
-      .addBinding(proxy, 'v', { min: 0, max: 2, step: 0.01, label: BIOME_LABELS[i]! })
-      .on('change', (ev) => {
-        state.materials.globe.biomeSurfaceAmps[i] = ev.value;
-      });
+  const biomeFolder = globeMat.addFolder({ title: 'Biome palette', expanded: false });
+  globeSubFolders.push(biomeFolder);
+  // Edge softening — drives the separable gaussian blur baked into the
+  // biome-colour equirect. 0 reproduces the old hard palette boundaries.
+  biomeFolder.addBinding(state.materials.globe, 'biomeBlurDeg', {
+    min: 0,
+    max: 5,
+    step: 0.05,
+    label: 'edge blur (°)',
+  });
+  // Tweakpane wants object-keyed bindings; arrays can't be bound by
+  // numeric index in strict TS. Wrap each slot in a getter/setter proxy
+  // so the color picker reads/writes the underlying palette array.
+  for (let i = 0; i < state.materials.globe.biomePalette.length; i++) {
+    const idx = i;
+    const proxy = {
+      get color(): string {
+        return state.materials.globe.biomePalette[idx] ?? '#000000';
+      },
+      set color(v: string) {
+        state.materials.globe.biomePalette[idx] = v;
+      },
+    };
+    biomeFolder.addBinding(proxy, 'color', {
+      label: biomeLabels[idx] ?? `${idx}`,
+      view: 'color',
+    });
+  }
+
+  // Realm tint — 8 entries, one per WWF realm. Each entry shifts hue,
+  // saturation, and value of every ecoregion in that realm. Defaults
+  // are neutral so the legacy 14-biome look ships out of the box.
+  // Indices match `ecoregion_lookup.py:REALM_CODE`.
+  const realmLabels: readonly string[] = [
+    '0 (sentinel)',
+    '1 Australasia',
+    '2 Antarctic',
+    '3 Afrotropic',
+    '4 Indomalay',
+    '5 Nearctic',
+    '6 Neotropic',
+    '7 Oceania',
+    '8 Palearctic',
+  ];
+  const realmFolder = globeMat.addFolder({ title: 'Realm tint', expanded: false });
+  globeSubFolders.push(realmFolder);
+  // Per-ecoregion variety knob lives at the top of the folder so the
+  // user can dial overall jitter independently of the per-realm sliders.
+  realmFolder.addBinding(state.materials.globe, 'ecoregionJitter', {
+    min: 0,
+    max: 2,
+    step: 0.01,
+    label: 'ecoregion variety',
+  });
+  for (let r = 1; r < state.materials.globe.realmTint.length; r++) {
+    const idx = r;
+    const sub = realmFolder.addFolder({
+      title: realmLabels[r] ?? `realm ${r}`,
+      expanded: false,
+    });
+    sub.addBinding(state.materials.globe.realmTint[idx]!, 'dHue', {
+      min: -30, max: 30, step: 0.5, label: 'hue Δ°',
+    });
+    sub.addBinding(state.materials.globe.realmTint[idx]!, 'satMult', {
+      min: 0.6, max: 1.4, step: 0.01, label: 'sat ×',
+    });
+    sub.addBinding(state.materials.globe.realmTint[idx]!, 'valMult', {
+      min: 0.6, max: 1.4, step: 0.01, label: 'val ×',
+    });
   }
 
   // Land specular — wide-cone Blinn-Phong highlight that tracks the camera.
-  // Master strength multiplies the per-biome amps below; 0 = pure Lambert.
   const gLighting = globeMat.addFolder({ title: 'Lighting', expanded: false });
+  globeSubFolders.push(gLighting);
   gLighting.addBinding(state.materials.globe, 'specularStrength', {
     min: 0, max: 3, step: 0.01, label: 'specular',
   });
-  const specAmpsFolder = gLighting.addFolder({ title: 'Per-biome specular', expanded: false });
-  for (let i = 0; i < 12; i++) {
-    const proxy = { v: state.materials.globe.biomeSpecAmps[i]! };
-    specAmpsFolder
-      .addBinding(proxy, 'v', { min: 0, max: 1, step: 0.01, label: BIOME_LABELS[i]! })
-      .on('change', (ev) => {
-        state.materials.globe.biomeSpecAmps[i] = ev.value;
-      });
-  }
+  gLighting.addBinding(state.materials.globe, 'landSpecularSmoothness', {
+    min: 0, max: 1, step: 0.01, label: 'land smoothness',
+  });
   // Moonlight on the night side. `moonIntensity` 0 disables; 0.15 is the
   // design default. Drives both the land lambert glow and the water
   // "path of moonlight" specular at the antipodal-moon point.
@@ -502,6 +555,7 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
     step: 0.01,
     label: 'moon intensity',
   });
+  updateGlobeDisabled();
 
   // Atmosphere — Hillaire 2020 LUTs. `rayleighScale`/`mieScale` are
   // multipliers on the physical β coefficients; 1.0 = real Earth.
@@ -695,12 +749,31 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
   updateOceanDisabled();
 
   // Clouds — volumetric raymarch in the [1.012, 1.025] shell.
+  // Header row = layer toggle + reset chip; settings below are
+  // greyed out when the toggle is off.
   const cloudsMat = mat.addFolder({ title: 'Clouds', expanded: false });
-  cloudsMat.addBinding(state.materials.clouds, 'density', { min: 0, max: 2, step: 0.01 });
-  cloudsMat.addBinding(state.materials.clouds, 'coverage', { min: 0, max: 1, step: 0.01 });
-  cloudsMat.addBinding(state.materials.clouds, 'beer', { min: 0, max: 4, step: 0.05 });
-  cloudsMat.addBinding(state.materials.clouds, 'henyey', { min: -0.95, max: 0.95, step: 0.01 });
-  cloudsMat.addBinding(state.materials.clouds, 'advection', { min: 0, max: 100, step: 0.5 });
+  const cloudsControls: { disabled: boolean }[] = [];
+  const updateCloudsDisabled = (): void => {
+    const off = !state.layers.clouds;
+    for (const c of cloudsControls) c.disabled = off;
+  };
+  cloudsMat.addBinding(state.layers, 'clouds', { label: 'enabled' }).on('change', () => {
+    updateCloudsDisabled();
+  });
+  cloudsMat.addButton({ title: 'Reset' }).on('click', () => {
+    state.layers.clouds = DEFAULTS.layers.clouds;
+    Object.assign(state.materials.clouds, DEFAULTS.materials.clouds);
+    pane.refresh();
+    updateCloudsDisabled();
+  });
+  cloudsControls.push(
+    cloudsMat.addBinding(state.materials.clouds, 'density', { min: 0, max: 2, step: 0.01 }),
+    cloudsMat.addBinding(state.materials.clouds, 'coverage', { min: 0, max: 1, step: 0.01 }),
+    cloudsMat.addBinding(state.materials.clouds, 'beer', { min: 0, max: 4, step: 0.05 }),
+    cloudsMat.addBinding(state.materials.clouds, 'henyey', { min: -0.95, max: 0.95, step: 0.01 }),
+    cloudsMat.addBinding(state.materials.clouds, 'advection', { min: 0, max: 100, step: 0.5 }),
+  );
+  updateCloudsDisabled();
 
   // Highways — merged ribbon mesh tracing every kept road polyline. Width
   // is in *screen pixels* (per kind), so the network stays delicate at
@@ -800,8 +873,8 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
   // Cities — far-LOD polygon glow. The PIP test stamps each city's
   // outline; the block-spray inside is a per-row brick grid with random
   // x-stretch (aspect jitter) and a running-bond x-offset.
-  const citiesMat = mat.addFolder({ title: 'Cities', expanded: true });
-  const cBricks = citiesMat.addFolder({ title: 'Brick pattern', expanded: true });
+  const citiesMat = mat.addFolder({ title: 'Cities', expanded: false });
+  const cBricks = citiesMat.addFolder({ title: 'Brick pattern', expanded: false });
   cBricks.addBinding(state.materials.cities, 'gridDensity', {
     min: 4, max: 64, step: 1, label: 'cells per half',
   });
@@ -840,22 +913,12 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
     min: 0, max: 5_000_000, step: 1000, label: 'min population',
   });
 
-  // PostFX — bloom + vignette + grade tint. Not wired: PostFXChain currently
-  // ships a passthrough RenderPass, so these bindings are greyed out until
-  // the bloom / vignette / grade passes are attached.
-  const postMat = mat.addFolder({ title: 'PostFX (n/a)', expanded: false });
-  postMat.disabled = true;
-  postMat.addBinding(state.materials.postFx, 'bloomThreshold', { min: 0, max: 2, step: 0.01 });
-  postMat.addBinding(state.materials.postFx, 'bloomStrength', { min: 0, max: 3, step: 0.01 });
-  postMat.addBinding(state.materials.postFx, 'vignette', { min: 0, max: 1.5, step: 0.01 });
-  postMat.addBinding(state.materials.postFx, 'gradeTint');
-
   // Nuclear explosion knobs. "Size & timing" live-applies every frame;
   // the other groups only take effect on the next detonation because they
   // alter the configs the particle list is built from.
   const nukeFolder = pane.addFolder({ title: 'Nuclear', expanded: false });
 
-  const nSize = nukeFolder.addFolder({ title: 'Size & timing', expanded: true });
+  const nSize = nukeFolder.addFolder({ title: 'Size & timing', expanded: false });
   nSize.addBinding(state.nuclear, 'worldScale', {
     min: 0.001, max: 0.010, step: 0.0001, label: 'size',
   });
@@ -909,7 +972,7 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
   // NEXT detonation; in-flight scenarios keep their captured payload).
   // Wasteland uniforms are pushed every frame from scene-graph.applyMaterials.
   const scnFolder = pane.addFolder({ title: 'Scenarios', expanded: false });
-  const scnNuke = scnFolder.addFolder({ title: 'Nuclear', expanded: true });
+  const scnNuke = scnFolder.addFolder({ title: 'Nuclear', expanded: false });
   scnNuke.addBinding(state.scenarios.nuclear, 'radiusKm', {
     min: 50, max: 2000, step: 10, label: 'radius (km)',
   });
@@ -931,7 +994,7 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
     min: 0, max: 1, step: 0.01, label: 'strength',
   });
 
-  const pickFolder = pane.addFolder({ title: 'Pick', expanded: true });
+  const pickFolder = pane.addFolder({ title: 'Pick', expanded: false });
   pickFolder.addBinding(state.pick, 'lastPick', { readonly: true, multiline: true, rows: 8 });
 
   return {

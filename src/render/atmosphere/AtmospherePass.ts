@@ -129,6 +129,7 @@ export type AtmosphereOptions = {
   sunDiskAngleDeg?: number;
   solarIrradiance?: THREE.Vector3;
   atmosphereRadius?: number;
+  planetRadius?: number;
 };
 
 // Tweakpane stores `sunDiskSize`; `scene-graph.applyMaterials` multiplies
@@ -150,15 +151,18 @@ export class AtmospherePass {
   private prevRayleighScale = NaN;
   private prevMieScale = NaN;
   private prevAtmosphereRadius = NaN;
+  private prevPlanetRadius = NaN;
   private readonly prevSolarIrradiance: { r: number; g: number; b: number };
 
   constructor(renderer: THREE.WebGLRenderer, opts: AtmosphereOptions = {}) {
     const a = DEFAULTS.materials.atmosphere;
     const atmosphereRadius = opts.atmosphereRadius ?? 1.07;
+    const planetRadius = opts.planetRadius ?? 1.0;
     this.luts = new AtmosphereLuts(renderer, {
       rayleighScale: opts.rayleighScale ?? a.rayleighScale,
       mieScale: opts.mieScale ?? a.mieScale,
       atmosphereRadius,
+      planetRadius,
       ...(opts.solarIrradiance ? { solarIrradiance: opts.solarIrradiance } : {}),
     });
 
@@ -186,6 +190,7 @@ export class AtmospherePass {
           value: opts.solarIrradiance?.clone() ?? new THREE.Vector3(1.474, 1.8504, 1.91198),
         },
         uAtmosphereRadius: { value: atmosphereRadius },
+        uPlanetRadius: { value: planetRadius },
       },
       transparent: true,
       depthTest: true,
@@ -247,22 +252,31 @@ export class AtmospherePass {
   // Skip the LUT rebake when nothing actually changed — otherwise `recomputeAll`
   // re-renders the sky-view LUT every frame on top of `syncFromCamera` doing the
   // same, doubling the sky-view bake cost.
-  setScales(rayleigh: number, mie: number, atmosphereRadius: number): void {
+  setScales(
+    rayleigh: number,
+    mie: number,
+    atmosphereRadius: number,
+    planetRadius: number,
+  ): void {
     if (
       rayleigh === this.prevRayleighScale &&
       mie === this.prevMieScale &&
-      atmosphereRadius === this.prevAtmosphereRadius
+      atmosphereRadius === this.prevAtmosphereRadius &&
+      planetRadius === this.prevPlanetRadius
     ) {
       return;
     }
     this.prevRayleighScale = rayleigh;
     this.prevMieScale = mie;
     this.prevAtmosphereRadius = atmosphereRadius;
+    this.prevPlanetRadius = planetRadius;
     this.material.uniforms.uAtmosphereRadius!.value = atmosphereRadius;
+    this.material.uniforms.uPlanetRadius!.value = planetRadius;
     this.luts.recomputeAll(this.cameraPos, this.sunDir, {
       rayleigh,
       mie,
       atmosphereRadius,
+      planetRadius,
     });
   }
 

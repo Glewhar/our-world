@@ -7,6 +7,8 @@
  */
 import type * as THREE from 'three';
 
+import type { EcoregionLookup } from './EcoregionTexture.js';
+
 // ─── C1: Pipeline → Runtime ───────────────────────────────────────────────
 
 export type WorldManifest = {
@@ -52,6 +54,24 @@ export type WorldManifest = {
      * `data-pipeline/src/earth_pipeline/distance_field.py`.
      */
     distance_field: ArtifactRef;
+    /**
+     * Per-HEALPix dense ecoregion index (uint16, little-endian; two
+     * uint8 channels R = low byte, G = high byte). 0 = no data; 1..N =
+     * TEOW ecoregion (current bake: N = 825). The companion
+     * `ecoregion_lookup` JSON maps each index → parent biome (1..14)
+     * and realm (1..8) so the shader can derive a per-ecoregion colour
+     * from the existing 14-biome palette × 8-realm tint without
+     * shipping 825 hand-picked colours. Optional: legacy bakes that
+     * predate Phase 2.B still validate.
+     */
+    attribute_eco?: ArtifactRef;
+    /**
+     * Gzipped JSON lookup keyed by the dense ecoregion index from
+     * `attribute_eco`. Carries the parent biome / realm / human-readable
+     * name for every ecoregion. Loaded once at boot. Format: `json`,
+     * gzipped on disk (`.json.gz`).
+     */
+    ecoregion_lookup?: ArtifactRef;
   };
   bodies: BodyRecord[];
   graphs: {
@@ -306,6 +326,24 @@ export interface WorldRuntime {
    * "everywhere far from any boundary").
    */
   getDistanceFieldTexture(): THREE.DataTexture | null;
+
+  /**
+   * RG8 dense ecoregion index per HEALPix cell. R = low byte, G = high
+   * byte; the shader reconstructs `idx = r + g * 256` as the index into
+   * `getEcoregionLookup()`. Returns null when the bake didn't ship the
+   * `attribute_eco` / `ecoregion_lookup` artifacts (legacy bakes); the
+   * land shader degrades to the 14-biome palette path.
+   */
+  getEcoregionTexture(): THREE.DataTexture | null;
+
+  /**
+   * Lookup table for the dense ecoregion indices stored in
+   * `getEcoregionTexture()`. `lookup.biome[idx]` is the parent biome
+   * (1..14); `lookup.realm[idx]` is the realm (1..8); slot 0 is the
+   * no-data sentinel. Returns null when the bake didn't ship the
+   * artifacts.
+   */
+  getEcoregionLookup(): EcoregionLookup | null;
 
   /**
    * Wasteland R8 attribute texture (one byte per HEALPix cell, value

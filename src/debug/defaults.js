@@ -77,48 +77,63 @@ export const DEFAULTS = {
             lerpStrengthIce: 1.0,
             lerpStrengthInfection: 1.0,
             lerpStrengthPollution: 1.0,
-            biomeStrength: 1.0,
             snowLineStrength: 0.55,
             seasonOffsetC: 0.0,
             alpineStrength: 0.7,
-            biomeEdgeSharpness: 80.0,
-            biomeSurfaceStrength: 1.0,
-            biomeColorVar: 0.6,
-            biomeBumpStrength: 0.5,
-            biomeNoiseFreq: 2.5,
-            // 12 entries — indexed by biome class.
-            biomeSurfaceAmps: [0.8, 0.7, 0.6, 0.5, 0.6, 0.4, 0.9, 0.3, 0.7, 0.4, 0.6, 1.0],
-            specularStrength: 1.4,
-            biomeSpecAmps: [0.05, 0.1, 0.04, 0.06, 0.06, 0.05, 0.0, 0.4, 0.2, 0.15, 0.12, 0.2],
-            // Biome palette — indexed by canonical biome_class code (see
-            // data-pipeline/config/attrs.yaml esa_worldcover remap):
-            //   0  fallback / barren         c4bcaa
-            //   1  forest (spring green)     6eaf85
-            //   2  shrubland (olive/khaki)   bfc294
-            //   3  grassland (light olive)   c4d49f
-            //   4  cropland (wheat)          e0dba6
-            //   5  built-up (neutral grey)   b3b1ae
-            //   6  bare / desert tan         f1e3bd
-            //   7  snow & ice (pale blue)    f1f6fb
-            //   8  permanent water (overridden by ocean shader)
-            //   9  herbaceous wetland        a0bdaf
-            //  10  mangroves                 85ac98
-            //  11  tundra / moss             dbe3e5
+            // Biome-color edge softening. 0 = hard cell-boundary palette (old
+            // behaviour); 1° ≈ one HEALPix-cell feather; 5° = strong continental
+            // smearing. Drives a separable gaussian blur baked into a
+            // 4096×2048 colour equirect; the land shader takes a single
+            // bilinear sample for its base colour.
+            biomeBlurDeg: 3.0,
+            // 15-entry palette indexed by WWF TEOW biome code (0 = no-data
+            // fallback, 1..14 = TEOW biomes). The shader reads
+            // `attribute_static.G * 255` and looks up directly. Tweakpane
+            // exposes each slot for live tuning.
             biomePalette: [
-                '#c4bcaa',
-                '#6eaf85',
-                '#bfc294',
-                '#c4d49f',
-                '#e0dba6',
-                '#b3b1ae',
-                '#f1e3bd',
-                '#f1f6fb',
-                '#ff00ff',
-                '#a0bdaf',
-                '#85ac98',
-                '#dbe3e5',
+                '#c4bcaa', //  0  no data / fallback (old land-base)
+                '#2f6a3c', //  1  tropical moist forest
+                '#7a8a4a', //  2  tropical dry forest
+                '#5b7a52', //  3  tropical coniferous forest
+                '#6e8c54', //  4  temperate broadleaf
+                '#4d6c52', //  5  temperate conifer
+                '#3e5a4a', //  6  boreal / taiga
+                '#bea870', //  7  tropical savanna
+                '#b3a578', //  8  temperate grassland
+                '#90a48c', //  9  flooded grassland
+                '#94a08a', // 10  montane grassland
+                '#bdb7a8', // 11  tundra
+                '#9a8e5a', // 12  mediterranean
+                '#c8b486', // 13  desert / xeric
+                '#264c40', // 14  mangroves
             ],
-            // Elevation / climate-driven tints applied on top of the biome palette.
+            // Per-realm HSV tint applied on top of the parent biome colour.
+            // Length 9 (slot 0 unused; 1..8 = realms in the order
+            // 1 Australasia, 2 Antarctic, 3 Afrotropic, 4 Indomalay,
+            // 5 Nearctic, 6 Neotropic, 7 Oceania, 8 Palearctic — matching
+            // `data-pipeline/src/earth_pipeline/ecoregion_lookup.py`). All
+            // defaults are neutral (no tint) so a fresh bake matches the
+            // legacy 14-biome look until the user starts tuning.
+            realmTint: [
+                { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 0 sentinel
+                { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 1 Australasia
+                { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 2 Antarctic
+                { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 3 Afrotropic
+                { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 4 Indomalay
+                { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 5 Nearctic
+                { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 6 Neotropic
+                { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 7 Oceania
+                { dHue: 0, satMult: 1.0, valMult: 1.0 }, // 8 Palearctic
+            ],
+            // Strength of the per-ecoregion deterministic HSV wobble. 0 = none
+            // (every ecoregion paints exactly its biome×realm colour); 1 =
+            // ±8° hue / ±10% sat / ±10% value variance per ecoregion. The
+            // default is mild so the variety reads without breaking the
+            // hand-picked palette.
+            ecoregionJitter: 1.3,
+            landSpecularSmoothness: 0.08,
+            specularStrength: 1.4,
+            // Elevation / climate-driven tints applied on top of the land base colour.
             alpineBareColor: '#c4bcb3', // bare rock at high altitude
             coldToneColor: '#bcb8b1', // cold-climate desaturation
             hotDryColor: '#e5dabc', // hot/dry sun-baked tint
@@ -126,8 +141,8 @@ export const DEFAULTS = {
             // snow. The shader lerps between them by the snow-line mix.
             specularTintWarm: '#fffcf6',
             specularTintCool: '#f9fcff',
-            // Moonlight reflectance — biome desaturates toward this neutral grey
-            // under antipodal moonlight.
+            // Moonlight reflectance — land base color desaturates toward this
+            // neutral grey under antipodal moonlight.
             moonReflectanceBase: '#cbcbcb',
         },
         atmosphere: {

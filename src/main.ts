@@ -153,6 +153,18 @@ async function boot(): Promise<void> {
     toggleClouds.checked = debug.state.layers.clouds;
     toggleClouds.addEventListener('change', () => {
       debug.state.layers.clouds = toggleClouds.checked;
+      debug.pane.refresh();
+    });
+  }
+
+  // FPS counter toggle — drives `#fps-counter` visibility (see frame loop
+  // below). Settings-panel mirror of the same state the Tweakpane used to
+  // expose; FPS is a user-facing stat, not a debug knob.
+  const toggleFps = document.getElementById('toggle-fps') as HTMLInputElement | null;
+  if (toggleFps) {
+    toggleFps.checked = debug.state.debug.fpsCounter;
+    toggleFps.addEventListener('change', () => {
+      debug.state.debug.fpsCounter = toggleFps.checked;
     });
   }
 

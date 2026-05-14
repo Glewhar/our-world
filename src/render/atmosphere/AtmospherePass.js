@@ -135,14 +135,17 @@ export class AtmospherePass {
     prevRayleighScale = NaN;
     prevMieScale = NaN;
     prevAtmosphereRadius = NaN;
+    prevPlanetRadius = NaN;
     prevSolarIrradiance;
     constructor(renderer, opts = {}) {
         const a = DEFAULTS.materials.atmosphere;
         const atmosphereRadius = opts.atmosphereRadius ?? 1.07;
+        const planetRadius = opts.planetRadius ?? 1.0;
         this.luts = new AtmosphereLuts(renderer, {
             rayleighScale: opts.rayleighScale ?? a.rayleighScale,
             mieScale: opts.mieScale ?? a.mieScale,
             atmosphereRadius,
+            planetRadius,
             ...(opts.solarIrradiance ? { solarIrradiance: opts.solarIrradiance } : {}),
         });
         const initialIrradiance = opts.solarIrradiance ?? new THREE.Vector3(1.474, 1.8504, 1.91198);
@@ -168,6 +171,7 @@ export class AtmospherePass {
                     value: opts.solarIrradiance?.clone() ?? new THREE.Vector3(1.474, 1.8504, 1.91198),
                 },
                 uAtmosphereRadius: { value: atmosphereRadius },
+                uPlanetRadius: { value: planetRadius },
             },
             transparent: true,
             depthTest: true,
@@ -221,20 +225,24 @@ export class AtmospherePass {
     // Skip the LUT rebake when nothing actually changed — otherwise `recomputeAll`
     // re-renders the sky-view LUT every frame on top of `syncFromCamera` doing the
     // same, doubling the sky-view bake cost.
-    setScales(rayleigh, mie, atmosphereRadius) {
+    setScales(rayleigh, mie, atmosphereRadius, planetRadius) {
         if (rayleigh === this.prevRayleighScale &&
             mie === this.prevMieScale &&
-            atmosphereRadius === this.prevAtmosphereRadius) {
+            atmosphereRadius === this.prevAtmosphereRadius &&
+            planetRadius === this.prevPlanetRadius) {
             return;
         }
         this.prevRayleighScale = rayleigh;
         this.prevMieScale = mie;
         this.prevAtmosphereRadius = atmosphereRadius;
+        this.prevPlanetRadius = planetRadius;
         this.material.uniforms.uAtmosphereRadius.value = atmosphereRadius;
+        this.material.uniforms.uPlanetRadius.value = planetRadius;
         this.luts.recomputeAll(this.cameraPos, this.sunDir, {
             rayleigh,
             mie,
             atmosphereRadius,
+            planetRadius,
         });
     }
     setExposure(exposure) {

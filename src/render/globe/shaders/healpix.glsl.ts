@@ -127,7 +127,7 @@ ivec2 healpixIpixToTexel(int ipix, int width) {
 // Unit-sphere direction → equirectangular UV. Lon = atan2(y,x) maps to U;
 // lat = asin(z) maps to V (V=0 at the north pole, V=1 at the south).
 // Shared by every shader that bilinear-samples one of the equirect bakes
-// (distance field, biome colour, elevation equirect, …).
+// (distance field, elevation equirect, …).
 vec2 sphereDirToEquirectUv(vec3 d) {
   float phi = atan(d.y, d.x);
   float theta = asin(clamp(d.z, -1.0, 1.0));

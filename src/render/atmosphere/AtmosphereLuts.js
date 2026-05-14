@@ -331,6 +331,7 @@ function createTransmittanceMaterial(opts) {
             uRayleighScale: { value: opts.rayleighScale },
             uMieScale: { value: opts.mieScale },
             uAtmosphereRadius: { value: opts.atmosphereRadius },
+            uPlanetRadius: { value: opts.planetRadius },
         },
         depthTest: false,
         depthWrite: false,
@@ -347,6 +348,7 @@ function createMultiScatteringMaterial(transmittanceTex, opts) {
             uMieScale: { value: opts.mieScale },
             uSolarIrradiance: { value: opts.solarIrradiance },
             uAtmosphereRadius: { value: opts.atmosphereRadius },
+            uPlanetRadius: { value: opts.planetRadius },
         },
         depthTest: false,
         depthWrite: false,
@@ -366,6 +368,7 @@ function createSkyViewMaterial(transmittanceTex, multiScatteringTex, opts) {
             uMieScale: { value: opts.mieScale },
             uSolarIrradiance: { value: opts.solarIrradiance },
             uAtmosphereRadius: { value: opts.atmosphereRadius },
+            uPlanetRadius: { value: opts.planetRadius },
         },
         depthTest: false,
         depthWrite: false,
@@ -386,6 +389,7 @@ export class AtmosphereLuts {
     rayleighScale;
     mieScale;
     atmosphereRadius;
+    planetRadius;
     constructor(renderer, opts = {}) {
         this.renderer = renderer;
         const ctx = renderer.getContext();
@@ -394,6 +398,7 @@ export class AtmosphereLuts {
         this.rayleighScale = opts.rayleighScale ?? 1;
         this.mieScale = opts.mieScale ?? 1;
         this.atmosphereRadius = opts.atmosphereRadius ?? 1.07;
+        this.planetRadius = opts.planetRadius ?? 1.0;
         this.transmittance = makeRT(TRANSMITTANCE_LUT_WIDTH, TRANSMITTANCE_LUT_HEIGHT, textureType, false);
         this.multiScattering = makeRT(MULTI_SCATTERING_LUT_WIDTH, MULTI_SCATTERING_LUT_HEIGHT, textureType, false);
         this.skyView = makeRT(SKY_VIEW_LUT_WIDTH, SKY_VIEW_LUT_HEIGHT, textureType, /* wrapU */ true);
@@ -402,17 +407,20 @@ export class AtmosphereLuts {
             rayleighScale: this.rayleighScale,
             mieScale: this.mieScale,
             atmosphereRadius: this.atmosphereRadius,
+            planetRadius: this.planetRadius,
         });
         this.multiScatteringMat = createMultiScatteringMaterial(this.transmittance.texture, {
             rayleighScale: this.rayleighScale,
             mieScale: this.mieScale,
             atmosphereRadius: this.atmosphereRadius,
+            planetRadius: this.planetRadius,
             solarIrradiance: irradiance,
         });
         this.skyViewMat = createSkyViewMaterial(this.transmittance.texture, this.multiScattering.texture, {
             rayleighScale: this.rayleighScale,
             mieScale: this.mieScale,
             atmosphereRadius: this.atmosphereRadius,
+            planetRadius: this.planetRadius,
             solarIrradiance: irradiance,
         });
         // Fullscreen-triangle setup. The vertex shader synthesises clip-space
@@ -466,20 +474,25 @@ export class AtmosphereLuts {
      */
     recomputeAll(cameraPos, sunDir, scales) {
         const radiusChanged = scales.atmosphereRadius !== this.atmosphereRadius;
+        const planetRadiusChanged = scales.planetRadius !== this.planetRadius;
         const scalesChanged = scales.rayleigh !== this.rayleighScale || scales.mie !== this.mieScale;
-        if (scalesChanged || radiusChanged) {
+        if (scalesChanged || radiusChanged || planetRadiusChanged) {
             this.rayleighScale = scales.rayleigh;
             this.mieScale = scales.mie;
             this.atmosphereRadius = scales.atmosphereRadius;
+            this.planetRadius = scales.planetRadius;
             this.transmittanceMat.uniforms.uRayleighScale.value = scales.rayleigh;
             this.transmittanceMat.uniforms.uMieScale.value = scales.mie;
             this.transmittanceMat.uniforms.uAtmosphereRadius.value = scales.atmosphereRadius;
+            this.transmittanceMat.uniforms.uPlanetRadius.value = scales.planetRadius;
             this.multiScatteringMat.uniforms.uRayleighScale.value = scales.rayleigh;
             this.multiScatteringMat.uniforms.uMieScale.value = scales.mie;
             this.multiScatteringMat.uniforms.uAtmosphereRadius.value = scales.atmosphereRadius;
+            this.multiScatteringMat.uniforms.uPlanetRadius.value = scales.planetRadius;
             this.skyViewMat.uniforms.uRayleighScale.value = scales.rayleigh;
             this.skyViewMat.uniforms.uMieScale.value = scales.mie;
             this.skyViewMat.uniforms.uAtmosphereRadius.value = scales.atmosphereRadius;
+            this.skyViewMat.uniforms.uPlanetRadius.value = scales.planetRadius;
             this.precomputeTwoStaticLuts();
         }
         this.recompute(cameraPos, sunDir);

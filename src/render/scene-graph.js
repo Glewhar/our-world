@@ -51,7 +51,7 @@ import { CitiesLayer } from './cities/CitiesLayer.js';
 import { UrbanDetailLayer } from './urban/UrbanDetailLayer.js';
 import { NuclearExplosion } from './effects/nuclear/NuclearExplosion.js';
 import { DEFAULT_NUCLEAR_CONFIG } from '../world/scenarios/handlers/NuclearScenario.config.js';
-import { atmosphereRadiusFromFactor, elevationScaleFromFactor, } from './globe/LandMaterial.js';
+import { ATMOSPHERE_TOP_KM, atmosphereRadiusFromFactor, elevationScaleFromFactor, } from './globe/LandMaterial.js';
 import { DEFAULTS } from '../debug/defaults.js';
 const CAMERA_RADIUS = 3.0;
 const MAX_CONCURRENT_BLASTS = 8;
@@ -82,8 +82,8 @@ export function createSceneGraph() {
     let postFx = null;
     // Slightly warm sun. The shader's day term is `base × uSunColor`, so any
     // channel of `sun.color × sun.intensity` that exceeds 1.0 will overdrive
-    // white biomes (snow) past the white point and tilt them toward the warm
-    // side — keep the product ≤ 1.0 per channel.
+    // snow past the white point and tilt it toward the warm side — keep the
+    // product ≤ 1.0 per channel.
     const sun = new THREE.DirectionalLight(DEFAULTS.scene.sunLightColor, 1.0);
     sun.position.set(3, 2, 1.5);
     scene.add(sun);
@@ -114,6 +114,9 @@ export function createSceneGraph() {
     const tmpVec2 = new THREE.Vector2();
     const tmpSunDir = new THREE.Vector3();
     const tmpCameraDir = new THREE.Vector3();
+    // Reusable 15-entry palette buffer fed to BiomeColorEquirect each frame.
+    // Allocated once so the per-frame palette sync stays GC-free.
+    const paletteColors = Array.from({ length: 15 }, () => new THREE.Color());
     function attachRenderer(r) {
         webglRenderer = r;
         postFx = new PostFXChain(r, scene, camera);
@@ -139,13 +142,12 @@ export function createSceneGraph() {
         controls.maxDistance = 15;
         controls.target.set(0, 0, 0);
         controls.enablePan = false;
-        // A single Globe mesh covers both land and water. The unified shader does
-        // HEALPix lookups per fragment, branching on `id_raster` to colour land
-        // vs ocean cells, and per vertex displaces land outward by the continuous
-        // `elevation_meters` texture. All attribute texture bindings happen
-        // inside the Globe constructor.
+        // Globe owns two separate icosphere meshes — land (vertex-displaced by
+        // `elevation_meters`, discard below sea level) and water (gerstner +
+        // depth tint at `uSeaLevelOffsetM`). Attribute texture bindings happen
+        // inside each mesh's constructor.
         if (!webglRenderer) {
-            throw new Error('attachWorld called before attachRenderer — Land needs the renderer for the biome-color prebake.');
+            throw new Error('attachWorld called before attachRenderer — Land needs the renderer for the elevation-equirect prebake.');
         }
         globe = new Globe(w, webglRenderer);
         globe.setSunDirection(sunDirection);
@@ -247,7 +249,7 @@ export function createSceneGraph() {
         globe?.setSunDirection(tmpSunDir);
         // Push `sun.color × sun.intensity` as `uSunColor` so any tweak to the
         // directional light flows to the shader. Keep the product ≤ 1.0 per
-        // channel — anything above clamps and tints bright biomes (snow) warm.
+        // channel — anything above clamps and tints snow warm.
         const sr = sun.color.r * sun.intensity;
         const sg = sun.color.g * sun.intensity;
         const sb = sun.color.b * sun.intensity;
@@ -281,26 +283,29 @@ export function createSceneGraph() {
             land.uColorInfection.value.set(m.lerpColorInfection);
             land.uColorPollution.value.set(m.lerpColorPollution);
             land.uLerpStrength.value.set(m.lerpStrengthFire, m.lerpStrengthIce, m.lerpStrengthInfection, m.lerpStrengthPollution);
-            land.uBiomeStrength.value = m.biomeStrength;
             land.uSnowLineStrength.value = m.snowLineStrength;
             land.uSeasonOffsetC.value = m.seasonOffsetC;
             land.uAlpineStrength.value = m.alpineStrength;
-            // Distance-field knob — biome edge fade distance, in km.
-            land.uBiomeEdgeSharpness.value = m.biomeEdgeSharpness;
-            // Biome surface variation. Master = 0 → identical to pre-feature look.
-            land.uBiomeSurfaceStrength.value = m.biomeSurfaceStrength;
-            land.uBiomeColorVar.value = m.biomeColorVar;
-            land.uBiomeBumpStrength.value = m.biomeBumpStrength;
-            land.uBiomeNoiseFreq.value = m.biomeNoiseFreq;
-            const amps = land.uBiomeSurfaceAmps.value;
-            for (let i = 0; i < 12; i++) {
-                amps[i] = m.biomeSurfaceAmps[i] ?? amps[i];
+            // Biome palette → blurred colour equirect. The Land mesh owns a
+            // BiomeColorEquirect instance with its own dirty-bit; we feed it
+            // the live palette + blur-degrees and it re-bakes only when
+            // something has actually changed. The land shader reads the
+            // baked colour with one bilinear tap, no longer needing the
+            // 15-entry palette uniform at all.
+            for (let i = 0; i < paletteColors.length; i++) {
+                const css = m.biomePalette[i];
+                if (css)
+                    paletteColors[i].set(css);
             }
+            if (webglRenderer) {
+                globe.land.biomeColor.rebuildIfDirty(webglRenderer, paletteColors, m.biomeBlurDeg, {
+                    biomePalette: m.biomePalette,
+                    realmTint: m.realmTint,
+                    ecoregionJitter: m.ecoregionJitter,
+                });
+            }
+            land.uLandSpecularSmoothness.value = m.landSpecularSmoothness;
             land.uSpecularStrength.value = m.specularStrength;
-            const specAmps = land.uBiomeSpecAmps.value;
-            for (let i = 0; i < 12; i++) {
-                specAmps[i] = m.biomeSpecAmps[i] ?? specAmps[i];
-            }
             // Wasteland tint uniforms — pushed every frame so Tweakpane edits
             // land immediately. The texture itself is set once in Land.ts.
             const s = debug.scenarios;
@@ -398,7 +403,13 @@ export function createSceneGraph() {
         // (matches the previous hardcoded 1.2e-5 elevation scale).
         const factor = debug.altitude.scaleFactor;
         const elevScale = elevationScaleFromFactor(factor);
-        const atmRadius = atmosphereRadiusFromFactor(factor);
+        // Atmosphere physics tracks the rendered ocean surface. The water vertex
+        // shader displaces the unit icosphere by `seaLevelOffsetM * elevScale`,
+        // so the atmosphere's inner radius and outer shell ride the same offset
+        // — drop sea level, and the halo sinks with the water rather than
+        // bleeding above exposed seafloor.
+        const planetRadius = 1.0 + debug.materials.ocean.seaLevelOffsetM * elevScale;
+        const atmRadius = planetRadius + ATMOSPHERE_TOP_KM * 1000 * elevScale;
         if (globe) {
             globe.uniforms.land.uElevationScale.value = elevScale;
             globe.uniforms.water.uElevationScale.value = elevScale;
@@ -437,7 +448,7 @@ export function createSceneGraph() {
         // are runtime-only uniforms.
         const a = debug.materials.atmosphere;
         if (atmosphere) {
-            atmosphere.setScales(a.rayleighScale, a.mieScale, atmRadius);
+            atmosphere.setScales(a.rayleighScale, a.mieScale, atmRadius, planetRadius);
             atmosphere.setSolarIrradiance(a.solarIrradiance.r, a.solarIrradiance.g, a.solarIrradiance.b);
             atmosphere.setExposure(a.exposure);
             atmosphere.setSunDiskAngleDeg(a.sunDiskSize * 3);

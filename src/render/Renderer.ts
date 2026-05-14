@@ -29,6 +29,7 @@ export class Renderer {
       canvas: this.canvas,
       antialias: false,
       powerPreference: 'high-performance',
+      preserveDrawingBuffer: true,
     });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;

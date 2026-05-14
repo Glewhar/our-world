@@ -130,6 +130,17 @@ async function boot() {
         toggleClouds.checked = debug.state.layers.clouds;
         toggleClouds.addEventListener('change', () => {
             debug.state.layers.clouds = toggleClouds.checked;
+            debug.pane.refresh();
+        });
+    }
+    // FPS counter toggle — drives `#fps-counter` visibility (see frame loop
+    // below). Settings-panel mirror of the same state the Tweakpane used to
+    // expose; FPS is a user-facing stat, not a debug knob.
+    const toggleFps = document.getElementById('toggle-fps');
+    if (toggleFps) {
+        toggleFps.checked = debug.state.debug.fpsCounter;
+        toggleFps.addEventListener('change', () => {
+            debug.state.debug.fpsCounter = toggleFps.checked;
         });
     }
     // Map -30..0..+30 °C onto a blue → neutral → red tint for the thumb glow

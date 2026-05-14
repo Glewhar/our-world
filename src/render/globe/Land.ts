@@ -14,8 +14,8 @@
 
 import * as THREE from 'three';
 
-import { bakeBiomeColorTexture } from './BiomeColorPrebake.js';
 import { bakeElevationEquirectTexture } from './ElevationEquirectPrebake.js';
+import { BiomeColorEquirect } from './BiomeColorEquirect.js';
 import { createLandMaterial, type LandUniforms } from './LandMaterial.js';
 import type { WorldRuntime } from '../../world/index.js';
 
@@ -25,22 +25,30 @@ const UNIT_RADIUS = 1.0;
 export class Land {
   readonly group = new THREE.Group();
   readonly mesh: THREE.Mesh;
+  readonly biomeColor: BiomeColorEquirect;
   private readonly geometry: THREE.IcosahedronGeometry;
   private readonly material: THREE.ShaderMaterial & { _landUniforms: LandUniforms };
 
   constructor(world: WorldRuntime, renderer: THREE.WebGLRenderer) {
     this.geometry = new THREE.IcosahedronGeometry(UNIT_RADIUS, ICOSPHERE_SUBDIVISION);
     this.material = createLandMaterial();
+    // Pre-blurred biome-colour equirect — owns its own index bake + two
+    // blur RTs. Land shader takes one bilinear sample for its base
+    // colour; scene-graph drives palette + blur slider through it each
+    // frame and triggers a rebake when anything changes.
+    this.biomeColor = new BiomeColorEquirect(world);
 
     const u = this.material._landUniforms;
+    // `attribute_static` shares one RGBA8 texture across its four channels.
+    // The 'elevation' AttributeKey resolves to that texture; the fragment
+    // shader reads `.g` for the WWF TEOW biome code.
     u.uAttrStatic.value = world.getAttributeTexture('elevation');
     u.uAttrClimate.value = world.getAttributeTexture('temperature');
     u.uAttrDynamic.value = world.getAttributeTexture('fire');
     u.uElevationMeters.value = world.getElevationMetersTexture();
     u.uElevationEquirect.value = bakeElevationEquirectTexture(renderer, world);
-    u.uDistanceField.value = world.getDistanceFieldTexture();
-    u.uBiomeColor.value = bakeBiomeColorTexture(renderer, world);
     u.uWastelandTex.value = world.getWastelandTexture();
+    u.uBiomeColorEquirect.value = this.biomeColor.colorTexture;
 
     const { nside, ordering } = world.getHealpixSpec();
     u.uHealpixNside.value = nside;
@@ -68,6 +76,7 @@ export class Land {
   dispose(): void {
     this.geometry.dispose();
     this.material.dispose();
+    this.biomeColor.dispose();
     while (this.group.children.length > 0) {
       this.group.remove(this.group.children[0]!);
     }

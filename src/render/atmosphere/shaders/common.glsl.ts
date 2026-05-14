@@ -2,12 +2,13 @@
 // the source of truth lives here, no separate .glsl file on disk.
 export const source = `// Hillaire 2020 atmosphere — shared physical constants & helpers (GLSL3).
 //
-// All distances are in *unit-sphere* units where 1.0 = planet radius. The
-// atmosphere shell radius is driven by \`uAtmosphereRadius\` so it can scale
-// with the project's altitude exaggeration knob (Tweakpane → Altitude).
-// \`100 km\` of real atmosphere is mapped onto the shell, so changing the
-// radius dilates the integration domain while preserving the column-integral
-// optical depth.
+// All distances are in *unit-sphere* units where 1.0 is the baseline (sea
+// level at slider zero). Planet surface and atmosphere top are both
+// uniforms (\`uPlanetRadius\`, \`uAtmosphereRadius\`) so the shell rides the
+// sea-level slider and the altitude-exaggeration knob (Tweakpane →
+// Altitude). \`100 km\` of real atmosphere is mapped onto the shell, so
+// changing the radius dilates the integration domain while preserving the
+// column-integral optical depth.
 //
 // See \`docs/adr/0007-bruneton-hillaire-atmosphere.md\` and the reference
 // at \`jeantimex/precomputed_atmospheric_scattering\` for the math source.
@@ -20,12 +21,15 @@ precision highp sampler2D;
 
 const float PI = 3.14159265359;
 
-// Planet radius is fixed at 1.0 in unit-sphere coordinates. Atmosphere top is
-// dynamic — driven from JS via Tweakpane → Altitude. All derived geometric
-// values (thickness, horizon, km-per-unit conversion) are helpers that read
-// the uniform; the GLSL compiler hoists them per draw.
-const float PLANET_RADIUS = 1.0;
+// Planet radius tracks the rendered ocean surface (sea-level slider × altitude
+// exaggeration), so the LUT physics and the visible water stay anchored to the
+// same number. Atmosphere top is dynamic — driven from JS via Tweakpane →
+// Altitude. All derived geometric values (thickness, horizon, km-per-unit
+// conversion) are helpers that read the uniform; the GLSL compiler hoists
+// them per draw. The \`PLANET_RADIUS\` define keeps existing call sites readable.
+uniform float uPlanetRadius;
 uniform float uAtmosphereRadius;
+#define PLANET_RADIUS uPlanetRadius
 
 const float REAL_ATMOS_KM = 100.0;
 
