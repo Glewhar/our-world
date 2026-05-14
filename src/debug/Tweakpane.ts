@@ -87,6 +87,8 @@ export type DebugState = {
     globe: {
       ambient: number;
       nightTint: string;
+      moonColor: string;
+      moonIntensity: number;
       lerpColorFire: string;
       lerpColorIce: string;
       lerpColorInfection: string;
@@ -114,6 +116,7 @@ export type DebugState = {
       biomeSpecAmps: number[];
     };
     atmosphere: {
+      preset: string;
       rayleighScale: number;
       mieScale: number;
       sunDiskSize: number;
@@ -132,6 +135,7 @@ export type DebugState = {
        * shader only — water is at sea level. Default 3000 m.
        */
       hazeFalloffM: number;
+      solarIrradiance: { r: number; g: number; b: number };
     };
     ocean: {
       waveAmplitude: number;
@@ -152,6 +156,7 @@ export type DebugState = {
       currentTintEnabled: boolean;
       showMediumCurrents: boolean;
       shimmerCurrentDrift: number;
+      seaLevelOffsetM: number;
     };
     clouds: {
       density: number;
@@ -460,10 +465,65 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
         state.materials.globe.biomeSpecAmps[i] = ev.value;
       });
   }
+  // Moonlight on the night side. `moonIntensity` 0 disables; 0.15 is the
+  // design default. Drives both the land lambert glow and the water
+  // "path of moonlight" specular at the antipodal-moon point.
+  gLighting.addBinding(state.materials.globe, 'moonColor', { label: 'moon color' });
+  gLighting.addBinding(state.materials.globe, 'moonIntensity', {
+    min: 0,
+    max: 1,
+    step: 0.01,
+    label: 'moon intensity',
+  });
 
   // Atmosphere — Hillaire 2020 LUTs. `rayleighScale`/`mieScale` are
   // multipliers on the physical β coefficients; 1.0 = real Earth.
   const atmMat = mat.addFolder({ title: 'Atmosphere', expanded: false });
+  // Sky-physics presets. Selecting one batch-writes rayleigh/mie scales +
+  // top-of-atmosphere solar irradiance, then refreshes the UI so the
+  // dependent sliders show the new values. Subsequent slider drags move
+  // each value independently (the dropdown label does not auto-revert to
+  // "Custom" — by design, so the user can keep nudging from a named base).
+  const ATMOSPHERE_PRESET_VALUES: Record<
+    string,
+    {
+      rayleighScale: number;
+      mieScale: number;
+      solarIrradiance: { r: number; g: number; b: number };
+    }
+  > = {
+    earth:  { rayleighScale: 1.2, mieScale: 0.4, solarIrradiance: { r: 1.474, g: 1.8504, b: 1.91198 } },
+    mars:   { rayleighScale: 0.6, mieScale: 1.5, solarIrradiance: { r: 2.1,   g: 1.7,    b: 1.4      } },
+    alien:  { rayleighScale: 1.4, mieScale: 0.4, solarIrradiance: { r: 1.2,   g: 2.1,    b: 1.3      } },
+    vapor:  { rayleighScale: 1.6, mieScale: 1.0, solarIrradiance: { r: 1.9,   g: 1.4,    b: 2.1      } },
+    punchy: { rayleighScale: 1.7, mieScale: 0.2, solarIrradiance: { r: 1.474, g: 1.8504, b: 1.91198 } },
+    dust:   { rayleighScale: 1.2, mieScale: 2.5, solarIrradiance: { r: 1.474, g: 1.8504, b: 1.91198 } },
+    pearl:  { rayleighScale: 0.7, mieScale: 0.4, solarIrradiance: { r: 1.6,   g: 1.7,    b: 1.9      } },
+  };
+  atmMat
+    .addBinding(state.materials.atmosphere, 'preset', {
+      label: 'preset',
+      options: {
+        'Earth (default)': 'earth',
+        'Mars-tan': 'mars',
+        'Alien green': 'alien',
+        'Vaporwave': 'vapor',
+        'Punchy Earth': 'punchy',
+        'Dust-storm': 'dust',
+        'Pearl-moon': 'pearl',
+      },
+    })
+    .on('change', (ev) => {
+      const p = ATMOSPHERE_PRESET_VALUES[ev.value as string];
+      if (!p) return;
+      const a = state.materials.atmosphere;
+      a.rayleighScale = p.rayleighScale;
+      a.mieScale = p.mieScale;
+      a.solarIrradiance.r = p.solarIrradiance.r;
+      a.solarIrradiance.g = p.solarIrradiance.g;
+      a.solarIrradiance.b = p.solarIrradiance.b;
+      pane.refresh();
+    });
   atmMat.addBinding(state.materials.atmosphere, 'rayleighScale', { min: 0, max: 2, step: 0.05 });
   atmMat.addBinding(state.materials.atmosphere, 'mieScale', { min: 0, max: 3, step: 0.05 });
   atmMat.addBinding(state.materials.atmosphere, 'sunDiskSize', {
@@ -486,7 +546,7 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
   // even hills punch through; high = behaviour reverts toward uniform haze.
   atmMat.addBinding(state.materials.atmosphere, 'hazeFalloffM', {
     min: 500,
-    max: 10000,
+    max: 100000,
     step: 100,
     label: 'haze layer (m)',
   });
@@ -511,7 +571,10 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
 
   const oDepth = oceanMat.addFolder({ title: 'Depth & color', expanded: false });
   oDepth.addBinding(state.materials.ocean, 'depthFalloff', {
-    min: 0, max: 100, step: 1, label: 'depth falloff',
+    // Range widened to 500 so the user can dial up the shallow-tint
+    // falloff when raising sea level — freshly-flooded interior reads
+    // as a real shallow→deep gradient instead of pure abyssal.
+    min: 0, max: 500, step: 1, label: 'depth falloff',
   });
   oDepth.addBinding(state.materials.ocean, 'shallowColor', { label: 'shallow' });
   oDepth.addBinding(state.materials.ocean, 'shelfColor', { label: 'shelf' });
@@ -523,6 +586,9 @@ export function createDebugPanel(state: DebugState = initialDebugState): DebugPa
   oDepth.addBinding(state.materials.ocean, 'trenchEnd', {
     min: 0, max: 12000, step: 100, label: 'trench end (m)',
   });
+  // Sea-level offset has its own floating vertical slider next to
+  // #season-control (see index.html #sealevel-control). Tweakpane binding
+  // removed so the two surfaces can't race against each other.
 
   const oCoast = oceanMat.addFolder({ title: 'Coastal tint', expanded: false });
   oCoast.addBinding(state.materials.ocean, 'coastalTintColor', { label: 'color' });

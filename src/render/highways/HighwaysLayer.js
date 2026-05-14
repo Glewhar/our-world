@@ -26,6 +26,7 @@
  */
 import * as THREE from 'three';
 import { source as healpixGlsl } from '../globe/shaders/healpix.glsl.js';
+import { source as hazeGlsl } from '../atmosphere/shaders/haze.glsl.js';
 import { DEFAULT_ELEVATION_SCALE } from '../globe/LandMaterial.js';
 const HIGHWAYS_VERT = `// Highways vertex shader.
 //
@@ -185,6 +186,9 @@ uniform float uDayCasingStrength;
 uniform float uDayFillBrightness;
 uniform float uOpacity;
 
+// uSkyView, uHazeExposure, uHazeAmount + sampleSkyViewHaze() are declared
+// by the concatenated haze.glsl.ts chunk above this source.
+
 out vec4 fragColor;
 
 float seedToThreshold(float seed) {
@@ -250,6 +254,19 @@ void main() {
   float alpha = mix(nightAlpha, dayAlpha, wrap) * uOpacity;
 
   if (alpha < 0.005) discard;
+
+  // ----- Aerial perspective (haze) -----
+  // Same formula as land/water: tint toward the inscattered LUT colour
+  // with the 1 - exp(-lum*6) curve so haze and rim halo agree at the
+  // silhouette. Direction is camera→fragment.
+  if (uHazeAmount > 0.0) {
+    vec3 dirCS = normalize(vWorldPos - cameraPosition);
+    vec3 hazeColor = sampleSkyViewHaze(dirCS, cameraPosition, normalize(uSunDirection)) * uHazeExposure;
+    float lum = dot(hazeColor, vec3(0.2126, 0.7152, 0.0722));
+    float hazeStrength = clamp((1.0 - exp(-lum * 6.0)) * uHazeAmount, 0.0, 0.95);
+    col = mix(col, hazeColor, hazeStrength);
+  }
+
   fragColor = vec4(col, alpha);
 }
 `;
@@ -353,6 +370,9 @@ export class HighwaysLayer {
             uDayFillBrightness: { value: h.dayFillBrightness },
             uDayFillScale: { value: h.dayFillScale },
             uOpacity: { value: h.opacityNear },
+            uSkyView: { value: null },
+            uHazeExposure: { value: 1.0 },
+            uHazeAmount: { value: 0.0 },
         };
         this.material = new THREE.ShaderMaterial({
             uniforms: this.uniforms,
@@ -361,7 +381,7 @@ export class HighwaysLayer {
             // lift, fragment for the coastline mask. Concatenate the helper
             // module ourselves — ShaderMaterial doesn't process #include.
             vertexShader: `${healpixGlsl}\n${HIGHWAYS_VERT}`,
-            fragmentShader: `${healpixGlsl}\n${HIGHWAYS_FRAG}`,
+            fragmentShader: `${healpixGlsl}\n${hazeGlsl}\n${HIGHWAYS_FRAG}`,
             transparent: true,
             depthWrite: false,
             depthTest: true,

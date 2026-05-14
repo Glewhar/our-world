@@ -20,8 +20,8 @@
  */
 export const DEFAULTS = {
     camera: {
-        autoOrbit: false,
-        orbitSpeed: 0.05,
+        autoOrbit: true,
+        orbitSpeed: 0.005,
     },
     scene: {
         background: '#06080c',
@@ -59,6 +59,14 @@ export const DEFAULTS = {
         globe: {
             ambient: 0.22,
             nightTint: '#152d5a',
+            // Antipodal-moon lighting on the night side. The scene's moon is
+            // antipodal to the sun (SunMoon.ts), so `moonDir = -sunDir` lights
+            // the entire night hemisphere; brightest at the anti-solar point,
+            // zero at the terminator (where day shading takes over). Land gets
+            // a soft cool-blue lambert glow; water also gets a Blinn-Phong
+            // "path of moonlight" specular highlight.
+            moonColor: '#7fb0ff',
+            moonIntensity: 0.15,
             lerpColorFire: '#1a1014',
             lerpColorIce: '#d4ecff',
             lerpColorInfection: '#bb33cc',
@@ -83,6 +91,11 @@ export const DEFAULTS = {
             biomeSpecAmps: [0.05, 0.1, 0.04, 0.06, 0.06, 0.05, 0.0, 0.4, 0.2, 0.15, 0.12, 0.2],
         },
         atmosphere: {
+            // Sky-physics preset id (see ATMOSPHERE_PRESETS in Tweakpane.ts).
+            // Selecting a preset batch-writes rayleighScale/mieScale/solarIrradiance
+            // into state and refreshes the UI; subsequent slider drags then move
+            // each value independently.
+            preset: 'earth',
             rayleighScale: 1.2,
             mieScale: 0.4,
             // Tweakpane "sun disk size" — scene-graph multiplies by 3 to get
@@ -91,7 +104,12 @@ export const DEFAULTS = {
             sunDiskSize: 0.18,
             exposure: 3.5,
             hazeAmount: 0.7,
-            hazeFalloffM: 3000,
+            hazeFalloffM: 50000,
+            // Top-of-atmosphere solar spectrum (per-channel radiance). Feeds the
+            // multi-scatter + sky-view LUTs and the rim-halo edge term, so this
+            // tints the haze, the rim halo, and ground shading together. White
+            // canonical = (1.474, 1.8504, 1.91198) per Hillaire 2020.
+            solarIrradiance: { r: 1.474, g: 1.8504, b: 1.91198 },
         },
         ocean: {
             waveAmplitude: 150,
@@ -112,6 +130,7 @@ export const DEFAULTS = {
             currentTintEnabled: true,
             showMediumCurrents: false,
             shimmerCurrentDrift: 17,
+            seaLevelOffsetM: 0,
         },
         clouds: {
             density: 0.1,

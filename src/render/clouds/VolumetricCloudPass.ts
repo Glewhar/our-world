@@ -757,6 +757,7 @@ void main() {
 
   float alpha = clamp(1.0 - transmittance, 0.0, 1.0);
   if (alpha <= 0.0) discard;
+
   fragColor = vec4(col, alpha);
 }
 `;
@@ -811,8 +812,6 @@ export class VolumetricCloudPass {
     this.cloudMaterial = new THREE.RawShaderMaterial({
       glslVersion: THREE.GLSL3,
       vertexShader: CLOUDS_VERT,
-      // Concat order: noise (declares precision) → healpix (uses precision)
-      // → frag (uses both).
       fragmentShader: `${CLOUD_NOISE}\n${healpixGlsl}\n${CLOUDS_FRAG}`,
       uniforms: {
         uWindField: { value: windField },

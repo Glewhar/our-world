@@ -132,6 +132,7 @@ uniform int uHealpixOrdering;
 uniform int uAttrTexWidth;
 uniform float uElevationScale;
 uniform float uWaterRadialBias;
+uniform float uSeaLevelOffsetM;
 
 uniform float uTime;
 uniform float uWaveAmplitude;
@@ -150,9 +151,10 @@ void main() {
   ivec2 tx = healpixIpixToTexel(ipx, uAttrTexWidth);
   float waterLevel = texelFetch(uWaterLevelMeters, tx, 0).r;
   float landElev = texelFetch(uElevationMeters, tx, 0).r;
-  vWaterSurface = waterLevel;
+  float waterSurface = waterLevel + uSeaLevelOffsetM;
+  vWaterSurface = waterSurface;
 
-  float depth = max(waterLevel - landElev, 0.0);
+  float depth = max(waterSurface - landElev, 0.0);
   float coastFade = smoothstep(0.0, 400.0, depth);
   float ampAtt = uWaveAmplitude * coastFade;
 
@@ -170,7 +172,7 @@ void main() {
     waveNormal_
   );
 
-  float displace = (waterLevel + waveRadialM) * uElevationScale + uWaterRadialBias;
+  float displace = (waterSurface + waveRadialM) * uElevationScale + uWaterRadialBias;
   vec3 surfaceObj = dir * (1.0 + displace) + waveTangent;
   vec4 wp = modelMatrix * vec4(surfaceObj, 1.0);
   vWorldPos = wp.xyz;
@@ -219,6 +221,8 @@ uniform vec3 uSunDirection;
 uniform vec3 uSunColor;
 uniform vec3 uNightTint;
 uniform float uAmbient;
+uniform vec3 uMoonColor;
+uniform float uMoonIntensity;
 
 uniform sampler2D uIdRaster;
 uniform sampler2D uElevationMeters;
@@ -328,7 +332,9 @@ float wn_fbm(vec3 p, int octaves) {
 
 // Sample the atmosphere's sky-view LUT in a world-space view direction.
 // Mirrors the lookup in atmosphere.frag.glsl so the haze tint colour-matches
-// the rim halo. \`dir\` is camera→surface; returns linear radiance (apply
+// the rim halo. \`dir\` must be camera→undisplaced-sphere-point — see
+// LandMaterial's matching helper for the LUT-horizon discontinuity that
+// makes the undisplaced anchor necessary. Returns linear radiance (apply
 // uHazeExposure at the call site).
 vec3 sampleSkyViewHaze(vec3 dir, vec3 camPos, vec3 sunDir) {
   vec3 cUp = normalize(camPos);
@@ -447,6 +453,13 @@ void main() {
   ivec2 tx = healpixIpixToTexel(ipx, uAttrTexWidth);
   float landElev = texelFetch(uElevationMeters, tx, 0).r;
 
+  // No discard. The depth test handles every case correctly: where land is
+  // taller than the water surface (normal continents, exposed seafloor when
+  // slider drops) the LAND mesh's outward vertex displacement wins the
+  // depth test. A previous attempt to discard here punched holes through
+  // the partial-alpha coastline band of the land mesh, letting the
+  // atmosphere shell behind shine through as a glowing continent outline.
+
   // Layered ocean gradient. \`uOceanDeep\` is the open-ocean baseline that
   // most of the world ocean reads as. Shelf + shallow blend up via exp
   // falloffs as depth drops toward the coast; abyssal blends in via a
@@ -551,6 +564,10 @@ void main() {
   float ndotl = dot(n, sunDir);
   float wrap = smoothstep(-0.2, 0.6, ndotl);
   vec3 day = base * uAmbient + base * uSunColor * max(ndotl, 0.0);
+  // Night-side ocean stays near-black (real ocean has no diffuse
+  // reflection of moonlight to speak of; what you see is the specular
+  // glint patch a few lines down). uNightTint provides the deep-night
+  // ambient floor; the moon-glint specular below paints the bright spot.
   vec3 night = base * uNightTint;
   vec3 col = mix(night, day, wrap);
 
@@ -562,6 +579,16 @@ void main() {
   float spec = pow(max(dot(n, halfDir), 0.0), 220.0);
   float sunMask = smoothstep(0.0, 0.15, ndotl);
   col += vec3(1.0, 0.97, 0.85) * spec * fresnelMix * uFresnelStrength * 2.0 * sunMask;
+
+  // Antipodal-moon specular — the "path of moonlight" on night-side
+  // ocean. Wider cone (pow 64) than the sun glint so the highlight
+  // reads as a soft cyan patch rather than pixel-sized sparkles, since
+  // moonlight is dimmer and observers perceive it as a glow not glint.
+  // Gated to the night side via smoothstep(0, -0.15, ndotl).
+  vec3 moonHalf = normalize(-sunDir + viewDir);
+  float moonSpec = pow(max(dot(n, moonHalf), 0.0), 64.0);
+  float moonMask = smoothstep(0.0, -0.15, ndotl);
+  col += uMoonColor * moonSpec * fresnelMix * uFresnelStrength * 0.6 * moonMask * uMoonIntensity;
 
   // Schlick Fresnel sky tint — adds a brighter rim at grazing angles on
   // the day side. Cheap proxy for "ocean reflects the sky."
@@ -579,9 +606,11 @@ void main() {
   // ----- Aerial perspective (haze) -----
   // Same as land.frag.glsl: tint toward the inscattered sky-view LUT
   // colour, with strength tied to the halo's 1 - exp(-lum * 6) curve so
-  // the two effects agree at the silhouette.
+  // the two effects agree at the silhouette. Lookup direction uses
+  // \`vSphereDir\` (undisplaced) — see \`sampleSkyViewHaze\` for why.
   if (uHazeAmount > 0.0) {
-    vec3 hazeColor = sampleSkyViewHaze(-viewDir, cameraPosition, sunDir) * uHazeExposure;
+    vec3 hazeDir = normalize(vSphereDir - cameraPosition);
+    vec3 hazeColor = sampleSkyViewHaze(hazeDir, cameraPosition, sunDir) * uHazeExposure;
     float lum = dot(hazeColor, vec3(0.2126, 0.7152, 0.0722));
     float hazeStrength = clamp((1.0 - exp(-lum * 6.0)) * uHazeAmount, 0.0, 0.95);
     col = mix(col, hazeColor, hazeStrength);
@@ -610,6 +639,8 @@ export function createWaterMaterial() {
         uSunColor: { value: new THREE.Vector3(1, 1, 1) },
         uNightTint: { value: new THREE.Color(g.nightTint).multiplyScalar(0.35) },
         uAmbient: { value: g.ambient },
+        uMoonColor: { value: new THREE.Color(g.moonColor) },
+        uMoonIntensity: { value: g.moonIntensity },
         uIdRaster: { value: null },
         uElevationMeters: { value: null },
         uWaterLevelMeters: { value: null },
@@ -618,6 +649,7 @@ export function createWaterMaterial() {
         uAttrTexWidth: { value: 1 },
         uElevationScale: { value: DEFAULT_ELEVATION_SCALE },
         uWaterRadialBias: { value: DEFAULT_WATER_RADIAL_BIAS },
+        uSeaLevelOffsetM: { value: o.seaLevelOffsetM },
         uOceanAbyssal: { value: new THREE.Color(o.abyssalColor) },
         uOceanDeep: { value: new THREE.Color(o.deepColor) },
         uOceanShelf: { value: new THREE.Color(o.shelfColor) },

@@ -26,10 +26,10 @@ import type { ColourKeyframe, ParticleTypeConfig } from '../../../render/effects
 
 // Source values stored as base-10 in the original demo bundle:
 //   FIRE  0xA73A1E warm orange-red → 0x932601 dark red-brown
-//   SMOKE 0x646464 medium grey     → 0x808080 lighter grey
+//   SMOKE 0x646464 medium grey     → 0xe4e1e1 near-white grey
 //   DEBRIS 0xFF7420 bright orange  → 0xFFFFFF white
 const FIRE_COLOURS = { start: 0xa73a1e, end: 0x932601 };
-const SMOKE_COLOURS = { start: 0x646464, end: 0x808080 };
+const SMOKE_COLOURS = { start: 0x646464, end: 0xe4e1e1 };
 const DEBRIS_COLOURS = { start: 0xff7420, end: 0xffffff };
 
 const NukeFire: ParticleTypeConfig = {
@@ -328,7 +328,7 @@ export const DEFAULT_NUCLEAR_CONFIG: NuclearScenarioConfig = {
     timeScale: 1.3,
     spriteScale: 4.0,
     windStrength: 2.0,
-    windDelay: 4.0,
+    windDelay: 1.4,
     windRamp: 8.0,
     windJitter: 1.0,
     windDrag: 1.0,

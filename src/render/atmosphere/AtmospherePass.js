@@ -135,6 +135,7 @@ export class AtmospherePass {
     prevRayleighScale = NaN;
     prevMieScale = NaN;
     prevAtmosphereRadius = NaN;
+    prevSolarIrradiance;
     constructor(renderer, opts = {}) {
         const a = DEFAULTS.materials.atmosphere;
         const atmosphereRadius = opts.atmosphereRadius ?? 1.07;
@@ -144,6 +145,12 @@ export class AtmospherePass {
             atmosphereRadius,
             ...(opts.solarIrradiance ? { solarIrradiance: opts.solarIrradiance } : {}),
         });
+        const initialIrradiance = opts.solarIrradiance ?? new THREE.Vector3(1.474, 1.8504, 1.91198);
+        this.prevSolarIrradiance = {
+            r: initialIrradiance.x,
+            g: initialIrradiance.y,
+            b: initialIrradiance.z,
+        };
         const sunDiskAngleDeg = opts.sunDiskAngleDeg ?? a.sunDiskSize * SUN_DISK_DEG_PER_TWEAK;
         this.material = new THREE.RawShaderMaterial({
             glslVersion: THREE.GLSL3,
@@ -232,6 +239,23 @@ export class AtmospherePass {
     }
     setExposure(exposure) {
         this.material.uniforms.uExposure.value = exposure;
+    }
+    // Tints the haze/sky by shifting the per-channel top-of-atmosphere sun
+    // colour. Re-bakes the multi-scatter LUT (which depends on irradiance)
+    // and marks dirty so the sky-view LUT rebakes next syncFromCamera.
+    // Cached: idle frames short-circuit when the value hasn't moved.
+    setSolarIrradiance(r, g, b) {
+        if (r === this.prevSolarIrradiance.r &&
+            g === this.prevSolarIrradiance.g &&
+            b === this.prevSolarIrradiance.b) {
+            return;
+        }
+        this.prevSolarIrradiance.r = r;
+        this.prevSolarIrradiance.g = g;
+        this.prevSolarIrradiance.b = b;
+        this.material.uniforms.uSolarIrradiance.value.set(r, g, b);
+        this.luts.setSolarIrradiance(r, g, b);
+        this.dirty = true;
     }
     setSunDiskAngleDeg(deg) {
         this.material.uniforms.uSunDiskAngle.value = (deg * Math.PI) / 180;

@@ -318,6 +318,8 @@ export function createSceneGraph(): SceneGraph {
       const land = globe.uniforms.land;
       land.uAmbient.value = m.ambient;
       land.uNightTint.value.set(m.nightTint);
+      land.uMoonColor.value.set(m.moonColor);
+      land.uMoonIntensity.value = m.moonIntensity;
       land.uColorFire.value.set(m.lerpColorFire);
       land.uColorIce.value.set(m.lerpColorIce);
       land.uColorInfection.value.set(m.lerpColorInfection);
@@ -368,6 +370,8 @@ export function createSceneGraph(): SceneGraph {
       const water = globe.uniforms.water;
       water.uAmbient.value = m.ambient;
       water.uNightTint.value.set(m.nightTint).multiplyScalar(0.35);
+      water.uMoonColor.value.set(m.moonColor);
+      water.uMoonIntensity.value = m.moonIntensity;
       water.uOceanAbyssal.value.set(o.abyssalColor);
       water.uOceanDeep.value.set(o.deepColor);
       water.uOceanShelf.value.set(o.shelfColor);
@@ -386,6 +390,11 @@ export function createSceneGraph(): SceneGraph {
       water.uCurrentTintEnabled.value = o.currentTintEnabled ? 1 : 0;
       water.uShowMediumCurrents.value = o.showMediumCurrents ? 1 : 0;
       water.uShimmerCurrentDrift.value = o.shimmerCurrentDrift;
+      water.uSeaLevelOffsetM.value = o.seaLevelOffsetM;
+      // Mirror the sea-level slider on the land material so the
+      // fragment shader can reclassify cells as exposed (baked-ocean
+      // now above water) or drowned (baked-land now below water).
+      land.uSeaLevelOffsetM.value = o.seaLevelOffsetM;
     }
 
     if (cloudsPass) {
@@ -493,23 +502,43 @@ export function createSceneGraph(): SceneGraph {
     const a = debug.materials.atmosphere;
     if (atmosphere) {
       atmosphere.setScales(a.rayleighScale, a.mieScale, atmRadius);
+      atmosphere.setSolarIrradiance(a.solarIrradiance.r, a.solarIrradiance.g, a.solarIrradiance.b);
       atmosphere.setExposure(a.exposure);
       atmosphere.setSunDiskAngleDeg(a.sunDiskSize * 3);
 
-      // Share the atmosphere's sky-view LUT with land + water so the
-      // in-shader aerial perspective tint colour-matches the rim halo.
-      // The LUT rebakes on sun/camera change inside AtmospherePass; the
-      // texture reference itself stays stable, so this assignment is a
-      // no-op after the first frame — left in the loop for clarity and
-      // to survive any future LUT swap.
+      // Share the atmosphere's sky-view LUT with every visible planet
+      // shader so the in-shader aerial perspective tint colour-matches
+      // the rim halo. The LUT rebakes on sun/camera change inside
+      // AtmospherePass; the texture reference itself stays stable, so
+      // these assignments are a no-op after the first frame — left in
+      // the loop for clarity and to survive any future LUT swap.
+      const skyView = atmosphere.skyViewTexture;
       if (globe) {
-        globe.uniforms.land.uSkyView.value = atmosphere.skyViewTexture;
+        globe.uniforms.land.uSkyView.value = skyView;
         globe.uniforms.land.uHazeExposure.value = a.exposure;
         globe.uniforms.land.uHazeAmount.value = a.hazeAmount;
         globe.uniforms.land.uHazeFalloffM.value = a.hazeFalloffM;
-        globe.uniforms.water.uSkyView.value = atmosphere.skyViewTexture;
+        globe.uniforms.water.uSkyView.value = skyView;
         globe.uniforms.water.uHazeExposure.value = a.exposure;
         globe.uniforms.water.uHazeAmount.value = a.hazeAmount;
+      }
+      if (cities) {
+        cities.uniforms.uSkyView.value = skyView;
+        cities.uniforms.uHazeExposure.value = a.exposure;
+        cities.uniforms.uHazeAmount.value = a.hazeAmount;
+      }
+      if (highways) {
+        highways.uniforms.uSkyView.value = skyView;
+        highways.uniforms.uHazeExposure.value = a.exposure;
+        highways.uniforms.uHazeAmount.value = a.hazeAmount;
+      }
+      if (urbanDetail) {
+        urbanDetail.bldUniforms.uSkyView.value = skyView;
+        urbanDetail.bldUniforms.uHazeExposure.value = a.exposure;
+        urbanDetail.bldUniforms.uHazeAmount.value = a.hazeAmount;
+        urbanDetail.strUniforms.uSkyView.value = skyView;
+        urbanDetail.strUniforms.uHazeExposure.value = a.exposure;
+        urbanDetail.strUniforms.uHazeAmount.value = a.hazeAmount;
       }
     }
     sunMoon.setSunDiskSize(a.sunDiskSize);
@@ -523,6 +552,11 @@ export function createSceneGraph(): SceneGraph {
       globe.group.visible = debug.layers.globe || debug.layers.ocean;
       globe.land.mesh.visible = debug.layers.globe;
       globe.water.mesh.visible = debug.layers.ocean;
+      // Tell the land shader to fill ocean cells as exposed seafloor when
+      // the water mesh is hidden, so the planet still looks like a solid
+      // terrain sphere instead of leaking atmosphere through transparent
+      // ocean fragments.
+      globe.uniforms.land.uOceanLayerHidden.value = debug.layers.ocean ? 0 : 1;
     }
     if (atmosphere) atmosphere.mesh.visible = debug.layers.atmosphere;
     cloudsPass?.setActive(debug.layers.clouds);

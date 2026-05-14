@@ -22,6 +22,7 @@
 import * as THREE from 'three';
 
 import { source as healpixGlsl } from '../globe/shaders/healpix.glsl.js';
+import { source as hazeGlsl } from '../atmosphere/shaders/haze.glsl.js';
 import { DEFAULT_ELEVATION_SCALE } from '../globe/LandMaterial.js';
 
 const CITIES_VERT = `// Cities vertex shader — triangulated polygon mesh.
@@ -119,6 +120,9 @@ uniform float uTileSparkle;
 uniform float uDayContrast;
 uniform float uOpacity;
 uniform float uNightOpacity;
+
+// uSkyView, uHazeExposure, uHazeAmount + sampleSkyViewHaze() are declared
+// by the concatenated haze.glsl.ts chunk above this source.
 
 out vec4 fragColor;
 
@@ -230,6 +234,18 @@ void main() {
   a *= popOpacity * landMask * uOpacity * nightAlphaMul;
   if (a < 0.01) discard;
 
+  // ----- Aerial perspective (haze) -----
+  // Mirror land/water: tint toward the inscattered sky-view LUT colour at
+  // the same 1 - exp(-lum*6) curve so the rim halo and surface haze share
+  // one source of truth. Direction is camera→fragment.
+  if (uHazeAmount > 0.0) {
+    vec3 dirCS = normalize(vWorldPos - cameraPosition);
+    vec3 hazeColor = sampleSkyViewHaze(dirCS, cameraPosition, normalize(uSunDirection)) * uHazeExposure;
+    float lum = dot(hazeColor, vec3(0.2126, 0.7152, 0.0722));
+    float hazeStrength = clamp((1.0 - exp(-lum * 6.0)) * uHazeAmount, 0.0, 0.95);
+    col = mix(col, hazeColor, hazeStrength);
+  }
+
   fragColor = vec4(col, a);
 }
 `;
@@ -282,6 +298,13 @@ export type CitiesUniforms = {
   uDayContrast: { value: number };
   uOpacity: { value: number };
   uNightOpacity: { value: number };
+
+  /** Sky-view LUT shared with the atmosphere pass — see `LandUniforms.uSkyView`. */
+  uSkyView: { value: THREE.Texture | null };
+  /** Exposure multiplier on the LUT sample. Should track atmosphere exposure. */
+  uHazeExposure: { value: number };
+  /** Aerial-perspective haze strength. 0 disables. */
+  uHazeAmount: { value: number };
 };
 
 // All city tuning lives in [../../debug/defaults.ts] under
@@ -346,13 +369,17 @@ export class CitiesLayer {
       uDayContrast: { value: c.dayContrast },
       uOpacity: { value: c.opacity },
       uNightOpacity: { value: c.nightOpacity },
+
+      uSkyView: { value: null },
+      uHazeExposure: { value: 1.0 },
+      uHazeAmount: { value: 0.0 },
     };
 
     this.material = new THREE.ShaderMaterial({
       uniforms: this.uniforms as unknown as { [u: string]: THREE.IUniform },
       glslVersion: THREE.GLSL3,
       vertexShader: `${healpixGlsl}\n${CITIES_VERT}`,
-      fragmentShader: `${healpixGlsl}\n${CITIES_FRAG}`,
+      fragmentShader: `${healpixGlsl}\n${hazeGlsl}\n${CITIES_FRAG}`,
       transparent: true,
       depthWrite: false,
       depthTest: true,

@@ -484,6 +484,25 @@ export class AtmosphereLuts {
         }
         this.recompute(cameraPos, sunDir);
     }
+    /**
+     * Update solar irradiance and re-bake the multi-scatter LUT. The
+     * transmittance LUT does not depend on irradiance (it integrates
+     * extinction only), so it's untouched. The sky-view LUT's uniform is
+     * updated here; its rebake happens next frame via `recompute()` when
+     * the caller (AtmospherePass) marks itself dirty.
+     */
+    setSolarIrradiance(r, g, b) {
+        this.multiScatteringMat.uniforms.uSolarIrradiance.value.set(r, g, b);
+        this.skyViewMat.uniforms.uSolarIrradiance.value.set(r, g, b);
+        const prevTarget = this.renderer.getRenderTarget();
+        const prevAuto = this.renderer.autoClear;
+        this.renderer.autoClear = true;
+        this.quadMesh.material = this.multiScatteringMat;
+        this.renderer.setRenderTarget(this.multiScattering);
+        this.renderer.render(this.quadScene, this.quadCamera);
+        this.renderer.setRenderTarget(prevTarget);
+        this.renderer.autoClear = prevAuto;
+    }
     getAtmosphereRadius() {
         return this.atmosphereRadius;
     }

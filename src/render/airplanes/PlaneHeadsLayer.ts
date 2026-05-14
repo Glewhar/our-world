@@ -116,6 +116,7 @@ void main() {
 
   float a = uOpacity * core * blink;
   if (a < 0.005) discard;
+
   fragColor = vec4(uColorBlink, a);
 }
 `;

@@ -21,6 +21,7 @@
  */
 import * as THREE from 'three';
 import { source as healpixGlsl } from '../globe/shaders/healpix.glsl.js';
+import { source as hazeGlsl } from '../atmosphere/shaders/haze.glsl.js';
 import { DEFAULT_ELEVATION_SCALE } from '../globe/LandMaterial.js';
 const BUILDINGS_VERT = `// Buildings vertex shader — urban detail layer.
 //
@@ -114,6 +115,9 @@ in float vHeightNorm;
 uniform vec3 uSunDirection;
 uniform float uOpacity;
 
+// uSkyView, uHazeExposure, uHazeAmount + sampleSkyViewHaze() are declared
+// by the concatenated haze.glsl.ts chunk above this source.
+
 out vec4 fragColor;
 
 void main() {
@@ -136,6 +140,15 @@ void main() {
   // for a < 100 km patch).
   float wrap = smoothstep(-0.05, 0.15, dot(vSurfaceNormal, L));
   vec3 col = mix(nightCol, dayCol, wrap);
+
+  if (uHazeAmount > 0.0) {
+    vec3 dirCS = normalize(vWorldPos - cameraPosition);
+    vec3 hazeColor = sampleSkyViewHaze(dirCS, cameraPosition, L) * uHazeExposure;
+    float lum = dot(hazeColor, vec3(0.2126, 0.7152, 0.0722));
+    float hazeStrength = clamp((1.0 - exp(-lum * 6.0)) * uHazeAmount, 0.0, 0.95);
+    col = mix(col, hazeColor, hazeStrength);
+  }
+
   fragColor = vec4(col, uOpacity);
 }
 `;
@@ -160,6 +173,7 @@ in vec2 aStreetUV;    // 0..1 within the cell
 
 out vec2 vUV;
 out vec3 vSurfaceNormal;
+out vec3 vWorldPos;
 
 void main() {
   vUV = aStreetUV;
@@ -169,6 +183,7 @@ void main() {
   vec3 surface = uCityCentre * uRadialBase
                + uTangentX * ox
                + uTangentY * oy;
+  vWorldPos = surface;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(surface, 1.0);
 }
 `;
@@ -178,9 +193,13 @@ precision highp float;
 
 in vec2 vUV;
 in vec3 vSurfaceNormal;
+in vec3 vWorldPos;
 
 uniform vec3 uSunDirection;
 uniform float uOpacity;
+
+// Haze uniforms + sampleSkyViewHaze() come from the concatenated
+// haze.glsl.ts chunk above this source.
 
 out vec4 fragColor;
 
@@ -192,8 +211,17 @@ void main() {
   vec3 day = mix(vec3(0.18, 0.18, 0.19), vec3(0.32, 0.32, 0.33), core);
   vec3 night = mix(vec3(0.04, 0.04, 0.05), vec3(0.55, 0.45, 0.3), core);
 
-  float wrap = smoothstep(-0.05, 0.15, dot(vSurfaceNormal, normalize(uSunDirection)));
+  vec3 L = normalize(uSunDirection);
+  float wrap = smoothstep(-0.05, 0.15, dot(vSurfaceNormal, L));
   vec3 col = mix(night, day, wrap);
+
+  if (uHazeAmount > 0.0) {
+    vec3 dirCS = normalize(vWorldPos - cameraPosition);
+    vec3 hazeColor = sampleSkyViewHaze(dirCS, cameraPosition, L) * uHazeExposure;
+    float lum = dot(hazeColor, vec3(0.2126, 0.7152, 0.0722));
+    float hazeStrength = clamp((1.0 - exp(-lum * 6.0)) * uHazeAmount, 0.0, 0.95);
+    col = mix(col, hazeColor, hazeStrength);
+  }
 
   // Cell-edge fade so adjacent street cells blend rather than reading
   // as a grid of squares.
@@ -259,7 +287,7 @@ export class UrbanDetailLayer {
             uniforms: this.bldUniforms,
             glslVersion: THREE.GLSL3,
             vertexShader: `${healpixGlsl}\n${BUILDINGS_VERT}`,
-            fragmentShader: BUILDINGS_FRAG,
+            fragmentShader: `${hazeGlsl}\n${BUILDINGS_FRAG}`,
             transparent: false,
             depthWrite: true,
         });
@@ -267,7 +295,7 @@ export class UrbanDetailLayer {
             uniforms: this.strUniforms,
             glslVersion: THREE.GLSL3,
             vertexShader: STREETS_VERT,
-            fragmentShader: STREETS_FRAG,
+            fragmentShader: `${hazeGlsl}\n${STREETS_FRAG}`,
             transparent: true,
             depthWrite: false,
         });
@@ -508,6 +536,9 @@ function makeUniforms() {
         uElevationScale: { value: DEFAULT_ELEVATION_SCALE },
         uMetresPerUnit: { value: EARTH_RADIUS_KM * 1000 },
         uOpacity: { value: 1.0 },
+        uSkyView: { value: null },
+        uHazeExposure: { value: 1.0 },
+        uHazeAmount: { value: 0.0 },
     };
 }
 /** Pack three flat per-building arrays into one tight (w,d,h) per row. */

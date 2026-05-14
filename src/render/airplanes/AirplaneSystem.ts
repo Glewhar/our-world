@@ -82,7 +82,7 @@ export class AirplaneSystem {
   private readonly routeBaseRate: Float32Array;
 
   private simHoursPerRealSecond = 1.0;
-  private targetInFlight = DEFAULTS.airplanes.targetInFlight;
+  private targetInFlight: number = DEFAULTS.airplanes.targetInFlight;
   private elapsedRealSeconds = 0;
   private sunLonRad = 0;
 

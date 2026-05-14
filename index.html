@@ -291,6 +291,107 @@
         box-shadow: 0 0 10px var(--season-color);
       }
 
+      /* Sea-level companion thermostat — sits to the right of #season-control
+         with a 16 px gap (left = 16 + 56 + 16 = 88 px). Same layout as
+         #season-control but drives debug.state.materials.ocean.seaLevelOffsetM,
+         range -10000..+10000 m. Sandy at bottom (dry seafloor), deep blue at
+         top (flooded). */
+      #sealevel-control {
+        position: fixed;
+        left: 88px;
+        top: 50%;
+        transform: translateY(-50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 10px;
+        background: rgba(10, 14, 22, 0.65);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 18px;
+        z-index: 5;
+        width: 56px;
+      }
+      #sealevel-readout {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: #e6ecf6;
+        font-variant-numeric: tabular-nums;
+        text-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
+        min-height: 14px;
+      }
+      #sealevel-label {
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        color: rgba(230, 236, 246, 0.55);
+      }
+      #sealevel-slider-wrap {
+        position: relative;
+        width: 28px;
+        height: 240px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #sealevel-slider-wrap::before,
+      #sealevel-slider-wrap::after {
+        content: '';
+        position: absolute;
+        left: -2px;
+        right: -2px;
+        height: 1px;
+        background: rgba(230, 236, 246, 0.18);
+      }
+      #sealevel-slider-wrap::before {
+        top: 0;
+      }
+      #sealevel-slider-wrap::after {
+        bottom: 0;
+      }
+      #sealevel-slider {
+        appearance: none;
+        -webkit-appearance: none;
+        width: 240px;
+        height: 8px;
+        transform: rotate(-90deg);
+        background: linear-gradient(
+          to right,
+          #d4b885 0%,
+          #c9b186 22%,
+          rgba(230, 236, 246, 0.35) 50%,
+          #4ea8ff 78%,
+          #1a3a6b 100%
+        );
+        border-radius: 999px;
+        outline: none;
+        cursor: pointer;
+        margin: 0;
+      }
+      #sealevel-slider::-webkit-slider-thumb {
+        appearance: none;
+        -webkit-appearance: none;
+        width: 14px;
+        height: 24px;
+        border-radius: 5px;
+        background: #e6ecf6;
+        border: 2px solid rgba(0, 0, 0, 0.55);
+        cursor: pointer;
+        box-shadow: 0 0 10px rgba(230, 236, 246, 0.5);
+      }
+      #sealevel-slider::-moz-range-thumb {
+        width: 14px;
+        height: 24px;
+        border-radius: 5px;
+        background: #e6ecf6;
+        border: 2px solid rgba(0, 0, 0, 0.55);
+        cursor: pointer;
+        box-shadow: 0 0 10px rgba(230, 236, 246, 0.5);
+      }
+
 
       /* Floating bottom-left layer toggles (clouds / ocean / atmosphere). */
       #layer-toggles {
@@ -852,6 +953,13 @@
         <input id="season-slider" type="range" min="-30" max="30" step="0.5" value="0" aria-label="Season temperature offset" />
       </div>
       <div id="season-label">TEMPERATURE</div>
+    </div>
+    <div id="sealevel-control">
+      <div id="sealevel-readout">0 m</div>
+      <div id="sealevel-slider-wrap">
+        <input id="sealevel-slider" type="range" min="-10000" max="10000" step="10" value="0" aria-label="Sea level offset" />
+      </div>
+      <div id="sealevel-label">SEA LEVEL</div>
     </div>
 
     <div id="layer-toggles">

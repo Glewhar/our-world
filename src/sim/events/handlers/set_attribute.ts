@@ -69,10 +69,12 @@ export function applySetAttribute(ctx: SetAttributeContext, event: WorldEvent): 
       }
       return cells.length;
     }
+    case 'ellipse':
     case 'body':
     case 'graph':
-      // Slice deferral. Wire the id raster + graph tables into the worker
-      // in the next PR before flipping these on.
+      // Slice deferral. Ellipse-shaped set_attribute events go through
+      // applySetAttributeEllipse (the set_attribute_ellipse primitive);
+      // body/graph wait on the id raster + graph tables in a later PR.
       return 0;
   }
 }

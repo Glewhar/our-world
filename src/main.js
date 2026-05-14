@@ -18,6 +18,7 @@ import { Renderer } from './render/Renderer.js';
 import { createSceneGraph } from './render/scene-graph.js';
 import { createWorldRuntime } from './world/index.js';
 import { createDebugPanel, initialDebugState } from './debug/Tweakpane.js';
+import { runGpuProbe, applyTier, tierName } from './debug/autotune.js';
 import { setAttributeEvent } from './sim/events/primitives.js';
 import { NuclearScenario, ScenarioRegistry, } from './world/scenarios/index.js';
 import { mountScenarioCards } from './ui/scenario-cards.js';
@@ -38,6 +39,21 @@ async function boot() {
     const sceneGraph = createSceneGraph();
     const renderer = new Renderer(host, sceneGraph);
     sceneGraph.attachWorld(world, renderer.canvas);
+    // Auto-tune: measure real GPU cost behind the loading overlay (canvas is
+    // live but the overlay still covers it), then disable expensive layers on
+    // weaker systems before Tweakpane and the floating toggle bar bind to
+    // state. No persistence — every launch re-probes from scratch.
+    const probe = await runGpuProbe(renderer, sceneGraph, initialDebugState);
+    applyTier(initialDebugState, probe.tier);
+    console.info(`[autotune] tier=${tierName(probe.tier)} avgFrameMs=${probe.avgFrameMs.toFixed(2)} ` +
+        `samples=${probe.samples}${probe.partial ? ' (partial — wall-time cap hit)' : ''} ` +
+        `layers=${JSON.stringify({
+            clouds: initialDebugState.layers.clouds,
+            ocean: initialDebugState.layers.ocean,
+            atmosphere: initialDebugState.layers.atmosphere,
+            highways: initialDebugState.layers.highways,
+            planes: initialDebugState.layers.planes,
+        })}`);
     const debug = createDebugPanel(initialDebugState);
     // Scenario registry — owns the active scenario list and composes the
     // wasteland attribute texture each frame from per-scenario stamps.
@@ -101,6 +117,8 @@ async function boot() {
     const seasonSlider = document.getElementById('season-slider');
     const seasonReadout = document.getElementById('season-readout');
     const seasonControl = document.getElementById('season-control');
+    const sealevelSlider = document.getElementById('sealevel-slider');
+    const sealevelReadout = document.getElementById('sealevel-readout');
     const dateReadout = document.getElementById('date-readout');
     const toggleClouds = document.getElementById('toggle-clouds');
     const toggleOcean = document.getElementById('toggle-ocean');
@@ -154,6 +172,12 @@ async function boot() {
             seasonReadout.textContent = `${sign}${v.toFixed(1)}°`;
         }
         setSeasonTint(v);
+    };
+    const refreshSealevelReadout = (v) => {
+        if (sealevelReadout) {
+            const sign = v > 0 ? '+' : '';
+            sealevelReadout.textContent = `${sign}${Math.round(v)} m`;
+        }
     };
     // Build the 24-hour clock face (24 ticks, longer at 0/6/12/18) and wire
     // pointer drag → t01. The hand rotates 0..360° as t01 goes 0..1, with
@@ -308,6 +332,15 @@ async function boot() {
             refreshSeasonReadout(v);
         });
     }
+    if (sealevelSlider) {
+        sealevelSlider.value = String(debug.state.materials.ocean.seaLevelOffsetM);
+        refreshSealevelReadout(debug.state.materials.ocean.seaLevelOffsetM);
+        sealevelSlider.addEventListener('input', () => {
+            const v = parseFloat(sealevelSlider.value);
+            debug.state.materials.ocean.seaLevelOffsetM = v;
+            refreshSealevelReadout(v);
+        });
+    }
     // Calendar readout under the clock dial. Reads the derived `timeOfYear01`
     // (→ month index 0..11) and `yearsElapsed` (→ display year offset from
     // START_YEAR) — both produced from `totalDays` each frame by scene-graph.ts.
@@ -394,6 +427,13 @@ async function boot() {
             if (parseFloat(seasonSlider.value) !== v) {
                 seasonSlider.value = String(v);
                 refreshSeasonReadout(v);
+            }
+        }
+        if (sealevelSlider && document.activeElement !== sealevelSlider) {
+            const v = debug.state.materials.ocean.seaLevelOffsetM;
+            if (parseFloat(sealevelSlider.value) !== v) {
+                sealevelSlider.value = String(v);
+                refreshSealevelReadout(v);
             }
         }
         if (togglePlanes) {

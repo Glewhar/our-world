@@ -41,6 +41,7 @@ void main() {
 
   float a = uOpacity * vAlpha * lenFade * widthFade * headTaper;
   if (a < 0.005) discard;
+
   fragColor = vec4(uColor, a);
 }
 `;
