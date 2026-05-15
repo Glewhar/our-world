@@ -148,6 +148,18 @@ function randomBetween(min: number, max: number): number {
   return Math.random() * (max - min) + min;
 }
 
+// Quantized per-strike scale used to break up the "every explosion looks
+// identical" feel. 5 buckets between 0.85 and 1.15 — coarse on purpose so
+// the spline cache picks them up as a finite set of variants instead of
+// rebuilding curves on every strike.
+const JITTER_BUCKETS = 5;
+const JITTER_RANGE = 0.3;
+function pickJitter(): number {
+  const step = Math.floor(Math.random() * JITTER_BUCKETS);
+  const t = step / (JITTER_BUCKETS - 1);
+  return 1 - JITTER_RANGE / 2 + t * JITTER_RANGE;
+}
+
 function makeNumberSpline(): LinearSpline<number> {
   return new LinearSpline<number>((t, a, b) => a + t * (b - a));
 }
@@ -534,12 +546,21 @@ export class BlastSystem {
     slot.blastTime = 0;
     slot.particleCount = 0;
 
+    // Per-strike variety. Each detonate rolls three quantized random scales
+    // (height, size, speed) so two strikes with identical tuning still feel
+    // distinct — one mushroom rises taller, another spreads wider. Buckets
+    // are coarse (5 steps over ±15%) so the spline cache still hits a finite
+    // set: 5³ = 125 lifetime-curve variants per particle type max.
+    const heightMul = pickJitter();
+    const sizeMul = pickJitter();
+    const speedMul = pickJitter();
+
     // Re-bake splines using the current detonate tuning. Looked up by a
-    // hash of every cfg field buildSplines reads — same tuning → cache hit,
-    // no allocation.
+    // hash of every cfg field buildSplines reads — same tuning + same
+    // jitter bucket → cache hit, no allocation.
     slot.splinesByType.clear();
     for (const baseCfg of this._profile.particleTypes) {
-      const cfg = this._applyDetonateTuning(baseCfg);
+      const cfg = this._applyDetonateTuning(baseCfg, heightMul, sizeMul, speedMul);
       if (!cfg.enabled) continue;
       slot.splinesByType.set(cfg.particleType, this._getSplines(cfg));
       for (let i = 0; i < cfg.count; i++) {
@@ -602,7 +623,36 @@ export class BlastSystem {
     p.windVelocity.set(0, 0, 0);
   }
 
-  private _applyDetonateTuning(base: ParticleTypeConfig): ParticleTypeConfig {
+  private _getSplines(cfg: ParticleTypeConfig): Splines {
+    const mv = cfg.maxValues;
+    const key =
+      cfg.name +
+      '|' +
+      cfg.startColour +
+      '|' +
+      cfg.endColour +
+      '|' +
+      mv.alpha +
+      '|' +
+      mv.speed +
+      '|' +
+      mv.size +
+      '|' +
+      (mv.height ?? 'n');
+    let s = this._splinesCache.get(key);
+    if (s === undefined) {
+      s = buildSplines(cfg);
+      this._splinesCache.set(key, s);
+    }
+    return s;
+  }
+
+  private _applyDetonateTuning(
+    base: ParticleTypeConfig,
+    heightMul: number,
+    sizeMul: number,
+    speedMul: number,
+  ): ParticleTypeConfig {
     const t = this._detonateTuning;
     const enabled = t.enables[base.name] ?? base.enabled;
 
@@ -616,16 +666,21 @@ export class BlastSystem {
       endColour = t.smokeColorEnd;
     }
 
-    let maxValues = base.maxValues;
+    const mv = base.maxValues;
+    let heightScale = 1;
     if (base.name === 'mushroom' || base.name === 'mushroomFire') {
-      if (maxValues.height !== undefined) {
-        maxValues = { ...maxValues, height: maxValues.height * t.mushroomHeightScale };
-      }
+      heightScale = t.mushroomHeightScale;
     } else if (base.name === 'columnFire' || base.name === 'columnSmoke') {
-      if (maxValues.height !== undefined) {
-        maxValues = { ...maxValues, height: maxValues.height * t.columnHeightScale };
-      }
+      heightScale = t.columnHeightScale;
     }
+    const maxValues = {
+      ...mv,
+      size: mv.size * sizeMul,
+      speed: mv.speed * speedMul,
+      ...(mv.height !== undefined
+        ? { height: mv.height * heightScale * heightMul }
+        : {}),
+    };
 
     return { ...base, enabled, startColour, endColour, maxValues };
   }
