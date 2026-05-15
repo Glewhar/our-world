@@ -24,8 +24,8 @@
  *     clipped through a `mask-image` of the SVG — so CSS `color`
  *     anywhere up the tree paints the glyph.
  */
-const COLOR_BASE = '/assets/icons/color';
-const MONO_BASE = '/assets/icons/mono';
+const COLOR_BASE = './assets/icons/color';
+const MONO_BASE = './assets/icons/mono';
 function colorIcon(file, label) {
     return `<img class="hud-icon hud-icon-color" src="${COLOR_BASE}/${file}.svg" alt="${label}" draggable="false"/>`;
 }
