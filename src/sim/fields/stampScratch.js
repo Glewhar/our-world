@@ -30,10 +30,22 @@ export function acquireStampScratch(npix) {
         // scratch. Should never happen in practice (stamps are leaf calls).
         const mark = new Uint8Array(npix);
         const valBuf = new Float32Array(npix);
+        let reentrantTouched = new Uint32Array(4096);
+        let reentrantCount = 0;
         return {
             mark,
             valBuf,
-            recordTouched: () => { },
+            recordTouched(ipix) {
+                if (reentrantCount >= reentrantTouched.length) {
+                    const grown = new Uint32Array(reentrantTouched.length * 2);
+                    grown.set(reentrantTouched);
+                    reentrantTouched = grown;
+                }
+                reentrantTouched[reentrantCount++] = ipix;
+            },
+            getTouchedView() {
+                return reentrantTouched.subarray(0, reentrantCount);
+            },
             release: () => { },
         };
     }
@@ -59,6 +71,9 @@ export function acquireStampScratch(npix) {
                 scratchTouched = grown;
             }
             scratchTouched[scratchTouchedCount++] = ipix;
+        },
+        getTouchedView() {
+            return scratchTouched.subarray(0, scratchTouchedCount);
         },
         release() {
             const touched = scratchTouched;

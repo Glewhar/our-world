@@ -36,6 +36,7 @@ import { DEFAULT_NUCLEAR_WAR_CONFIG } from './world/scenarios/handlers/NuclearWa
 import { DEFAULT_NUCLEAR_CONFIG } from './world/scenarios/handlers/NuclearScenario.config.js';
 import { mountScenarioCards } from './ui/scenario-cards.js';
 import { mountScenariosLauncher } from './ui/scenarios-launcher.js';
+import { mountHealthHud } from './ui/health-hud.js';
 
 const host = document.getElementById('app');
 const loading = document.getElementById('loading');
@@ -50,6 +51,7 @@ async function boot(): Promise<void> {
   };
 
   const { world, sim } = await createWorldRuntime({ onProgress: setProgress });
+
   const sceneGraph = createSceneGraph();
   const renderer = new Renderer(host!, sceneGraph);
   sceneGraph.attachWorld(world, renderer.canvas);
@@ -120,11 +122,6 @@ async function boot(): Promise<void> {
       // scenarios call this from onStart to stamp zonal biome-override
       // belts (tundra creep, mid-latitude desert expansion, etc.).
     },
-    paintBiomeTransition: () => {
-      // The registry intercepts biome-transition paints during onStart
-      // and walks every HEALPix cell to build per-target-biome stamps.
-      // Outside that window, no-op.
-    },
     // The registry intercepts this internally — the user-level fallback
     // is just a no-op so the context interface stays satisfied.
     spawnChildScenario: () => '',
@@ -146,7 +143,7 @@ async function boot(): Promise<void> {
       }
       return out;
     },
-    getRoadSegments: () => world.getRoads(),
+    getSeaLevelMultiplier: () => debug.state.scenarios.seaLevelMultiplier,
   };
   const scenarioRegistry = new ScenarioRegistry({
     attributeSinks: [
@@ -159,8 +156,10 @@ async function boot(): Promise<void> {
     biomeOverrideSink: {
       bakeBiomeOverrideStamps: (input) => world.bakeBiomeOverrideStamps(input),
       countBiomesGlobal: () => world.countBiomesGlobal(),
-      getBaselineClass: (ipix) => world.getBaselineClass(ipix),
       getElevationMetersAtCell: (ipix) => world.getElevationMetersAtCell(ipix),
+      getPolygonLookup: () => world.getPolygonLookup(),
+      bakePolygonOverride: (slot, c, w, t) => world.bakePolygonOverride(slot, c, w, t),
+      clearPolygonOverrideSlot: (slot) => world.clearPolygonOverrideSlot(slot),
     },
     context: scenarioContext,
     nside: hpNside,
@@ -176,6 +175,14 @@ async function boot(): Promise<void> {
   // against scenarioRegistry.list() every frame in the RAF loop below.
   const scenarioCards = mountScenarioCards(
     document.getElementById('scenario-stack')!,
+    scenarioRegistry,
+    () => debug.state.scenarios.seaLevelMultiplier,
+  );
+
+  // Bottom-center health-bar HUD — three bars (Biome / Civilization /
+  // Radiation) reading `scenarioRegistry.getWorldHealth()` per frame.
+  const healthHud = mountHealthHud(
+    document.getElementById('health-hud')!,
     scenarioRegistry,
   );
 
@@ -328,6 +335,7 @@ async function boot(): Promise<void> {
       scenariosPanel,
       scenarioRegistry,
       () => debug.state.timeOfDay.totalDays,
+      debug.state,
     );
   }
   // Make Tweakpane checkbox rows fully clickable, like the floating layer-toggle
@@ -406,6 +414,14 @@ async function boot(): Promise<void> {
   window.addEventListener('blur', () => { windowFocused = false; });
   window.addEventListener('focus', () => { windowFocused = true; });
 
+  // Rolling perf probe for the scenario-registry tick. Idle should be
+  // sub-microsecond; the old per-cell census walks pushed multi-ms
+  // spikes once per second. `__ED.scenarioTickPerf()` reads it out.
+  const TICK_PERF_RING = 240; // ~4 s at 60 FPS
+  const tickPerfRingMs = new Float64Array(TICK_PERF_RING);
+  let tickPerfRingHead = 0;
+  let tickPerfRingFilled = false;
+
   let prev = performance.now();
   let raf = requestAnimationFrame(function frame(now: number): void {
     if (!windowFocused && (now - prev) < BLURRED_MIN_FRAME_MS) {
@@ -421,15 +437,22 @@ async function boot(): Promise<void> {
     // advanced `totalDays`. Tweakpane's decay-exponent slider is pushed
     // before the tick so the next composition uses the live value.
     scenarioRegistry.tuning.decayExponent = debug.state.scenarios.decayExponent;
+    const tickT0 = performance.now();
     scenarioRegistry.tick(debug.state.timeOfDay.totalDays);
+    const tickDtMs = performance.now() - tickT0;
+    tickPerfRingMs[tickPerfRingHead] = tickDtMs;
+    tickPerfRingHead = (tickPerfRingHead + 1) % TICK_PERF_RING;
+    if (tickPerfRingHead === 0) tickPerfRingFilled = true;
     sceneGraph.setClimateFrame(scenarioRegistry.getClimateFrame());
     sceneGraph.setBiomeOverrideTextures(
       world.getBiomeOverrideTexture(),
       world.getBiomeOverrideStampTexture(),
     );
     sceneGraph.setClimateEnvelopes(scenarioRegistry.getClimateEnvelopes());
+    sceneGraph.setSeafloorFrame(scenarioRegistry.getSeafloorFrame());
     sceneGraph.setCloudFrame(scenarioRegistry.getCloudFrame());
     scenarioCards.update();
+    healthHud.update();
     if (fpsCounter) {
       const wantVisible = debug.state.debug.fpsCounter;
       if (fpsCounter.classList.contains('visible') !== wantVisible) {
@@ -482,6 +505,28 @@ async function boot(): Promise<void> {
     debug,
     scenarios: scenarioRegistry,
     /**
+     * Read out the rolling scenario-tick cost ring. Returns avg / p95 /
+     * max in microseconds over the last ~4 seconds of frames. Idle should
+     * be near 0; even a 70-strike Nuclear War should stay sub-microsecond
+     * (no per-cell census walks left after the impact-budget refactor).
+     */
+    scenarioTickPerf(): { avgUs: number; p95Us: number; maxUs: number; samples: number } {
+      const n = tickPerfRingFilled ? TICK_PERF_RING : tickPerfRingHead;
+      if (n === 0) return { avgUs: 0, p95Us: 0, maxUs: 0, samples: 0 };
+      const slice = Array.from(tickPerfRingMs.subarray(0, n)).sort((a, b) => a - b);
+      let sum = 0;
+      for (let i = 0; i < n; i++) sum += slice[i]!;
+      const avgMs = sum / n;
+      const p95Ms = slice[Math.min(n - 1, Math.floor(n * 0.95))]!;
+      const maxMs = slice[n - 1]!;
+      return {
+        avgUs: avgMs * 1000,
+        p95Us: p95Ms * 1000,
+        maxUs: maxMs * 1000,
+        samples: n,
+      };
+    },
+    /**
      * Manual wasteland paint — drops a single peak-value stamp directly
      * onto the wasteland texture (no scenario, no decay). Useful for
      * eyeballing the shader tint without firing a full scenario.
@@ -530,13 +575,13 @@ async function boot(): Promise<void> {
     },
     /**
      * Console helper — fires a Global Warming scenario with the given
-     * params. Will throw "no handler registered" until the climate-scenario
-     * wiring (see plan file) lands; harmless to call from DevTools.
+     * params. Sea level is derived from `seaLevelFromTempDelta` —
+     * tweak `__ED.setSeaLevelMultiplier(x)` to scale.
      */
     startGlobalWarming(
-      opts: { maxTempDeltaC?: number; maxSeaLevelM?: number; durationDays?: number } = {},
+      opts: { maxTempDeltaC?: number; durationDays?: number } = {},
     ): StartResult {
-      const p = { maxTempDeltaC: opts.maxTempDeltaC ?? 8, maxSeaLevelM: opts.maxSeaLevelM ?? 70 };
+      const p = { maxTempDeltaC: opts.maxTempDeltaC ?? 8 };
       const dur = opts.durationDays ?? 30;
       return scenarioRegistry.start(
         'globalWarming',
@@ -547,13 +592,13 @@ async function boot(): Promise<void> {
       );
     },
     /**
-     * Console helper — fires an Ice Age scenario. Same caveat as
-     * startGlobalWarming until the wiring lands.
+     * Console helper — fires an Ice Age scenario. Sea-level fall
+     * derives from the temperature curve.
      */
     startIceAge(
-      opts: { maxTempDeltaC?: number; maxSeaLevelM?: number; durationDays?: number } = {},
+      opts: { maxTempDeltaC?: number; durationDays?: number } = {},
     ): StartResult {
-      const p = { maxTempDeltaC: opts.maxTempDeltaC ?? -10, maxSeaLevelM: opts.maxSeaLevelM ?? -120 };
+      const p = { maxTempDeltaC: opts.maxTempDeltaC ?? -10 };
       const dur = opts.durationDays ?? 60;
       return scenarioRegistry.start(
         'iceAge',
@@ -572,7 +617,6 @@ async function boot(): Promise<void> {
         strikeCount?: number;
         strikeWindowDays?: number;
         maxTempDeltaC?: number;
-        maxSeaLevelM?: number;
         peakSootGlobal?: number;
         durationDays?: number;
         rebuildAfterWar?: boolean;
@@ -587,7 +631,6 @@ async function boot(): Promise<void> {
           strikeWindowDays: opts.strikeWindowDays ?? cfg.strikeFireWindowDays,
           airplaneStopAtDay: cfg.airplaneStopAtDay,
           maxTempDeltaC: opts.maxTempDeltaC ?? cfg.maxTempDeltaC,
-          maxSeaLevelM: opts.maxSeaLevelM ?? cfg.maxSeaLevelM,
           peakSootGlobal: opts.peakSootGlobal ?? cfg.peakSootGlobal,
           strikeEndFrac: cfg.strikeEndFrac,
           winterRampEndFrac: cfg.winterRampEndFrac,
@@ -598,6 +641,14 @@ async function boot(): Promise<void> {
         opts.durationDays ?? cfg.durationDays,
         { label: 'Nuclear War' },
       );
+    },
+    /**
+     * Console helper — set the global sea-level multiplier. 1.0 =
+     * paleoclimate-anchored; range [0, 10]. Read by climate handlers
+     * each tick via `ctx.getSeaLevelMultiplier()`.
+     */
+    setSeaLevelMultiplier(x: number): void {
+      debug.state.scenarios.seaLevelMultiplier = x;
     },
     fireAt(latDeg: number, lonDeg: number, radiusKm = 500, value = 1.0): void {
       sim.injectEvent(

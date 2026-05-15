@@ -108,6 +108,9 @@ export class TrailsLayer {
     setElevationScale(v) {
         this.material.uniforms.uElevationScale.value = v;
     }
+    setColor(css) {
+        this.material.uniforms.uColor.value.set(css);
+    }
     dispose() {
         this.geometry.dispose();
         this.material.dispose();

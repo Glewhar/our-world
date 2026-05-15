@@ -162,6 +162,10 @@ export class AirportsLayer {
     this.mesh.visible = active;
   }
 
+  setColor(css: string): void {
+    (this.material.uniforms.uColor!.value as THREE.Color).set(css);
+  }
+
   dispose(): void {
     this.geometry.dispose();
     this.material.dispose();

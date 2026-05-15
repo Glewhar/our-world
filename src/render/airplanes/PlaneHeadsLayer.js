@@ -196,6 +196,9 @@ export class PlaneHeadsLayer {
     setOpacity(v) {
         this.material.uniforms.uOpacity.value = v;
     }
+    setColor(css) {
+        this.material.uniforms.uColorBlink.value.set(css);
+    }
     dispose() {
         this.geometry.dispose();
         this.material.dispose();

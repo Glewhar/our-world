@@ -18,6 +18,9 @@ import { bakeElevationEquirectTexture } from './ElevationEquirectPrebake.js';
 import { BiomeColorEquirect } from './BiomeColorEquirect.js';
 import { BiomeOverrideEquirect } from './BiomeOverrideEquirect.js';
 import { createLandMaterial, type LandUniforms } from './LandMaterial.js';
+import { MountainEquirect } from './MountainEquirect.js';
+import { SeafloorColorEquirect } from './SeafloorColorEquirect.js';
+import { SnowEquirect } from './SnowEquirect.js';
 import type { WorldRuntime } from '../../world/index.js';
 
 const ICOSPHERE_SUBDIVISION = 64;
@@ -29,6 +32,9 @@ export class Land {
   readonly biomeColor: BiomeColorEquirect;
   readonly biomeOverride: BiomeOverrideEquirect;
   readonly biomeOverrideB: BiomeOverrideEquirect;
+  readonly mountain: MountainEquirect;
+  readonly snow: SnowEquirect;
+  readonly seafloorColor: SeafloorColorEquirect;
   private readonly geometry: THREE.IcosahedronGeometry;
   private readonly material: THREE.ShaderMaterial & { _landUniforms: LandUniforms };
 
@@ -47,6 +53,15 @@ export class Land {
     // shader samples each independently for a soft per-scenario frontier.
     this.biomeOverride = new BiomeOverrideEquirect(world, 0);
     this.biomeOverrideB = new BiomeOverrideEquirect(world, 1);
+    // Three further pre-blurred LAND inputs, each driven by its own
+    // Tweakpane slider. Mountain/snow blur the HEALPix elevation +
+    // temperature buffers so the alpine smoothstep and snow line
+    // transition smoothly across cell boundaries. Seafloor blurs a
+    // shelf-palette mask so the coast and the 23.5°/60° latitude seams
+    // dissolve at the same wide sigma.
+    this.mountain = new MountainEquirect(world);
+    this.snow = new SnowEquirect(world);
+    this.seafloorColor = new SeafloorColorEquirect(world);
 
     const u = this.material._landUniforms;
     // `attribute_static` shares one RGBA8 texture across its four channels.
@@ -61,6 +76,21 @@ export class Land {
     u.uBiomeColorEquirect.value = this.biomeColor.colorTexture;
     u.uBiomeOverrideEquirect.value = this.biomeOverride.colorTexture;
     u.uBiomeOverrideEquirectB.value = this.biomeOverrideB.colorTexture;
+    u.uMountainEquirect.value = this.mountain.colorTexture;
+    u.uSnowEquirect.value = this.snow.colorTexture;
+    u.uSeafloorColorEquirect.value = this.seafloorColor.colorTexture;
+
+    // Polygon-ID raster + 1D palette feed the coast fallback inside the
+    // LAND shader — when the pre-blurred equirect's alpha drops to zero
+    // (kernel saw no land), the shader reads the raster polygon ID and
+    // looks up its palette colour so the fragment still gets a sane
+    // land tone instead of black.
+    const polyTex = world.getPolygonTexture();
+    const polyLookup = world.getPolygonLookup();
+    u.uPolyIdRaster.value = polyTex;
+    u.uPolyTexWidth.value = polyLookup.rasterWidth;
+    u.uPolyTexHeight.value = polyLookup.rasterHeight;
+    u.uColorByPoly.value = this.biomeColor.colorByPolyTexture;
 
     const { nside, ordering } = world.getHealpixSpec();
     u.uHealpixNside.value = nside;
@@ -91,6 +121,9 @@ export class Land {
     this.biomeColor.dispose();
     this.biomeOverride.dispose();
     this.biomeOverrideB.dispose();
+    this.mountain.dispose();
+    this.snow.dispose();
+    this.seafloorColor.dispose();
     while (this.group.children.length > 0) {
       this.group.remove(this.group.children[0]!);
     }

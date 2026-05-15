@@ -312,6 +312,7 @@ body {
 .area.middle-left  { grid-area: middle-left;  flex-direction: column;  align-self: center; gap: var(--gap); }
 .area.middle-right { grid-area: middle-right; flex-direction: column;  align-items: flex-end;   gap: var(--gap); max-height: 100%; }
 .area.bottom-right { grid-area: bottom-right; flex-direction: column;  align-items: flex-end;   gap: var(--gap); justify-content: flex-end; }
+.area.bottom-center{ grid-area: bottom-center; justify-content: center; align-items: flex-end; }
 
 
 /* -------------------------------------------------------------------------
@@ -737,29 +738,6 @@ body {
   overflow-y: auto;
 }
 .scenario-card-row { font-variant-numeric: tabular-nums; }
-.scenario-card-census {
-  width: 100%;
-  margin-top: 6px;
-  border-collapse: collapse;
-  font-variant-numeric: tabular-nums;
-  font-size: 10px;
-}
-.scenario-card-census th {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text-mute);
-  text-align: left;
-  padding: 2px 4px;
-  border-bottom: 1px solid var(--glass-border-color);
-}
-.scenario-card-census th:last-child { text-align: right; }
-.scenario-card-census td {
-  padding: 2px 4px;
-  color: rgba(230, 236, 246, 0.85);
-}
-.scenario-card-census td:last-child { text-align: right; }
 .scenario-card-stop {
   align-self: flex-start;
   margin-top: 6px;
@@ -778,6 +756,290 @@ body {
 .scenario-card-stop:hover {
   background: rgba(255, 122, 77, 0.25);
   border-color: rgba(255, 122, 77, 0.5);
+}
+
+
+/* -------------------------------------------------------------------------
+   6f-pre. Bottom-center — vitals HUD (Biome / Civilization / Radiation)
+   Three modules sit in a single glass strip anchored to the bottom-center
+   grid cell. Each module owns its own visualisation primitive: biome is a
+   12-hex diorama, civilisation is a row of city-tower pips above an
+   alive/dead population band, radiation is a strata bar that fills as
+   contamination accumulates plus a row of trefoil pips per active bomb.
+   No text, no numeric readouts. Sub-rows collapse below 800 px.
+   ------------------------------------------------------------------------- */
+/* The HTML adds `.chip.is-panel` for the glass surface; the panel rule
+   sets `display: block`, so we need a same-or-higher specificity
+   selector to switch back to grid here. */
+.chip.is-panel.health-hud {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  min-width: 720px;
+  max-width: min(900px, calc(100vw - 2 * var(--gutter)));
+  padding: 14px 16px;
+}
+.vital-module {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 10px;
+  row-gap: 4px;
+  align-items: center;
+}
+.vital-module .icon {
+  grid-row: 1 / 3;
+  width: 36px; height: 36px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #ffd9a0;
+}
+.vital-module .icon .hud-icon { width: 22px; height: 22px; display: block; }
+
+/* === Shared icon primitives ============================================
+   `.hud-icon-color` renders a Fluent UI Emoji SVG verbatim through an
+   `<img>` tag — full intrinsic colour, CSS `color` does NOT tint it.
+   `.hud-icon-mono` paints a Material Symbols SVG as a CSS mask layer
+   on top of `currentColor`, so the glyph picks up whatever the
+   surrounding text colour is (intact pips amber, ruined pips orange,
+   overflow indicator purple, etc.). */
+.hud-icon { display: inline-block; pointer-events: none; }
+.hud-icon-color { object-fit: contain; }
+.hud-icon-mono {
+  background-color: currentColor;
+  -webkit-mask-image: var(--icon-url);
+  mask-image: var(--icon-url);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+.vital-module .label {
+  grid-column: 2;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.vital-module .viz {
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-height: 28px;
+}
+
+/* === Module 1 — biome hex diorama ======================================
+   12 regular pointy-top hexagons (aspect √3/2 = ~0.866) in a single row.
+   The hex carries a `data-cat` attribute; the colour comes from that
+   attribute, and the glyph is a Material Symbols mono icon stencilled
+   into the hex face — a darker tone of the hex colour, so the hex
+   reads as the biome first, the glyph as a relief detail on top.
+   No flex on the hex itself — fixed width + height keep proportions
+   true regardless of the viz column's width. */
+.biome-hex-row {
+  display: flex;
+  gap: 2px;
+  height: 24px;
+  justify-content: flex-start;
+}
+.biome-hex {
+  width: 21px;
+  height: 24px;
+  flex: 0 0 21px;
+  position: relative;
+  background: rgba(255, 255, 255, 0.04);
+  /* Pointy-top regular hexagon. */
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  display: flex; align-items: center; justify-content: center;
+  color: rgba(255, 255, 255, 0.55);
+  transition: background-color 0.4s ease, color 0.4s ease;
+}
+.biome-hex .hud-icon {
+  width: 12px; height: 12px;
+  opacity: 0.85;
+  pointer-events: none;
+}
+.biome-hex[data-cat="rainforest"]      { background: #1f6b3a; color: rgba(8, 26, 14, 0.85); }
+.biome-hex[data-cat="temperateForest"] { background: #4f8a48; color: rgba(14, 34, 12, 0.8); }
+.biome-hex[data-cat="grassland"]       { background: #c2a04a; color: rgba(54, 36, 8, 0.85); }
+.biome-hex[data-cat="desert"]          { background: #e0c98a; color: rgba(70, 48, 14, 0.85); }
+.biome-hex[data-cat="tundraIce"]       { background: #c8dde6; color: rgba(20, 50, 75, 0.85); }
+.biome-hex[data-cat="wasteland"]       { background: #2a2624; color: rgba(255, 210, 200, 0.7); }
+
+/* Flash overlay — fires for one keyframe whenever JS swaps `data-cat`.
+   The biome layer underneath is already crossfading via the
+   background-color transition; this overlay supplies the white pop. */
+.biome-hex.flash::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.85);
+  clip-path: inherit;
+  pointer-events: none;
+  animation: hex-flip 0.42s ease-out forwards;
+}
+@keyframes hex-flip {
+  0%   { opacity: 1; }
+  60%  { opacity: 0.25; }
+  100% { opacity: 0; }
+}
+
+/* === Module 2 — civilisation pips + population band ==================== */
+.civ-pip-row {
+  display: flex;
+  gap: 3px;
+  height: 16px;
+}
+.civ-pip {
+  flex: 1 1 0;
+  height: 16px;
+  display: flex; align-items: center; justify-content: center;
+  color: #ffd9a0;
+  transition: color 0.3s ease;
+}
+.civ-pip .hud-icon { width: 14px; height: 14px; display: block; }
+.civ-pip.ruined { color: #ff9a4a; }
+/* Skull pip is a Fluent Emoji <img>; CSS `color` doesn't tint it, the
+   built-in palette already reads as "collapsed". */
+
+.civ-band {
+  display: flex;
+  height: 6px;
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.06);
+}
+.civ-band-alive {
+  background: #9ce39c;
+  height: 100%;
+  transition: width 0.25s ease;
+}
+.civ-band-dead {
+  background: #c4413a;
+  height: 100%;
+  transition: width 0.25s ease;
+}
+.civ-band-divider {
+  width: 1px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+/* === Module 3 — radiation strata bar + trefoil pip row =================
+   Fill direction is INVERTED from the old health-bar semantics: width
+   grows from 0 % (clean) to 100 % (saturated), so the bar physically
+   loads up with radiation rather than draining away. Detonation ticks
+   ride inside the fill; the diagonal scan-line sweep animates only
+   while there is any fill at all. */
+.rad-strata {
+  position: relative;
+  height: 8px;
+  border-radius: var(--r-pill);
+  background: #2d3a44;
+  overflow: hidden;
+}
+.rad-strata-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 0%;
+  border-radius: var(--r-pill);
+  background: linear-gradient(
+    90deg,
+    #a8e065 0%,
+    #ffd24a 35%,
+    #ff5a3a 65%,
+    #d966ff 100%
+  );
+  transition: width 0.18s linear, box-shadow 0.4s ease;
+  pointer-events: none;
+}
+.rad-strata-fill.hot {
+  box-shadow: 0 0 8px rgba(217, 102, 255, 0.55);
+}
+.rad-strata-ticks {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 0%;
+  pointer-events: none;
+  overflow: hidden;
+}
+.rad-tick {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.55);
+  transform: translateX(-0.5px);
+}
+.rad-strata-scanline {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(
+    115deg,
+    transparent 0%,
+    transparent 42%,
+    rgba(255, 255, 255, 0.45) 50%,
+    transparent 58%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  transition: opacity 0.4s ease;
+}
+.rad-strata.active .rad-strata-scanline {
+  opacity: 1;
+  animation: rad-scanline 3s linear infinite;
+}
+@keyframes rad-scanline {
+  0%   { background-position: -50% 0; }
+  100% { background-position: 150% 0; }
+}
+
+.rad-pip-row {
+  display: flex;
+  gap: 3px;
+  height: 14px;
+}
+.rad-pip {
+  flex: 1 1 0;
+  display: flex; align-items: center; justify-content: center;
+  /* The trefoil pip is a Fluent Emoji <img> — colour is intrinsic.
+     Lit vs dim toggles via opacity instead of `color`. */
+  color: rgba(217, 102, 255, 1);
+  opacity: 0.22;
+  transition: opacity 0.3s ease, filter 0.3s ease;
+}
+.rad-pip .hud-icon { width: 12px; height: 12px; display: block; }
+.rad-pip.lit {
+  opacity: 1;
+  filter: drop-shadow(0 0 3px rgba(217, 102, 255, 0.65));
+}
+.rad-pip.overflow {
+  opacity: 1;
+  animation: rad-overflow-pulse 1.4s ease-in-out infinite;
+}
+@keyframes rad-overflow-pulse {
+  0%, 100% { opacity: 0.55; transform: scale(0.92); }
+  50%      { opacity: 1;    transform: scale(1.08); }
+}
+
+@media (max-width: 800px) {
+  .chip.is-panel.health-hud {
+    min-width: 0;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  /* Drop to a 6-hex diorama by hiding the last six. */
+  .biome-hex-row .biome-hex:nth-child(n + 7) { display: none; }
+  /* Civ collapses to the alive/dead band only. */
+  .civ-pip-row { display: none; }
+  /* Radiation collapses to the strata bar only. */
+  .rad-pip-row { display: none; }
 }
 
 
@@ -925,6 +1187,21 @@ body {
   #tweakpane-host { width: 260px; }
 }
 
+/* Narrow desktop / tablet (<800 px): stack the HUD modules vertically.
+   Explicit width so the glass chip stays a solid grounded rectangle —
+   without it the chip shrinks to module content and the modules end up
+   floating over the globe without a visible backing. */
+@media (max-width: 799px) {
+  .chip.is-panel.health-hud {
+    grid-template-columns: 1fr;
+    min-width: 0;
+    width: min(420px, calc(100vw - 2 * var(--gutter)));
+    max-width: 100%;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+}
+
 /* Phone (<640 px): shrink sliders, time chip; hide Tweakpane */
 @media (max-width: 639px) {
   :root {
@@ -955,6 +1232,8 @@ body {
   }
 
   #scenario-stack   { width: min(220px, 60vw); }
+  /* HUD becomes too cramped to spell out the sub-labels below 600 px. */
+  .health-bar .sub { display: none; }
 
   /* Debug panel off on phone — too cramped to be useful */
   #tweakpane-toggle,

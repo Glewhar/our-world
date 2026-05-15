@@ -8,7 +8,7 @@
  * Collapsed card (default, ~32px):
  *   ☢  Nuclear strike — Nevada              ████████░░░░░░░░  16 d
  *
- * Expanded card (~120px, click to expand):
+ * Expanded card (~80px, click to expand):
  *   ☢  Nuclear strike — Nevada              ████████░░░░░░░░  16 d
  *      38.4° N, 116.9° W
  *      radius 450 km · stretch 1200 km · wind from W
@@ -20,34 +20,15 @@
  * Layout: vertical stack inside `#scenario-stack` (a flex column declared
  * in index.html). The host owns `max-height` + scroll; this module owns
  * card construction + per-frame value updates.
+ *
+ * Statistics (cities destroyed, biome census, etc.) live on the bottom-center
+ * health-bar HUD now — the card only carries scenario metadata.
  */
 
 import type { Scenario, ScenarioRegistry } from '../world/scenarios/index.js';
+import { seaLevelFromTempDelta } from '../world/scenarios/seaLevelFromTemp.js';
 
 const START_YEAR = 2067;
-
-// 15-entry biome name table for the WWF TEOW codes (0 = no-data, 1..14 =
-// TEOW biomes). The palette in defaults.ts has 16 entries — slot 15 is the
-// synthetic ice/glacier used only by climate-scenario overrides, which the
-// scenario card doesn't list. Kept inline so this file stays decoupled
-// from debug/defaults.
-const BIOME_NAMES: readonly string[] = [
-  'no data',
-  'tropical moist forest',
-  'tropical dry forest',
-  'tropical conifer',
-  'temperate broadleaf',
-  'temperate conifer',
-  'boreal / taiga',
-  'tropical savanna',
-  'temperate grassland',
-  'flooded grassland',
-  'montane grassland',
-  'tundra',
-  'mediterranean',
-  'desert / xeric',
-  'mangroves',
-];
 
 type CardEls = {
   root: HTMLDivElement;
@@ -61,10 +42,7 @@ type CardEls = {
   coords: HTMLDivElement;
   shape: HTMLDivElement;
   timing: HTMLDivElement;
-  destruction: HTMLDivElement | null;
   stop: HTMLButtonElement;
-  censusTable: HTMLTableElement | null;
-  censusRows: Map<number, HTMLTableRowElement>;
 };
 
 export type ScenarioCardsMount = {
@@ -77,6 +55,7 @@ export type ScenarioCardsMount = {
 export function mountScenarioCards(
   host: HTMLElement,
   registry: ScenarioRegistry,
+  getSeaLevelMultiplier: () => number,
 ): ScenarioCardsMount {
   const cardsById = new Map<string, CardEls>();
 
@@ -93,7 +72,7 @@ export function mountScenarioCards(
         host.appendChild(card.root);
       }
       const progress01 = progressOf(scn);
-      refreshCard(card, scn, progress01, registry);
+      refreshCard(card, scn, progress01, getSeaLevelMultiplier());
     }
     // Drop cards whose scenarios ended.
     cardsById.forEach((card, id) => {
@@ -122,9 +101,6 @@ function progressOf(scn: Scenario): number {
   // side; here we read totalDays via the same elapsed math so the card's
   // bar updates between registry ticks (the registry only re-emits the
   // wasteland texture, it doesn't mutate the scenario's startedAtDay).
-  // We don't have totalDays handed to us, so derive from a global: the
-  // debug state lives behind window.__ED.debug.state.timeOfDay.totalDays
-  // — fine for v1 since the card UI is gameplay-side, not testable.
   const totalDays =
     (window as unknown as { __ED?: { debug?: { state?: { timeOfDay?: { totalDays: number } } } } })
       .__ED?.debug?.state?.timeOfDay?.totalDays ?? scn.startedAtDay;
@@ -185,39 +161,6 @@ function createCard(scn: Scenario, onStop: () => void): CardEls {
   body.appendChild(coords);
   body.appendChild(shape);
   body.appendChild(timing);
-
-  // Destruction stats — three lines, only mounted for handlers with
-  // `hasDestructionCensus` (Nuclear + NuclearWar). The text is rewritten
-  // by `refreshCard` from `registry.getDestructionCensus(scn.id)`.
-  let destruction: HTMLDivElement | null = null;
-  if (scn.kind === 'nuclear' || scn.kind === 'nuclearWar') {
-    destruction = document.createElement('div');
-    destruction.className = 'scenario-card-row scenario-card-destruction';
-    body.appendChild(destruction);
-  }
-
-  // Climate scenarios get a biome census table inside the card body.
-  // Rows populate lazily in refreshCard() as census entries appear.
-  let censusTable: HTMLTableElement | null = null;
-  const censusRows = new Map<number, HTMLTableRowElement>();
-  if (scn.kind === 'globalWarming' || scn.kind === 'iceAge' || scn.kind === 'nuclearWar') {
-    censusTable = document.createElement('table');
-    censusTable.className = 'scenario-card-census';
-    const thead = document.createElement('thead');
-    const headerRow = document.createElement('tr');
-    const thBiome = document.createElement('th');
-    thBiome.textContent = 'biome';
-    const thCount = document.createElement('th');
-    thCount.textContent = 'cells (Δ)';
-    headerRow.appendChild(thBiome);
-    headerRow.appendChild(thCount);
-    thead.appendChild(headerRow);
-    censusTable.appendChild(thead);
-    const tbody = document.createElement('tbody');
-    censusTable.appendChild(tbody);
-    body.appendChild(censusTable);
-  }
-
   body.appendChild(stop);
 
   root.appendChild(header);
@@ -242,10 +185,7 @@ function createCard(scn: Scenario, onStop: () => void): CardEls {
     coords,
     shape,
     timing,
-    destruction,
     stop,
-    censusTable,
-    censusRows,
   };
 }
 
@@ -253,7 +193,7 @@ function refreshCard(
   card: CardEls,
   scn: Scenario,
   progress01: number,
-  registry: ScenarioRegistry,
+  seaLevelMultiplier: number,
 ): void {
   // Bar / day counter. Auto-repeat shows ∞ + no fill.
   if (scn.autoRepeat) {
@@ -277,49 +217,22 @@ function refreshCard(
     const endsYear = START_YEAR + Math.floor((scn.startedAtDay + scn.durationDays) / 12);
     card.timing.textContent = `started year ${startedYear}, recovers year ${endsYear}`;
   } else if (scn.kind === 'globalWarming' || scn.kind === 'iceAge' || scn.kind === 'nuclearWar') {
-    refreshClimateCard(card, scn, registry);
+    refreshClimateCard(card, scn, seaLevelMultiplier);
   }
-  refreshDestructionStats(card, scn, registry);
 }
 
-function refreshDestructionStats(
+function refreshClimateCard(
   card: CardEls,
   scn: Scenario,
-  registry: ScenarioRegistry,
+  seaLevelMultiplier: number,
 ): void {
-  if (!card.destruction) return;
-  const d = registry.getDestructionCensus(scn.id);
-  if (!d) {
-    card.destruction.textContent = '';
-    return;
-  }
-  const fmt = new Intl.NumberFormat('en-US');
-  const lines: string[] = [];
-  if (d.strikesScheduled > 1) {
-    lines.push(`${fmt.format(d.strikes)} / ${fmt.format(d.strikesScheduled)} strikes`);
-  }
-  lines.push(`${fmt.format(d.cities)} cities destroyed · ${formatPopulation(d.population)}`);
-  lines.push(`${formatStreetKm(d.streetKm)} streets destroyed`);
-  card.destruction.innerHTML = lines.map((l) => `<div>${l}</div>`).join('');
-}
-
-function formatPopulation(pop: number): string {
-  if (pop >= 1e9) return `${(pop / 1e9).toFixed(1)} B population`;
-  if (pop >= 1e6) return `${(pop / 1e6).toFixed(1)} M population`;
-  if (pop >= 1e3) return `${(pop / 1e3).toFixed(0)} K population`;
-  return `${pop} population`;
-}
-
-function formatStreetKm(km: number): string {
-  return km >= 1000
-    ? `${new Intl.NumberFormat('en-US').format(Math.round(km))} km`
-    : `${km.toFixed(0)} km`;
-}
-
-function refreshClimateCard(card: CardEls, scn: Scenario, registry: ScenarioRegistry): void {
-  const p = scn.payload as { maxTempDeltaC?: number; maxSeaLevelM?: number } | undefined;
+  // Peak forecast — sea level falls out of the temperature curve at the
+  // current multiplier. Live sea level (which lags via the envelope)
+  // sits in the registry's combined climate frame; the card carries the
+  // launch-time peak intent.
+  const p = scn.payload as { maxTempDeltaC?: number } | undefined;
   const dT = p?.maxTempDeltaC ?? 0;
-  const dSL = p?.maxSeaLevelM ?? 0;
+  const dSL = seaLevelFromTempDelta(dT, seaLevelMultiplier);
   card.coords.textContent =
     `target ΔT ${dT >= 0 ? '+' : ''}${dT.toFixed(1)} °C · sea level ${dSL >= 0 ? '+' : ''}${dSL.toFixed(0)} m`;
   const startedYear = START_YEAR + Math.floor(scn.startedAtDay / 12);
@@ -329,35 +242,6 @@ function refreshClimateCard(card: CardEls, scn: Scenario, registry: ScenarioRegi
       ? `started year ${startedYear}, winter ends year ${endsYear}`
       : `started year ${startedYear}, settles year ${endsYear}`;
   card.timing.textContent = '';
-
-  if (!card.censusTable) return;
-  const census = registry.getBiomeCensus(scn.id);
-  if (!census) return;
-
-  const tbody = card.censusTable.tBodies[0];
-  if (!tbody) return;
-  const fmt = new Intl.NumberFormat('en-US');
-  for (const classStr of Object.keys(census.current)) {
-    const cls = parseInt(classStr, 10);
-    if (!Number.isFinite(cls)) continue;
-    const current = census.current[cls] ?? 0;
-    const delta = census.delta[cls] ?? 0;
-    let row = card.censusRows.get(cls);
-    if (!row) {
-      row = document.createElement('tr');
-      const tdName = document.createElement('td');
-      tdName.textContent = BIOME_NAMES[cls] ?? `biome ${cls}`;
-      const tdVal = document.createElement('td');
-      row.appendChild(tdName);
-      row.appendChild(tdVal);
-      tbody.appendChild(row);
-      card.censusRows.set(cls, row);
-    }
-    const tdVal = row.children[1] as HTMLTableCellElement;
-    const sign = delta > 0 ? '+' : delta < 0 ? '−' : '';
-    const colour = delta > 0 ? '#7fd58a' : delta < 0 ? '#ff7a7a' : 'inherit';
-    tdVal.innerHTML = `${fmt.format(current)} <span style="color:${colour}">(${sign}${fmt.format(Math.abs(delta))})</span>`;
-  }
 }
 
 function formatRemaining(months: number): string {

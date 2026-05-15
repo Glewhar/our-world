@@ -16,53 +16,6 @@
  *     brown-grey overcast; tundra glaciates, temperate forests fade
  *     toward yellow-green grassland, rainforest core stays mostly green.
  */
-import { BIOME } from './IceAgeScenario.config.js';
-/**
- * Nuclear winter biome LUT. Sits between ice-age (full freeze) and
- * "warming" (none of these): tundra glaciates, temperate forests fade
- * toward yellow-green grassland, tropical rainforest core stays mostly
- * green. Vulnerable biomes start transforming early; resilient cores
- * kick in late.
- */
-export const NUCLEAR_WAR_TRANSITIONS = [
-    // High mountain glaciers form FIRST and FULLY (above 1800 m).
-    { from: BIOME.MONTANE_GRASSLAND, to: BIOME.ICE, weight: 0.9, tStart01: 0.0, elevGateMinM: 1800 },
-    // Lower montane → tundra.
-    { from: BIOME.MONTANE_GRASSLAND, to: BIOME.TUNDRA, weight: 0.6, tStart01: 0.2 },
-    // Tundra fully glaciates.
-    { from: BIOME.TUNDRA, to: BIOME.ICE, weight: 1.0, tStart01: 0.0 },
-    // Mangroves frost-killed back.
-    { from: BIOME.MANGROVE, to: BIOME.FLOODED_GRASSLAND, weight: 0.85, tStart01: 0.05 },
-    // Boreal poleward edge → tundra; partial dieback further south.
-    { from: BIOME.BOREAL, to: BIOME.TUNDRA, weight: 0.85, tStart01: 0.1 },
-    // Flooded grasslands freeze into tundra-like bog.
-    { from: BIOME.FLOODED_GRASSLAND, to: BIOME.TUNDRA, weight: 0.7, tStart01: 0.15 },
-    // Mediterranean → temperate broadleaf — vulnerable.
-    { from: BIOME.MEDITERRANEAN, to: BIOME.TEMPERATE_BROADLEAF, weight: 0.7, tStart01: 0.15 },
-    // Temperate forests crash to grassland (yellow-green) — the headline
-    // visual of nuclear winter dieback.
-    { from: BIOME.TEMPERATE_BROADLEAF, to: BIOME.TEMPERATE_GRASSLAND, weight: 0.8, tStart01: 0.2 },
-    { from: BIOME.TEMPERATE_CONIFER, to: BIOME.TEMPERATE_GRASSLAND, weight: 0.8, tStart01: 0.2 },
-    // Temperate grassland → tundra (continental cooling).
-    { from: BIOME.TEMPERATE_GRASSLAND, to: BIOME.TUNDRA, weight: 0.6, tStart01: 0.3 },
-    // Tropical savanna → temperate grassland (cool, dry expansion).
-    { from: BIOME.TROPICAL_SAVANNA, to: BIOME.TEMPERATE_GRASSLAND, weight: 0.55, tStart01: 0.35 },
-    // Tropical coniferous → temperate broadleaf.
-    { from: BIOME.TROPICAL_CONIFER, to: BIOME.TEMPERATE_BROADLEAF, weight: 0.6, tStart01: 0.4 },
-    // Tropical dry forest → tropical savanna.
-    { from: BIOME.TROPICAL_DRY, to: BIOME.TROPICAL_SAVANNA, weight: 0.55, tStart01: 0.4 },
-    // Desert stays desert mostly — minimal cooling-driven greening.
-    { from: BIOME.DESERT, to: BIOME.TEMPERATE_GRASSLAND, weight: 0.25, tStart01: 0.5 },
-    // Tropical moist (rainforest) → tropical dry — only at the edges
-    // (|lat| > 10°), core stays green. Last to react.
-    {
-        from: BIOME.TROPICAL_MOIST,
-        to: BIOME.TROPICAL_DRY,
-        weight: 0.5,
-        tStart01: 0.6,
-        latGateAbsDegMin: 10,
-    },
-];
 export const DEFAULT_NUCLEAR_WAR_CONFIG = {
     strikeCount: 70,
     strikeFireWindowDays: 2,
@@ -70,7 +23,7 @@ export const DEFAULT_NUCLEAR_WAR_CONFIG = {
     childDurationDays: 36,
     airplaneStopAtDay: 1.0,
     maxTempDeltaC: -7,
-    maxSeaLevelM: -8,
+    precipDeltaMm: -40,
     peakSootGlobal: 0.9,
     strikeEndFrac: 0.03,
     winterRampEndFrac: 0.18,
@@ -84,7 +37,6 @@ export const DEFAULT_NUCLEAR_WAR_CONFIG = {
         // Mega-yield — 10%.
         { radiusKm: 900, stretchKm: 2400, weight: 0.10 },
     ],
-    transitionRules: NUCLEAR_WAR_TRANSITIONS,
 };
 /**
  * Zero → ramp → plateau → fall. Envelope is gated to zero through the

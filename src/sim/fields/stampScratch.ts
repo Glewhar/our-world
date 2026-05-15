@@ -35,6 +35,12 @@ export type StampScratch = {
    */
   recordTouched(ipix: number): void;
   /**
+   * Subarray view of every ipix recorded via `recordTouched`. Order is
+   * insertion order (not sorted). Caller copies + sorts to emit cells
+   * ascending without walking all npix.
+   */
+  getTouchedView(): Uint32Array;
+  /**
    * Hand the buffers back. Zeros mark + valBuf for every recorded touched
    * cell; subsequent acquires see clean buffers.
    */
@@ -48,10 +54,22 @@ export function acquireStampScratch(npix: number): StampScratch {
     // scratch. Should never happen in practice (stamps are leaf calls).
     const mark = new Uint8Array(npix);
     const valBuf = new Float32Array(npix);
+    let reentrantTouched = new Uint32Array(4096);
+    let reentrantCount = 0;
     return {
       mark,
       valBuf,
-      recordTouched: () => {},
+      recordTouched(ipix: number): void {
+        if (reentrantCount >= reentrantTouched.length) {
+          const grown = new Uint32Array(reentrantTouched.length * 2);
+          grown.set(reentrantTouched);
+          reentrantTouched = grown;
+        }
+        reentrantTouched[reentrantCount++] = ipix;
+      },
+      getTouchedView(): Uint32Array {
+        return reentrantTouched.subarray(0, reentrantCount);
+      },
       release: () => {},
     };
   }
@@ -77,6 +95,9 @@ export function acquireStampScratch(npix: number): StampScratch {
         scratchTouched = grown;
       }
       scratchTouched![scratchTouchedCount++] = ipix;
+    },
+    getTouchedView(): Uint32Array {
+      return scratchTouched!.subarray(0, scratchTouchedCount);
     },
     release(): void {
       const touched = scratchTouched!;

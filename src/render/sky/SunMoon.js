@@ -91,6 +91,14 @@ export class SunMoon {
         this.sunMesh.geometry.dispose();
         this.sunMesh.geometry = new THREE.PlaneGeometry(r * 2, r * 2);
     }
+    setSunColors(diskCss, glowCss) {
+        this.sunMat.uniforms.uColor.value.set(diskCss);
+        this.sunMat.uniforms.uGlowColor.value.set(glowCss);
+    }
+    setMoonColors(diskCss, glowCss) {
+        this.moonMat.uniforms.uColor.value.set(diskCss);
+        this.moonMat.uniforms.uGlowColor.value.set(glowCss);
+    }
     /**
      * Position the sun + moon along the current sun direction. Call before
      * each render so the billboards face the camera.

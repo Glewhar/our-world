@@ -3,14 +3,20 @@
  * chip rail. Replaces the old `#explode-controls` (region select +
  * Explode button) and the per-scenario Tweakpane shape/duration knobs.
  *
- * Three collapsible rows:
+ * Rows:
  *   - Nuclear (region select, radius / stretch / duration sliders)
- *   - Global Warming (max ΔT, max sea-level rise, duration)
- *   - Ice Age      (max ΔT, max sea-level fall, duration)
+ *   - Global Warming (max ΔT, duration)
+ *   - Ice Age      (max ΔT, duration)
+ *   - Nuclear War  (strike count, window, peak ΔT, soot, duration)
  *
  * Each row has a Launch button. Climate scenarios share a two-slot
  * mutex (up to two concurrent climate kinds) — the disabled state is
  * polled from `registry.climateSlotsFull()` per call.
+ *
+ * One global "Sea-level multiplier" slider sits above the climate rows.
+ * Climate handlers read it through `ctx.getSeaLevelMultiplier()` and
+ * scale `seaLevelFromTempDelta(liveTempC, mult)` — sea level is no
+ * longer an independent payload knob.
  *
  * Cos-lat-weighted random sampling (asin(sin(lat0) + r·(sin(lat1)-sin(lat0))))
  * matches the old explode-button behaviour so a tall region box doesn't
@@ -22,7 +28,7 @@ const REGION_BOXES = {
     Europe: { latMin: 36, latMax: 71, lonMin: -10, lonMax: 40 },
     China: { latMin: 18, latMax: 53, lonMin: 73, lonMax: 135 },
 };
-export function mountScenariosLauncher(_toggleEl, panelEl, registry, totalDaysProvider) {
+export function mountScenariosLauncher(_toggleEl, panelEl, registry, totalDaysProvider, debugState) {
     // Climate Launch buttons need their disabled state polled — keep refs
     // so the rAF poll below doesn't have to walk the DOM each frame.
     const climateLaunchButtons = [];
@@ -80,6 +86,29 @@ export function mountScenariosLauncher(_toggleEl, panelEl, registry, totalDaysPr
         const r = registry.start('nuclear', payload, totalDaysProvider(), nukeSliders.durationDays.get(), { label: `Nuclear strike — ${region}` });
         handleStartResult(r);
     });
+    // --- Global "Sea-level multiplier" — one knob above the climate rows ---
+    // Sea level on every climate handler is derived from
+    // `seaLevelFromTempDelta(liveTempC, multiplier)`; this slider drives
+    // the multiplier. 1.0 = paleoclimate-anchored response. Range 0..10
+    // for stress-testing the LAND shader / atmosphere shell at extreme
+    // sea heights without per-scenario tuning.
+    const multRow = buildRow(panelEl, '🌊', 'Sea-level multiplier');
+    multRow.root.classList.add('expanded');
+    const multField = buildField('Multiplier (×)');
+    const multInput = document.createElement('input');
+    multInput.type = 'range';
+    multInput.min = '0';
+    multInput.max = '10';
+    multInput.step = '0.1';
+    multInput.value = String(debugState.scenarios.seaLevelMultiplier);
+    multField.value.textContent = `${debugState.scenarios.seaLevelMultiplier.toFixed(1)} ×`;
+    multInput.addEventListener('input', () => {
+        const v = parseFloat(multInput.value);
+        debugState.scenarios.seaLevelMultiplier = v;
+        multField.value.textContent = `${v.toFixed(1)} ×`;
+    });
+    multField.field.appendChild(multInput);
+    multRow.body.appendChild(multField.field);
     // --- Row 2: Global Warming ---
     const warming = buildRow(panelEl, '🔥', 'Global Warming');
     const warmingSliders = buildSliders(warming.body, [
@@ -88,12 +117,6 @@ export function mountScenariosLauncher(_toggleEl, panelEl, registry, totalDaysPr
             label: 'Max ΔT (°C)',
             min: 0, max: 30, step: 0.5, default: 8,
             formatValue: (v) => `+${v.toFixed(1)} °C`,
-        },
-        {
-            key: 'maxSeaLevelM',
-            label: 'Max sea level (m)',
-            min: 0, max: 200, step: 1, default: 70,
-            formatValue: (v) => `+${v.toFixed(0)} m`,
         },
         {
             key: 'durationDays',
@@ -111,7 +134,6 @@ export function mountScenariosLauncher(_toggleEl, panelEl, registry, totalDaysPr
         // Launch button is also greyed out by the per-frame poll below.
         const payload = {
             maxTempDeltaC: warmingSliders.maxTempDeltaC.get(),
-            maxSeaLevelM: warmingSliders.maxSeaLevelM.get(),
         };
         const r = registry.start('globalWarming', payload, totalDaysProvider(), warmingSliders.durationDays.get(), { label: 'Global Warming' });
         handleStartResult(r);
@@ -126,12 +148,6 @@ export function mountScenariosLauncher(_toggleEl, panelEl, registry, totalDaysPr
             formatValue: (v) => `${v.toFixed(1)} °C`,
         },
         {
-            key: 'maxSeaLevelM',
-            label: 'Max sea level (m)',
-            min: -200, max: 0, step: 1, default: -120,
-            formatValue: (v) => `${v.toFixed(0)} m`,
-        },
-        {
             key: 'durationDays',
             label: 'Duration (days)',
             min: 5, max: 240, step: 1, default: 60,
@@ -144,7 +160,6 @@ export function mountScenariosLauncher(_toggleEl, panelEl, registry, totalDaysPr
     iceLaunch.addEventListener('click', () => {
         const payload = {
             maxTempDeltaC: iceSliders.maxTempDeltaC.get(),
-            maxSeaLevelM: iceSliders.maxSeaLevelM.get(),
         };
         const r = registry.start('iceAge', payload, totalDaysProvider(), iceSliders.durationDays.get(), { label: 'Ice Age' });
         handleStartResult(r);
@@ -170,12 +185,6 @@ export function mountScenariosLauncher(_toggleEl, panelEl, registry, totalDaysPr
             label: 'Peak ΔT (°C)',
             min: -15, max: 0, step: 0.5, default: warCfg.maxTempDeltaC,
             formatValue: (v) => `${v.toFixed(1)} °C`,
-        },
-        {
-            key: 'maxSeaLevelM',
-            label: 'Peak Δsea (m)',
-            min: -30, max: 0, step: 1, default: warCfg.maxSeaLevelM,
-            formatValue: (v) => `${v.toFixed(0)} m`,
         },
         {
             key: 'peakSootGlobal',
@@ -210,7 +219,6 @@ export function mountScenariosLauncher(_toggleEl, panelEl, registry, totalDaysPr
             strikeWindowDays: warSliders.strikeWindowDays.get(),
             airplaneStopAtDay: warCfg.airplaneStopAtDay,
             maxTempDeltaC: warSliders.maxTempDeltaC.get(),
-            maxSeaLevelM: warSliders.maxSeaLevelM.get(),
             peakSootGlobal: warSliders.peakSootGlobal.get(),
             strikeEndFrac: warCfg.strikeEndFrac,
             winterRampEndFrac: warCfg.winterRampEndFrac,

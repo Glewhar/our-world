@@ -24,8 +24,7 @@ import * as THREE from 'three';
 import { AttributeTextures } from './AttributeTextures.js';
 import { BodyRegistry } from './BodyRegistry.js';
 import { DistanceFieldTexture } from './DistanceFieldTexture.js';
-import { EcoregionTexture } from './EcoregionTexture.js';
-import type { EcoregionLookup } from './EcoregionTexture.js';
+import { PolygonTexture } from './PolygonTexture.js';
 import { IdRaster } from './IdRaster.js';
 import { WorkerBridge } from './WorkerBridge.js';
 import { xyzToLatLon } from './coordinates.js';
@@ -102,8 +101,8 @@ export async function createWorldRuntime(
   // derived `baseUrl` below stays relative too, so sibling fetches work.
   const manifestUrl = opts.manifestUrl ?? 'world/earth_v1/world_manifest.json';
 
-  // 9 steps: 1 manifest + 8 parallel assets.
-  const TOTAL_STEPS = 9;
+  // 10 steps: 1 manifest + 9 parallel assets.
+  const TOTAL_STEPS = 10;
   let loadedCount = 0;
   const step = <T>(label: string) => (result: T): T => {
     opts.onProgress?.(++loadedCount, TOTAL_STEPS, label);
@@ -115,6 +114,20 @@ export async function createWorldRuntime(
   const baseUrl = manifestUrl.slice(0, manifestUrl.lastIndexOf('/'));
   const { nside, ordering } = manifest.healpix;
 
+  // Polygon artifacts (`attribute_polygon` + `polygon_lookup`) are
+  // optional in the schema (fixture bakes ship none) but required by
+  // the runtime — the BiomeColorEquirect bake (polygon-keyed colour
+  // map blurred into the LAND base texture) and the climate-scenario
+  // polygon-rule loop both key off them. Fail fast and loud rather
+  // than booting into a broken world.
+  if (!manifest.artifacts.attribute_polygon || !manifest.artifacts.polygon_lookup) {
+    throw new Error(
+      'createWorldRuntime: bake is missing polygon artifacts (`attribute_polygon` + `polygon_lookup`). Rebake the natural-earth pipeline with `--wwf-teow`.',
+    );
+  }
+  const polygonArtifact = manifest.artifacts.attribute_polygon;
+  const polygonLookupArtifact = manifest.artifacts.polygon_lookup;
+
   const [
     idRaster,
     attributes,
@@ -124,7 +137,7 @@ export async function createWorldRuntime(
     roads,
     urbanAreas,
     distanceField,
-    ecoregion,
+    polygon,
   ] =
     await Promise.all([
       IdRaster.load(`${baseUrl}/${manifest.artifacts.id_raster.path}`, nside, ordering)
@@ -176,20 +189,14 @@ export async function createWorldRuntime(
       (manifest.artifacts.distance_field.size_bytes > 32
         ? DistanceFieldTexture.load(`${baseUrl}/${manifest.artifacts.distance_field.path}`)
         : Promise.resolve<DistanceFieldTexture | null>(null)).then(step('terrain detail')),
-      // ecoregion — optional. Phase 2.B replaces the 14-biome palette
-      // path with 825 dense ecoregion indices. Both artifacts must be
-      // present (and non-placeholder) to load; otherwise the land
-      // shader falls back to the legacy 14-biome path automatically.
-      (manifest.artifacts.attribute_eco &&
-      manifest.artifacts.ecoregion_lookup &&
-      manifest.artifacts.attribute_eco.size_bytes > 32
-        ? EcoregionTexture.load(
-            manifest.artifacts.attribute_eco,
-            manifest.artifacts.ecoregion_lookup,
-            baseUrl,
-            nside,
-          )
-        : Promise.resolve<EcoregionTexture | null>(null)).then(step('ecoregions')),
+      // polygon artifacts are required — the land shader's
+      // BiomeColorEquirect / BiomeOverride paths key off per-polygon
+      // IDs and the climate scenarios use a polygon-rule loop.
+      PolygonTexture.load(
+        polygonArtifact,
+        polygonLookupArtifact,
+        baseUrl,
+      ).then(step('polygons')),
     ]);
 
   const registry = new BodyRegistry(manifest.bodies);
@@ -261,8 +268,15 @@ export async function createWorldRuntime(
     getOceanCurrentsTexture: () => (oceanCurrents ? oceanCurrents.texture : null),
     getDistanceFieldTexture: () => (distanceField ? distanceField.texture : null),
 
-    getEcoregionTexture: () => (ecoregion ? ecoregion.getTexture() : null),
-    getEcoregionLookup: () => (ecoregion ? ecoregion.lookup : null),
+    getPolygonTexture: () => polygon.getPolygonTexture(),
+    getPolygonLookup: () => polygon.lookup,
+    getPolygonOverrideClassTexture: (slot) => polygon.getClassByPolygonTexture(slot),
+    getPolygonOverrideWeightTexture: (slot) => polygon.getWeightByPolygonTexture(slot),
+    getPolygonOverrideTStart01Texture: (slot) => polygon.getTStart01ByPolygonTexture(slot),
+    bakePolygonOverride: (slot, classByPoly, weightByPoly, tStart01ByPoly) => {
+      polygon.bakeOverrideByPolygon(slot, classByPoly, weightByPoly, tStart01ByPoly);
+    },
+    clearPolygonOverrideSlot: (slot) => polygon.clearOverrideSlot(slot),
 
     registerDynamicR8Attribute: (key) => attributes.registerDynamicR8Attribute(key),
     getDynamicAttributeTexture: (key) => attributes.getDynamicAttributeTexture(key),

@@ -20,14 +20,24 @@
  *     no-op — the registry removes the stamp from its accumulator on the
  *     last frame so the wasteland texture redraws naturally.
  *
+ * Impact budget (one-shot at start, scaled by `intensity()` per frame):
+ *   - cities + population whose centre lies inside the kill ellipse,
+ *   - per-class biome land-fraction the kill ellipse touches,
+ *   - radiationUnits = killRadiusKm × killStretchKm.
+ *
+ * Silent children spawned by Nuclear War return `zeroBudget()` so the
+ * parent owns the war's whole budget and the world-health bars don't
+ * double-count strikes.
+ *
  * Tuning lives in [NuclearScenario.config.ts] — visuals, wind dynamics,
  * wasteland geometry defaults, decay exponent, and particle templates
  * all co-locate there so changing "what the nuclear scenario looks like"
  * never requires editing the render layer or the handler logic.
  */
+import { tallyStrikeBiome, tallyStrikeBiomeBlt, tallyStrikeCities, zeroBudget, } from '../impactBudget.js';
+import { decayQuickThenSlow, decaySustained } from '../recoveryCurves.js';
 import { DEFAULT_NUCLEAR_CONFIG } from './NuclearScenario.config.js';
 export const NuclearScenario = {
-    hasDestructionCensus: true,
     onStart(scn, ctx) {
         const { latDeg, lonDeg, radiusKm, stretchKm, decayMode } = scn.payload;
         // 1) Single terrain sample — feeds blast altitude + smoke drift below.
@@ -73,10 +83,39 @@ export const NuclearScenario = {
     onEnd(_scn, _ctx) {
         // No teardown — stamp removal is handled by the registry.
     },
-    getStrikePoints(scn) {
-        return [{ latDeg: scn.payload.latDeg, lonDeg: scn.payload.lonDeg }];
+    intensity(scn, progress01) {
+        // Match the wasteland texture decay — the kill zone IS the wasteland
+        // scar, so HUD-side civilization / radiation bars track the visible
+        // scar lifetime exactly.
+        return scn.payload.decayMode === 'sustained'
+            ? decaySustained(progress01)
+            : decayQuickThenSlow(progress01);
     },
-    getStrikeProgress(_scn) {
-        return { fired: 1, scheduled: 1 };
+    getBombsActive(_scn) {
+        return 1;
+    },
+    computeImpactBudget(scn, deps) {
+        // Silent children of Nuclear War contribute nothing to the world
+        // health bars — the parent already carries the war's full budget.
+        if (scn.silent)
+            return zeroBudget();
+        const { latDeg, lonDeg, radiusKm, stretchKm, windBearingDeg } = scn.payload;
+        const killScale = DEFAULT_NUCLEAR_CONFIG.wasteland.killRadiusMultiplier;
+        const ellipse = {
+            centreLatDeg: latDeg,
+            centreLonDeg: lonDeg,
+            radiusKm: radiusKm * killScale,
+            stretchKm: stretchKm * killScale,
+            bearingDeg: windBearingDeg,
+        };
+        const budget = zeroBudget();
+        tallyStrikeCities(ellipse, deps.cities, budget);
+        // Signed biome → wasteland transition for the HUD top-3 readout.
+        tallyStrikeBiome(ellipse, deps, budget);
+        // BLT-aware tail: non-city pop estimate (rural / suburban density
+        // from the BLT) + radiation scaled by polygon residency so forested
+        // strikes retain less fallout than open desert strikes.
+        tallyStrikeBiomeBlt(ellipse, deps, budget);
+        return budget;
     },
 };

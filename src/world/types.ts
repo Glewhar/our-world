@@ -7,7 +7,7 @@
  */
 import type * as THREE from 'three';
 
-import type { EcoregionLookup } from './EcoregionTexture.js';
+import type { PolygonLookup } from './PolygonTexture.js';
 
 // ─── C1: Pipeline → Runtime ───────────────────────────────────────────────
 
@@ -28,6 +28,13 @@ export type WorldManifest = {
      * use). Format: `bin`, R16F, npix * 2 bytes.
      */
     elevation_meters: ArtifactRef;
+    /**
+     * Continuous water-surface elevation in metres, half-float per
+     * HEALPix cell. Parallel to `elevation_meters`; zero everywhere on
+     * v1 (sea level). Floods bump cells up at runtime. Format: `bin`,
+     * R16F, npix * 2 bytes.
+     */
+    water_level_meters: ArtifactRef;
     /**
      * Cities + populated places, JSON list (see `CitiesFile`). Cities are
      * points (lat, lon, population), not polygons, so they live outside
@@ -55,23 +62,32 @@ export type WorldManifest = {
      */
     distance_field: ArtifactRef;
     /**
-     * Per-HEALPix dense ecoregion index (uint16, little-endian; two
-     * uint8 channels R = low byte, G = high byte). 0 = no data; 1..N =
-     * TEOW ecoregion (current bake: N = 825). The companion
-     * `ecoregion_lookup` JSON maps each index → parent biome (1..14)
-     * and realm (1..8) so the shader can derive a per-ecoregion colour
-     * from the existing 14-biome palette × 8-realm tint without
-     * shipping 825 hand-picked colours. Optional: legacy bakes that
-     * predate Phase 2.B still validate.
+     * Equirect uint16 polygon-ID raster (NOT HEALPix-shaped). One pixel
+     * per (lat, lon) sample; pixel value is the polygon ID into the
+     * companion `polygon_lookup` (0 = no-data, 1..N = TEOW polygon).
+     * The raster dimensions are NOT in the manifest; the
+     * `polygon_lookup` JSON carries `raster_width` / `raster_height`
+     * so the loader sizes the texture without extra manifest fields.
+     * Format: `bin`, little-endian uint16, width * height * 2 bytes.
+     *
+     * Required by the runtime — `createWorldRuntime` throws at boot
+     * when the artifact is missing. Feeds the polygon-keyed colour
+     * map that `BiomeColorEquirect` bakes and blurs into the LAND
+     * base texture. Marked optional in the schema so fixture bakes
+     * (which have no TEOW source) still produce a syntactically valid
+     * manifest for the pipeline tests.
      */
-    attribute_eco?: ArtifactRef;
+    attribute_polygon?: ArtifactRef;
     /**
-     * Gzipped JSON lookup keyed by the dense ecoregion index from
-     * `attribute_eco`. Carries the parent biome / realm / human-readable
-     * name for every ecoregion. Loaded once at boot. Format: `json`,
-     * gzipped on disk (`.json.gz`).
+     * Gzipped JSON lookup keyed by the polygon ID in `attribute_polygon`.
+     * Carries per-polygon biome (1..14), realm (1..8), centroid + bbox
+     * (degrees), and elevation percentiles (metres). Also carries the
+     * raster dimensions for the companion ID texture. Climate scenarios
+     * iterate this list and write per-polygon override classes.
+     *
+     * Same fixture caveat as `attribute_polygon` above.
      */
-    ecoregion_lookup?: ArtifactRef;
+    polygon_lookup?: ArtifactRef;
   };
   bodies: BodyRecord[];
   graphs: {
@@ -328,22 +344,52 @@ export interface WorldRuntime {
   getDistanceFieldTexture(): THREE.DataTexture | null;
 
   /**
-   * RG8 dense ecoregion index per HEALPix cell. R = low byte, G = high
-   * byte; the shader reconstructs `idx = r + g * 256` as the index into
-   * `getEcoregionLookup()`. Returns null when the bake didn't ship the
-   * `attribute_eco` / `ecoregion_lookup` artifacts (legacy bakes); the
-   * land shader degrades to the 14-biome palette path.
+   * Equirect RG8 polygon-ID texture (NOT HEALPix-shaped). Two uint8
+   * channels per pixel encode the polygon ID; the shader reconstructs
+   * `polyId = r + g * 256` as an index into `getPolygonLookup()`.
    */
-  getEcoregionTexture(): THREE.DataTexture | null;
+  getPolygonTexture(): THREE.DataTexture;
 
   /**
-   * Lookup table for the dense ecoregion indices stored in
-   * `getEcoregionTexture()`. `lookup.biome[idx]` is the parent biome
-   * (1..14); `lookup.realm[idx]` is the realm (1..8); slot 0 is the
-   * no-data sentinel. Returns null when the bake didn't ship the
-   * artifacts.
+   * Lookup table for the polygon IDs stored in `getPolygonTexture()`.
+   * `lookup.biome[i]`, `lookup.realm[i]` plus centroid / bbox /
+   * elevation percentiles per polygon. Climate scenarios iterate this
+   * to paint biome transitions polygon-by-polygon in one frame.
    */
-  getEcoregionLookup(): EcoregionLookup | null;
+  getPolygonLookup(): PolygonLookup;
+
+  /**
+   * Per-polygon override-class texture for a climate slot (0 = first
+   * active climate scenario, 1 = second). R8, length = polygon count
+   * + 1, slot 0 is no-data. Throws if the bake didn't ship the
+   * polygon artifacts — render layers should check `getPolygonLookup()`
+   * is non-null before binding these.
+   */
+  getPolygonOverrideClassTexture(slot: 0 | 1): THREE.DataTexture;
+
+  /** Per-polygon override-weight texture. Same shape / contract as the class texture. */
+  getPolygonOverrideWeightTexture(slot: 0 | 1): THREE.DataTexture;
+
+  /** Per-polygon onset-time texture. Same shape / contract as the class texture. */
+  getPolygonOverrideTStart01Texture(slot: 0 | 1): THREE.DataTexture;
+
+  /**
+   * Write per-polygon override state for one climate slot in one
+   * call. All three arrays must be length `polygonLookup.count + 1`.
+   * Replaces the per-cell `bakeBiomeOverrideStamps` path when the
+   * polygon artifacts are available — climate scenarios stop writing
+   * millions of cells per frame and start writing tens of kilobytes
+   * once at scenario start.
+   */
+  bakePolygonOverride(
+    slot: 0 | 1,
+    classByPoly: Uint8Array,
+    weightByPoly: Uint8Array,
+    tStart01ByPoly: Uint8Array,
+  ): void;
+
+  /** Zero a climate slot's per-polygon override state in one call. */
+  clearPolygonOverrideSlot(slot: 0 | 1): void;
 
   /**
    * Register a new dynamic R8 attribute by key. Allocates one byte

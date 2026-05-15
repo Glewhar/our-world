@@ -116,6 +116,27 @@ export type SceneGraph = {
    */
   setClimateEnvelopes(envelopes: [number, number]): void;
   /**
+   * Per-slot seafloor frame from `ScenarioRegistry.getSeafloorFrame()`.
+   * The LAND shader's seafloor branch crossfades each shelf biome's
+   * default palette toward the scenario-supplied colours by the
+   * per-slot envelope weight. No active climate scenario → both
+   * weights stay 0 and the default palette paints unchanged.
+   */
+  setSeafloorFrame(frame: {
+    paletteA: [
+      { r: number; g: number; b: number },
+      { r: number; g: number; b: number },
+      { r: number; g: number; b: number },
+    ];
+    paletteB: [
+      { r: number; g: number; b: number },
+      { r: number; g: number; b: number },
+      { r: number; g: number; b: number },
+    ];
+    weightA: number;
+    weightB: number;
+  }): void;
+  /**
    * Cloud frame contribution from the scenario registry — nuclear-winter
    * soot overcast tint + regional cover bump. Zero everywhere on cold
    * boot; updated each frame by main.ts.
@@ -186,12 +207,16 @@ export function createSceneGraph(): SceneGraph {
   const tmpVec2 = new THREE.Vector2();
   const tmpSunDir = new THREE.Vector3();
   const tmpCameraDir = new THREE.Vector3();
-  // Reusable 16-entry palette buffer fed to BiomeColorEquirect each frame.
-  // Allocated once so the per-frame palette sync stays GC-free.
-  const paletteColors: THREE.Color[] = Array.from({ length: 16 }, () => new THREE.Color());
+  // Reusable 20-entry palette buffer fed to BiomeColorEquirect each frame.
+  // Allocated once so the per-frame palette sync stays GC-free. Length
+  // tracks `defaults.ts:biomePalette` — bumped to 20 to cover the three
+  // synthetic shelf biomes (16/17/18) and wasteland (19); BiomeColorEquirect
+  // ignores 16..19 since shelf cells have no polygon and wasteland is
+  // uniform-driven, but the array length must still match.
+  const paletteColors: THREE.Color[] = Array.from({ length: 20 }, () => new THREE.Color());
   // Last css string per palette slot — skip `.set(css)` when unchanged so we
-  // don't re-parse a hex string 16×/frame.
-  const paletteCssCache: (string | null)[] = Array.from({ length: 16 }, () => null);
+  // don't re-parse a hex string 20×/frame.
+  const paletteCssCache: (string | null)[] = Array.from({ length: 20 }, () => null);
 
   // Reusable tuning packets fed to BlastSystem each frame. Mutated in place
   // (both setters read fields immediately or store the reference for
@@ -246,6 +271,42 @@ export function createSceneGraph(): SceneGraph {
   let stashedOverrideTex: THREE.DataTexture | null = null;
   let stashedOverrideStampTex: THREE.DataTexture | null = null;
   const stashedClimateEnvelopes: [number, number] = [0, 0];
+  // Per-slot seafloor frame stash. Mirrors `stashedClimateFrame` —
+  // main.ts calls `setSeafloorFrame(registry.getSeafloorFrame())` once
+  // per tick and `applyMaterials` copies the values into the LAND
+  // shader uniforms. Defaults zero so the no-scenario path paints the
+  // default palette unchanged.
+  type StashedSeafloorFrame = {
+    paletteA: [
+      { r: number; g: number; b: number },
+      { r: number; g: number; b: number },
+      { r: number; g: number; b: number },
+    ];
+    paletteB: [
+      { r: number; g: number; b: number },
+      { r: number; g: number; b: number },
+      { r: number; g: number; b: number },
+    ];
+    weightA: number;
+    weightB: number;
+  };
+  let stashedSeafloorFrame: StashedSeafloorFrame = {
+    paletteA: [
+      { r: 0, g: 0, b: 0 },
+      { r: 0, g: 0, b: 0 },
+      { r: 0, g: 0, b: 0 },
+    ],
+    paletteB: [
+      { r: 0, g: 0, b: 0 },
+      { r: 0, g: 0, b: 0 },
+      { r: 0, g: 0, b: 0 },
+    ],
+    weightA: 0,
+    weightB: 0,
+  };
+  // Scratch THREE.Color reused by the seafloor-default uniform push so
+  // the per-frame palette parse stays GC-free.
+  const seafloorDefaultScratch = new THREE.Color();
   let stashedCloudFrame: {
     sootGlobal: number;
     sootRegionalWeight: number;
@@ -279,6 +340,9 @@ export function createSceneGraph(): SceneGraph {
   function setClimateEnvelopes(envelopes: [number, number]): void {
     stashedClimateEnvelopes[0] = envelopes[0];
     stashedClimateEnvelopes[1] = envelopes[1];
+  }
+  function setSeafloorFrame(frame: StashedSeafloorFrame): void {
+    stashedSeafloorFrame = frame;
   }
   function setCloudFrame(frame: {
     sootGlobal: number;
@@ -480,6 +544,16 @@ export function createSceneGraph(): SceneGraph {
         m.lerpStrengthPollution,
       );
       land.uSnowLineStrength.value = m.snowLineStrength;
+      // Live land-tint colours. These all back uniforms that previously only
+      // got their value from DEFAULTS at material construction. Tweakpane now
+      // owns them — the per-frame push here turns the colour pickers into
+      // live edits.
+      land.uAlpineBareColor.value.set(m.alpineBareColor);
+      land.uColdToneColor.value.set(m.coldToneColor);
+      land.uHotDryColor.value.set(m.hotDryColor);
+      land.uSpecularTintWarm.value.set(m.specularTintWarm);
+      land.uSpecularTintCool.value.set(m.specularTintCool);
+      land.uMoonReflectanceBase.value.set(m.moonReflectanceBase);
       // Sun-locked seasonal swing in the land shader keys off the same
       // `timeOfYear01` calendar fraction that drives the sun declination
       // in `applyTimeOfDay`, so north winter / south summer line up with
@@ -507,18 +581,58 @@ export function createSceneGraph(): SceneGraph {
         }
       }
       if (webglRenderer) {
-        globe.land.biomeColor.rebuildIfDirty(webglRenderer, paletteColors, m.biomeBlurDeg, {
+        // Live blur sigmas — slider value × 375 px. Defaults: biome 0.08
+        // → σ = 30 px on the 8192-wide grid; mountain/snow 0.04 → σ = 15
+        // px on the 4096-wide grid; seafloor 0.4 → σ = 150 px on the
+        // 4096-wide grid. Bakers only re-run when sigma actually moves.
+        const biomeSigma = m.biomeBlur * 375;
+        const mountainSigma = m.mountainBlur * 375;
+        const snowSigma = m.snowBlur * 375;
+        const seafloorSigma = m.seafloorBlur * 375;
+        globe.land.biomeColor.setSigmaPx(biomeSigma);
+        globe.land.biomeOverride.setSigmaPx(biomeSigma);
+        globe.land.biomeOverrideB.setSigmaPx(biomeSigma);
+        globe.land.mountain.setSigmaPx(mountainSigma);
+        globe.land.snow.setSigmaPx(snowSigma);
+        globe.land.seafloorColor.setSigmaPx(seafloorSigma);
+        globe.land.biomeColor.rebuildIfDirty(webglRenderer, paletteColors, {
           biomePalette: m.biomePalette,
           realmTint: m.realmTint,
           ecoregionJitter: m.ecoregionJitter,
         });
         // Same dirty-bit dance for the climate-scenario override equirect.
         // Re-bakes when override textures change (scenario start/end) or
-        // when palette/blur change. The LAND shader gates this path by
+        // when the palette changes. The LAND shader gates this path by
         // uClimateEnvelope > 0, so a re-bake with stamp-weight = 0 every-
         // where (no scenario) is harmless.
-        globe.land.biomeOverride.rebuildIfDirty(webglRenderer, paletteColors, m.biomeBlurDeg);
-        globe.land.biomeOverrideB.rebuildIfDirty(webglRenderer, paletteColors, m.biomeBlurDeg);
+        globe.land.biomeOverride.rebuildIfDirty(webglRenderer, paletteColors);
+        globe.land.biomeOverrideB.rebuildIfDirty(webglRenderer, paletteColors);
+        globe.land.mountain.rebuildIfDirty(webglRenderer);
+        globe.land.snow.rebuildIfDirty(webglRenderer);
+        // Seafloor frame — CPU-mix the live default palette with the
+        // stashed scenario palettes/weights inside the baker. Hash-based
+        // dirty bit keeps the re-bake to one per genuine colour change.
+        const sf = m.seafloorPalette;
+        seafloorDefaultScratch.set(sf.polar);
+        const defPolar = { r: seafloorDefaultScratch.r, g: seafloorDefaultScratch.g, b: seafloorDefaultScratch.b };
+        seafloorDefaultScratch.set(sf.temperate);
+        const defTemperate = { r: seafloorDefaultScratch.r, g: seafloorDefaultScratch.g, b: seafloorDefaultScratch.b };
+        seafloorDefaultScratch.set(sf.equatorial);
+        const defEquatorial = { r: seafloorDefaultScratch.r, g: seafloorDefaultScratch.g, b: seafloorDefaultScratch.b };
+        globe.land.seafloorColor.setFrame({
+          defaultPolar: defPolar,
+          defaultTemperate: defTemperate,
+          defaultEquatorial: defEquatorial,
+          scenarioAPolar: stashedSeafloorFrame.paletteA[0],
+          scenarioATemperate: stashedSeafloorFrame.paletteA[1],
+          scenarioAEquatorial: stashedSeafloorFrame.paletteA[2],
+          scenarioBPolar: stashedSeafloorFrame.paletteB[0],
+          scenarioBTemperate: stashedSeafloorFrame.paletteB[1],
+          scenarioBEquatorial: stashedSeafloorFrame.paletteB[2],
+          weightA: stashedSeafloorFrame.weightA,
+          weightB: stashedSeafloorFrame.weightB,
+        });
+        globe.land.seafloorColor.rebuildIfDirty(webglRenderer);
       }
       land.uLandSpecularSmoothness.value = m.landSpecularSmoothness;
       land.uSpecularStrength.value = m.specularStrength;
@@ -557,6 +671,12 @@ export function createSceneGraph(): SceneGraph {
       water.uCurrentTintEnabled.value = o.currentTintEnabled ? 1 : 0;
       water.uShowMediumCurrents.value = o.showMediumCurrents ? 1 : 0;
       water.uShimmerCurrentDrift.value = o.shimmerCurrentDrift;
+      // Live ocean tint colours — Tweakpane-owned, previously frozen at
+      // material construction. Drives the cool current cast, sun-glint
+      // sparkle, and grazing-angle sky reflection respectively.
+      water.uCurrentTintColor.value.set(o.currentTintColor);
+      water.uSunGlintColor.value.set(o.sunGlintColor);
+      water.uSkyTintColor.value.set(o.skyTintColor);
       // Composed sea level = slider + climate-scenario accumulator.
       // Land mesh + water mesh + atmosphere shell all read the same
       // value below so the three surfaces stay in vertical sync as a
@@ -578,6 +698,8 @@ export function createSceneGraph(): SceneGraph {
       cloudsPass.setBeer(c.beer);
       cloudsPass.setHenyey(c.henyey);
       cloudsPass.setAdvection(c.advection);
+      cloudsPass.setSunColor(c.sunColor);
+      cloudsPass.setAmbientColor(c.ambientColor);
       cloudsPass.setSootFrame(
         stashedCloudFrame.sootGlobal,
         stashedCloudFrame.sootRegionalWeight,
@@ -614,6 +736,9 @@ export function createSceneGraph(): SceneGraph {
       u.uDayFillBrightness.value = hz.dayFillBrightness;
       u.uDayFillScale.value = hz.dayFillScale;
       u.uOpacity.value = THREE.MathUtils.lerp(hz.opacityNear, hz.opacityFar, tFar);
+      (u.uNightColor.value as THREE.Color).set(hz.nightColor);
+      (u.uDayCasingColor.value as THREE.Color).set(hz.dayCasingColor);
+      (u.uDayFillColor.value as THREE.Color).set(hz.dayFillColor);
     }
 
     if (cities) {
@@ -631,7 +756,57 @@ export function createSceneGraph(): SceneGraph {
       cu.uMinPopulation.value = ct.minPopulation;
       cu.uOpacity.value = ct.opacity;
       cu.uNightOpacity.value = ct.nightOpacity;
+      (cu.uNightFillColor.value as THREE.Color).set(ct.nightFillColor);
+      (cu.uNightOutlineColor.value as THREE.Color).set(ct.nightOutlineColor);
+      (cu.uDayNeutralColor.value as THREE.Color).set(ct.dayNeutralColor);
     }
+
+    // Urban detail (procedural close-up buildings + streets). Push colour
+    // uniforms each frame so Tweakpane edits land live. Both materials
+    // share the same shape so the colours apply identically across each.
+    if (urbanDetail) {
+      const ud = debug.materials.urban;
+      const bu = urbanDetail.bldUniforms;
+      const su = urbanDetail.strUniforms;
+      bu.uBuildingBaseLow.value.set(ud.buildingBaseLow);
+      bu.uBuildingBaseHigh.value.set(ud.buildingBaseHigh);
+      bu.uBuildingNightDark.value.set(ud.buildingNightDark);
+      bu.uBuildingNightLitWarm.value.set(ud.buildingNightLitWarm);
+      bu.uStreetDayDark.value.set(ud.streetDayDark);
+      bu.uStreetDayLight.value.set(ud.streetDayLight);
+      bu.uStreetNightDark.value.set(ud.streetNightDark);
+      bu.uStreetNightLit.value.set(ud.streetNightLit);
+      su.uBuildingBaseLow.value.set(ud.buildingBaseLow);
+      su.uBuildingBaseHigh.value.set(ud.buildingBaseHigh);
+      su.uBuildingNightDark.value.set(ud.buildingNightDark);
+      su.uBuildingNightLitWarm.value.set(ud.buildingNightLitWarm);
+      su.uStreetDayDark.value.set(ud.streetDayDark);
+      su.uStreetDayLight.value.set(ud.streetDayLight);
+      su.uStreetNightDark.value.set(ud.streetNightDark);
+      su.uStreetNightLit.value.set(ud.streetNightLit);
+    }
+
+    // Airplane visuals — per-frame colour push so the four colour pickers
+    // in the Airplanes folder land live. setColor on each layer mutates
+    // the underlying uColor uniform in place.
+    if (airplanes) {
+      const ap = debug.materials.airplanes;
+      airplanes.heads.setColor(ap.headBlinkColor);
+      airplanes.trails.setColor(ap.trailColor);
+      airplanes.scaffold.setColor(ap.scaffoldColor);
+      airplanes.airports.setColor(ap.airportColor);
+    }
+
+    // Sun + moon disk billboards behind the atmosphere shell.
+    const sky = debug.materials.sky;
+    sunMoon.setSunColors(sky.sunDiskColor, sky.sunGlowColor);
+    sunMoon.setMoonColors(sky.moonDiskColor, sky.moonGlowColor);
+
+    // Directional sun light tint. The shader's day term is `base ×
+    // uSunColor`; the sun light is constructed once at scene-graph init
+    // from DEFAULTS.scene.sunLightColor, and this push keeps the
+    // Tweakpane colour picker live.
+    sun.color.set(debug.scene.sunLightColor);
 
     // Altitude exaggeration — drives every metres-based altitude in the
     // project (terrain, water, clouds, cities, plane bow arcs, atmosphere
@@ -744,8 +919,8 @@ export function createSceneGraph(): SceneGraph {
     if (atmosphere) atmosphere.mesh.visible = debug.layers.atmosphere;
     cloudsPass?.setActive(debug.layers.clouds);
     highways?.setActive(debug.layers.highways);
-    cities?.setActive(debug.layers.highways);
-    urbanDetail?.setActive(debug.layers.highways);
+    cities?.setActive(debug.layers.cities);
+    urbanDetail?.setActive(debug.layers.urban);
     if (airplanes) {
       airplanes.setLayerActive('airports', false);
       airplanes.setLayerActive('scaffold', false);
@@ -935,6 +1110,7 @@ export function createSceneGraph(): SceneGraph {
     setClimateFrame,
     setBiomeOverrideTextures,
     setClimateEnvelopes,
+    setSeafloorFrame,
     setCloudFrame,
     setAirplaneSpawnScale,
     dispose,

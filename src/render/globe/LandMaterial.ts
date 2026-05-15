@@ -133,11 +133,32 @@ uniform float uAlpineStrength;
 // climate, dynamic-recolor, and wasteland tints all stack on top per
 // fragment with their own per-cell sharp boundaries.
 uniform sampler2D uBiomeColorEquirect;
+// Polygon-ID raster sampled by the coast fallback when the blurred
+// alpha drops to zero (the kernel covered no land). uColorByPoly is
+// the 1D palette indexed by polygon ID (RGBA8). The polygon-ID texture
+// must be read with texelFetch — bilinear filtering would invent IDs.
+uniform sampler2D uPolyIdRaster;
+uniform sampler2D uColorByPoly;
+uniform int uPolyTexWidth;
+uniform int uPolyTexHeight;
 // Pre-blurred climate-scenario override equirects, one per slot. RGB =
 // blurred override colour, A = blurred stamp weight. Two slots so two
 // concurrent climate scenarios can each crossfade independently.
 uniform sampler2D uBiomeOverrideEquirect;
 uniform sampler2D uBiomeOverrideEquirectB;
+// Pre-blurred R16F elevation (metres) and temperature (degC) equirects.
+// Replace the per-fragment HEALPix texelFetch lookups that previously
+// drove the alpine smoothstep and the snow / cold / hot tints; without
+// the blur, those snapped at ~5 km cell boundaries and pixelated the
+// mountain highlights and snow line.
+uniform sampler2D uMountainEquirect;
+uniform sampler2D uSnowEquirect;
+// Pre-blurred RGBA8 shelf-palette mask. Alpha = 1 inside shelf cells
+// (biome ids 16/17/18); RGB = the CPU-mixed shelf palette (default
+// blended with active climate scenarios). The blur smears alpha across
+// the coast and the latitude-band seams, so the LAND seafloor branch
+// just lerps base → shelf.rgb by shelf.a.
+uniform sampler2D uSeafloorColorEquirect;
 uniform float uLandSpecularSmoothness;
 uniform float uSpecularStrength;
 
@@ -222,19 +243,52 @@ void main() {
   float elevHere = texture(uElevationEquirect, dfUv).r;
   if (elevHere < uSeaLevelOffsetM) discard;
 
-  // Pre-blurred biome colour. The bake takes the per-cell biome index
-  // out of attribute_static.G, looks the colour up in the palette, and
-  // gaussian-blurs it across the equirect. Bilinear sample = smooth
-  // base colour with no cell-edge banding.
-  vec3 base = texture(uBiomeColorEquirect, dfUv).rgb;
+  // Base land colour: one bilinear sample of the pre-blurred polygon-
+  // colour equirect. BiomeColorEquirect bakes the crisp polygon-ID →
+  // palette map, then runs two passes of separable Gaussian blur on
+  // it (alpha-weighted so the ocean cut-out doesn't darken the coast).
+  // LAND just samples the result and stacks the alpine / snow /
+  // climate / dynamic / wasteland tints on top per fragment.
+  vec4 blurred = texture(uBiomeColorEquirect, dfUv);
+  vec3 base;
+  if (blurred.a < 1e-3) {
+    // Coast fallback: blurred alpha at zero means the kernel saw no
+    // land contribution — fall back to the 1D palette colour at the
+    // raster polygon so the fragment still gets a sane land tone
+    // instead of black.
+    ivec2 pTex = ivec2(
+      clamp(int(dfUv.x * float(uPolyTexWidth)),  0, uPolyTexWidth  - 1),
+      clamp(int(dfUv.y * float(uPolyTexHeight)), 0, uPolyTexHeight - 1)
+    );
+    vec2 polyBytes = texelFetch(uPolyIdRaster, pTex, 0).rg;
+    int rasterPoly = int(polyBytes.r * 255.0 + 0.5)
+                   | (int(polyBytes.g * 255.0 + 0.5) << 8);
+    base = texelFetch(uColorByPoly, ivec2(rasterPoly, 0), 0).rgb;
+  } else {
+    base = blurred.rgb;
+  }
 
-  float elevM = max(texelFetch(uElevationMeters, tx, 0).r, 0.0);
+  // Seafloor branch: synthetic shelf biomes 16/17/18 cover every TEOW-
+  // uncovered cell (open ocean / continental shelf). The shelf colour +
+  // its falloff are baked into uSeafloorColorEquirect: alpha = 1 on
+  // shelf cells fades to 0 inland and across the latitude-band seams,
+  // and RGB is the CPU-mixed (default + scenario A + scenario B) shelf
+  // colour. A single bilinear sample dissolves the coast and the seams
+  // in one stroke.
+  vec4 shelf = texture(uSeafloorColorEquirect, dfUv);
+  base = mix(base, shelf.rgb, shelf.a);
+
+  // Alpine + snow inputs now come from pre-blurred equirects: the
+  // crisp HEALPix lookup is baked once into mountain/snow equirects
+  // and Gaussian-blurred so peaks and the snow line transition
+  // smoothly across cell boundaries.
+  float elevM = max(texture(uMountainEquirect, dfUv).r, 0.0);
 
   // Alpine thinning: fade toward bare-rock grey-tan as elevation rises.
   float altThin = smoothstep(1500.0, 4000.0, elevM);
   base = mix(base, uAlpineBareColor, altThin * clamp(uAlpineStrength, 0.0, 1.0));
 
-  float temperatureC = texelFetch(uAttrClimate, tx, 0).r;
+  float temperatureC = texture(uSnowEquirect, dfUv).r;
   // Sun-locked seasonal swing. Hemisphere-mirrored sinusoid scaled by
   // |sin(lat)|^E so the equator stays static and the poles swing
   // hardest. declNorm = -1 -> north winter, +1 -> north summer.
@@ -250,12 +304,12 @@ void main() {
   float effTempC = temperatureC + seasonalDeltaC + uClimateTempDeltaC;
 
   // Cold tint.
-  float coldBlend = smoothstep(22.0, -2.0, effTempC);
+  float coldBlend = smoothstep(18.0, -2.0, effTempC);
   base = mix(base, uColdToneColor, coldBlend * 0.95);
 
-  // Hot tint (capped at 25%).
+  // Hot tint (capped at 40%).
   float hotBlend = smoothstep(22.0, 36.0, effTempC);
-  base = mix(base, uHotDryColor, hotBlend * 0.25);
+  base = mix(base, uHotDryColor, hotBlend * 0.40);
 
   // Snow line.
   float snowMix = uSnowLineStrength * (1.0 - smoothstep(-10.0, -1.0, effTempC));
@@ -266,9 +320,11 @@ void main() {
   // tundra-coloured rather than the snow-blue of the underlying base.
   // Two slots so two concurrent climate scenarios can co-paint the
   // planet — the stamp texture (RGBA8) packs slot A in .rg and slot B
-  // in .ba. Each slot crossfades independently on its own envelope;
-  // when both slots cover the same cell, baseline + slot A + slot B
-  // mix with weights wA, wB, and wBase = max(0, 1 - wA - wB).
+  // in .ba. Winner-take-all: per-pixel the dominant slot wins and
+  // paints fully at its own weight; the loser is ignored. Opposing
+  // scenarios no longer average to baseline — one paint wins on each
+  // polygon based on which scenario's stamp fits it harder. Equal
+  // weight ties default to slot A.
   if (uClimateEnvelope > 0.0 || uClimateEnvelopeB > 0.0) {
     vec4 stampSample = texelFetch(uBiomeOverrideStamp, tx, 0);
     float wA = 0.0;
@@ -295,9 +351,9 @@ void main() {
       wB = smoothstep(0.0, 0.7, intensityB);
       colorB = ovrB.rgb;
     }
-    float wBase = max(0.0, 1.0 - wA - wB);
-    float total = wBase + wA + wB;
-    base = (base * wBase + colorA * wA + colorB * wB) / max(total, 1e-6);
+    float winnerW = (wA >= wB) ? wA : wB;
+    vec3 winnerCol = (wA >= wB) ? colorA : colorB;
+    base = mix(base, winnerCol, winnerW);
   }
 
   // Dynamic recolor.
@@ -401,12 +457,30 @@ export type LandUniforms = {
 
   /**
    * Pre-blurred biome-colour equirect (RGBA8, 4096×2048). Built by
-   * BiomeColorEquirect from the palette + per-cell biome index, blurred
-   * with a separable gaussian. Bilinear sample feeds the base land
-   * colour; everything below (alpine, snow, wasteland, etc.) stacks on
-   * top per fragment.
+   * BiomeColorEquirect from the palette + per-polygon ID, then blurred
+   * with two passes of separable Gaussian (σ = 30 px, kernel half-width
+   * 60 px). Single bilinear sample feeds the base land colour;
+   * everything below (alpine, snow, wasteland, etc.) stacks on top
+   * per fragment.
    */
   uBiomeColorEquirect: { value: THREE.Texture | null };
+  /**
+   * Equirect polygon-ID texture (`world.getPolygonTexture()`). Only
+   * read by the coast fallback when the blurred equirect's alpha is
+   * zero. Sampled with `texelFetch` — bilinear filtering would invent
+   * IDs.
+   */
+  uPolyIdRaster: { value: THREE.Texture | null };
+  /**
+   * 1D palette keyed by polygon ID — `BiomeColorEquirect.colorByPolyTexture`.
+   * Drives the coast fallback when the blurred equirect's alpha is
+   * zero. Same dirty-bit cadence as the baked colour equirect: rebakes
+   * when palette / realm tint / ecoregion jitter changes.
+   */
+  uColorByPoly: { value: THREE.Texture | null };
+  /** Polygon-raster dimensions — needed for `texelFetch` integer indexing. */
+  uPolyTexWidth: { value: number };
+  uPolyTexHeight: { value: number };
   /**
    * Pre-blurred climate-scenario override equirect. Built by
    * BiomeOverrideEquirect on scenario start/end + palette/blur changes.
@@ -420,6 +494,28 @@ export type LandUniforms = {
    */
   uBiomeOverrideEquirect: { value: THREE.Texture | null };
   uBiomeOverrideEquirectB: { value: THREE.Texture | null };
+  /**
+   * Pre-blurred elevation equirect (R16F, 4096×2048). Built by
+   * `MountainEquirect` from `uElevationMeters`. Drives the alpine
+   * smoothstep — sampled bilinearly so peaks transition smoothly
+   * across HEALPix cell boundaries.
+   */
+  uMountainEquirect: { value: THREE.Texture | null };
+  /**
+   * Pre-blurred temperature equirect (R16F, 4096×2048). Built by
+   * `SnowEquirect` from `uAttrClimate.r` (degC). Seasonal swing + the
+   * climate Δ stay analytic; only the per-cell climatology is blurred.
+   */
+  uSnowEquirect: { value: THREE.Texture | null };
+  /**
+   * Pre-blurred shelf-palette mask (RGBA8, 4096×2048). Built by
+   * `SeafloorColorEquirect` from the shelf-biome ids + CPU-mixed
+   * default/scenario palette. The blurred alpha drives the LAND
+   * shader's mix between base land colour and shelf colour so the
+   * coast and the 23.5°/60° latitude seams dissolve at the same wide
+   * sigma.
+   */
+  uSeafloorColorEquirect: { value: THREE.Texture | null };
   /** Single Blinn-Phong smoothness for all land (snow override stays in shader). */
   uLandSpecularSmoothness: { value: number };
   /** Master multiplier on the specular contribution; 0 disables the highlight entirely. */
@@ -540,8 +636,15 @@ export function createLandMaterial(): THREE.ShaderMaterial & {
     uAlpineStrength: { value: g.alpineStrength },
 
     uBiomeColorEquirect: { value: null },
+    uPolyIdRaster: { value: null },
+    uColorByPoly: { value: null },
+    uPolyTexWidth: { value: 1 },
+    uPolyTexHeight: { value: 1 },
     uBiomeOverrideEquirect: { value: null },
     uBiomeOverrideEquirectB: { value: null },
+    uMountainEquirect: { value: null },
+    uSnowEquirect: { value: null },
+    uSeafloorColorEquirect: { value: null },
     uLandSpecularSmoothness: { value: g.landSpecularSmoothness },
     uSpecularStrength: { value: g.specularStrength },
 

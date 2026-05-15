@@ -11,6 +11,8 @@
  * just reads totalDays each frame.
  */
 
+import type { ImpactBudgetDeps, ScenarioImpactBudget } from './impactBudget.js';
+
 export type ScenarioKind = 'nuclear' | 'globalWarming' | 'iceAge' | 'nuclearWar';
 
 /**
@@ -80,8 +82,11 @@ export type NuclearWarScenarioPayload = {
   airplaneStopAtDay: number;
   /** Peak ΔT at plateau in °C (negative — cooling). */
   maxTempDeltaC: number;
-  /** Peak Δsea-level at plateau in metres (negative — falling). */
-  maxSeaLevelM: number;
+  /**
+   * Peak Δprecipitation at plateau in mm/year (negative — dry winter).
+   * Optional; falls back to config default when omitted.
+   */
+  precipDeltaMm?: number;
   /** Peak soot/overcast contribution at plateau in [0, 1]. */
   peakSootGlobal: number;
   /** Fraction of lifetime over which the strike phase fires (envelope stays 0). */
@@ -95,26 +100,37 @@ export type NuclearWarScenarioPayload = {
 };
 
 /**
- * Global-warming payload. Both fields are positive — the climate frame
+ * Global-warming payload. All deltas positive — the climate frame
  * scales them by `climateRisePlateauFall(progress01)` each tick so the
- * shader sees `+maxTempDeltaC` at plateau, falling back to 0.
+ * shader sees `+maxTempDeltaC` at plateau, falling back to 0. Sea
+ * level falls out of `seaLevelFromTempDelta(liveTempC, mult)` —
+ * payload no longer carries an independent sea-level peak.
  */
 export type GlobalWarmingScenarioPayload = {
   /** Peak ΔT at plateau in °C. Positive (warming). */
   maxTempDeltaC: number;
-  /** Peak sea-level rise at plateau in metres. Positive. */
-  maxSeaLevelM: number;
+  /**
+   * Peak Δprecipitation at plateau in mm/year. Positive — a warmer
+   * atmosphere holds more moisture. Optional; falls back to the config
+   * default when omitted (UI hasn't surfaced a slider yet).
+   */
+  precipDeltaMm?: number;
 };
 
 /**
- * Ice-age payload. Both fields are negative — symmetric counterpart to
- * GW. Scaled by the same `climateRisePlateauFall` envelope.
+ * Ice-age payload. All deltas negative — symmetric counterpart to GW.
+ * Scaled by the same `climateRisePlateauFall` envelope. Sea level
+ * derives from the temperature curve via `seaLevelFromTempDelta`.
  */
 export type IceAgeScenarioPayload = {
   /** Peak ΔT at plateau in °C. Negative (cooling). */
   maxTempDeltaC: number;
-  /** Peak sea-level fall at plateau in metres. Negative. */
-  maxSeaLevelM: number;
+  /**
+   * Peak Δprecipitation at plateau in mm/year. Negative — colder air
+   * holds less moisture. Optional; falls back to the config default
+   * when omitted.
+   */
+  precipDeltaMm?: number;
 };
 
 export type ScenarioPayload = {
@@ -141,12 +157,6 @@ export type Scenario<K extends ScenarioKind = ScenarioKind> = {
    * one-time wind sample). After `onStart` returns, treat as read-only.
    */
   payload: ScenarioPayload[K];
-  /**
-   * `false` while a climate scenario's async biome-transition walker is
-   * still running (envelope is gated to 0); `true` once stamps are baked.
-   * Non-climate scenarios are always `true`.
-   */
-  walkerComplete: boolean;
 };
 
 /**
@@ -217,45 +227,6 @@ export type BandPaintArgs = {
   decayMode?: 'quickThenSlow' | 'sustained';
 };
 
-/**
- * One row of a climate scenario's biome-transition LUT. The registry
- * walks every HEALPix cell at `onStart`, reads its baseline biome and
- * elevation, looks the biome up in the LUT, and (if the gates pass)
- * routes the cell into a per-target-biome stamp bucket. Per-cell
- * `tStart01` lets vulnerable biomes start transforming early while
- * resilient ones plateau later under the same global envelope.
- */
-export type BiomeTransitionRule = {
-  /** Baseline biome id this rule matches (1..14 from WWF TEOW). */
-  from: number;
-  /** Target biome id the cell crossfades toward (1..15; 15 = ice). */
-  to: number;
-  /**
-   * Peak stamp weight in [0, 1] at full envelope. Encodes resilience:
-   * tundra → ice = 1.0 (full glaciation); rainforest core ≈ 0.25
-   * (mostly survives). Multiplied by per-cell envelope on the GPU.
-   */
-  weight: number;
-  /**
-   * Onset time in [0, 1]. Cell starts transforming when the global
-   * envelope crosses this value; reaches full weight at envelope = 1.
-   * Vulnerable biomes ≈ 0; resilient cores ≈ 0.5+.
-   */
-  tStart01: number;
-  /**
-   * Optional |latitude| gate in degrees. Cell must have
-   * `absLatDeg >= latGateAbsDegMin` to qualify. Use to keep
-   * rainforest cores at the equator from transforming.
-   */
-  latGateAbsDegMin?: number;
-  /** Optional |latitude| upper gate. Cell must have `absLatDeg <= latGateAbsDegMax`. */
-  latGateAbsDegMax?: number;
-  /** Optional elevation gate. Cell elevation in metres must be >= this. */
-  elevGateMinM?: number;
-  /** Optional elevation upper gate. Cell elevation in metres must be <= this. */
-  elevGateMaxM?: number;
-};
-
 /** Union of paint primitives the registry's capture hook understands. */
 export type PaintArgs = EllipsePaintArgs | BandPaintArgs;
 
@@ -313,16 +284,23 @@ export type TerrainSample = {
 };
 
 /**
- * Climate scenarios push a `{ tempC, seaLevelM }` contribution each frame.
- * The registry sums (at most one climate scenario at a time per the mutex)
- * and publishes via `ScenarioRegistry.getClimateFrame()`; render / UI read
- * the frame to tint the globe, shift sea level, and update HUD readouts.
+ * Climate scenarios push a `{ tempC, seaLevelM, precipMm }` contribution each
+ * frame. The registry sums across every active climate scenario and publishes
+ * via `ScenarioRegistry.getClimateFrame()`; render / UI read the frame to tint
+ * the globe, shift sea level, and update HUD readouts.
+ *
+ * Cancellation: temperature, sea-level, and precipitation deltas all signed-
+ * sum, so a Global Warming + Ice Age pair lands at a near-zero combined
+ * delta — and the polygon biome projection driven by that combined delta
+ * produces near-empty stamps, which is the planet visibly "resetting".
  */
 export type ClimateContribution = {
   /** Δ temperature in °C, signed. */
   tempC: number;
   /** Δ sea level in metres, signed. */
   seaLevelM: number;
+  /** Δ precipitation in mm/year, signed. */
+  precipMm: number;
 };
 
 /**
@@ -340,22 +318,23 @@ export type CloudContribution = {
 };
 
 /**
- * Per-scenario destruction census for strikes-based scenarios (Nuclear
- * and Nuclear War). Counts surface what the strike footprint has
- * destroyed — cities (above the kill threshold), summed population, and
- * length of major/arterial roads inside the kill zone.
+ * One slot's contribution to the LAND seafloor branch. `palette` is the
+ * 3-colour shelf palette (polar / temperate / equatorial) the scenario
+ * wants to paint onto exposed seafloor; `weight` is its per-frame
+ * envelope × handler weight in [0, 1]. The shader receives one of
+ * these per climate slot and crossfades between the default palette
+ * and the scenario palette by `weight`.
+ *
+ * Inactive slot → `weight = 0` (palette ignored). Both slots zero
+ * means the shader paints the default palette unchanged.
  */
-export type DestructionCensus = {
-  /** Number of strikes that have actually fired (vs scheduled). */
-  strikes: number;
-  /** Strikes scheduled in total (== strikes for single-Nuclear scenarios). */
-  strikesScheduled: number;
-  /** Cities whose centre cell is over the kill threshold. */
-  cities: number;
-  /** Summed POP_MAX from Natural Earth across those cities. */
-  population: number;
-  /** Kilometres of major + arterial roads inside the kill zone. */
-  streetKm: number;
+export type SeafloorContribution = {
+  palette: [
+    { r: number; g: number; b: number }, // polar shelf (biome 16)
+    { r: number; g: number; b: number }, // temperate shelf (biome 17)
+    { r: number; g: number; b: number }, // equatorial shelf (biome 18)
+  ];
+  weight: number;
 };
 
 /**
@@ -368,23 +347,6 @@ export type ScenarioCity = {
   lonDeg: number;
   pop: number;
   name: string;
-};
-
-/**
- * Per-climate-scenario biome census. `baseline` is snapshotted at the
- * scenario's `onStart` (a single `countBiomesGlobal()` walk). `current` is
- * maintained live by the override-recompose loop's hysteresis (cells that
- * flip class debit one bucket and credit the other). `delta = current -
- * baseline` for every class either side has touched, so UI can render
- * "Forest -3.2M km² / Desert +3.2M km²" without re-counting.
- */
-export type BiomeCensus = {
-  /** Biome class index → cell count, snapshotted at scenario start. */
-  baseline: Record<number, number>;
-  /** Biome class index → live cell count. */
-  current: Record<number, number>;
-  /** `current[c] - baseline[c]` for every class touched. */
-  delta: Record<number, number>;
 };
 
 /**
@@ -431,18 +393,6 @@ export type ScenarioContext = {
    * this to paint a north + south pair of zonal bands per `onStart`.
    */
   paintAttributeBand(args: BandPaintArgs): void;
-  /**
-   * Walk every HEALPix cell, look up its baseline biome + elevation,
-   * apply the transition rule list, and emit one biome-override stamp
-   * per distinct target biome. Used by climate-class scenarios (global
-   * warming, ice age) to drive biome-aware transitions instead of
-   * latitudinal strips. The first matching rule per cell wins (rules
-   * earlier in the array take precedence — useful for elev-gated
-   * special cases like high montane → ice that must beat the general
-   * montane → grassland rule). Per-cell `tStart01` flows into the
-   * stamp's G channel so the shader can stagger onset by resilience.
-   */
-  paintBiomeTransition(rules: readonly BiomeTransitionRule[]): void;
 
   /**
    * Spawn a child scenario; kind is restricted to prevent recursive
@@ -475,11 +425,14 @@ export type ScenarioContext = {
   /** Top-N populated cities by `pop` descending. Empty on fixture bakes. */
   getMajorCities(maxCount: number): readonly ScenarioCity[];
 
-  /** Road polylines for the destruction census walk. */
-  getRoadSegments(): readonly {
-    kind: 'major' | 'arterial' | 'local' | 'local2';
-    vertices: readonly [number, number][];
-  }[];
+  /**
+   * Global multiplier handed to `seaLevelFromTempDelta`. Climate
+   * handlers read this each tick to scale their sea-level response —
+   * 1.0 = paleoclimate-anchored response, 10.0 = stress-test extreme
+   * for shader / atmosphere shell behaviour at huge sea heights. The
+   * launcher's "Sea-level multiplier" slider drives it.
+   */
+  getSeaLevelMultiplier(): number;
 };
 
 export interface ScenarioKindHandler<K extends ScenarioKind> {
@@ -489,23 +442,32 @@ export interface ScenarioKindHandler<K extends ScenarioKind> {
    * another climate-class scenario is already running.
    */
   isClimateClass?: true;
-  /**
-   * When set, the registry maintains a per-scenario destruction census
-   * (strikes / cities / population / streetKm). Exposed via
-   * `ScenarioRegistry.getDestructionCensus(id)` for UI cards.
-   */
-  hasDestructionCensus?: true;
   onStart(scn: Scenario<K>, ctx: ScenarioContext): void;
   /** `progress01` ∈ [0, 1]. Called each frame after `totalDays` advances. */
   onTick(scn: Scenario<K>, progress01: number, ctx: ScenarioContext): void;
   onEnd(scn: Scenario<K>, ctx: ScenarioContext): void;
   /**
-   * Climate-class hook. Returns the temperature + sea-level contribution
-   * for this frame given the scenario's `progress01`. The registry sums
-   * over all active scenarios that implement this hook (in practice
-   * always one, due to the mutex) and publishes via `getClimateFrame()`.
+   * Climate-class hook. Returns the temperature + sea-level + precipitation
+   * contribution for this frame given the scenario's `progress01`. The
+   * registry sums over every active climate scenario and publishes the
+   * combined frame via `getClimateFrame()` — opposing scenarios cancel.
+   * `ctx` is passed in so handlers can read live tunables (sea-level
+   * multiplier in particular) without reaching into globals.
    */
-  getClimateContribution?(scn: Scenario<K>, progress01: number): ClimateContribution;
+  getClimateContribution?(
+    scn: Scenario<K>,
+    progress01: number,
+    ctx: ScenarioContext,
+  ): ClimateContribution;
+  /**
+   * Climate-class hook. Returns this scenario's peak (envelope = 1)
+   * climate contribution. The registry sums these across active climate
+   * scenarios to drive the polygon biome projection at bake time, so the
+   * combined-frame cancellation works regardless of where each scenario
+   * currently sits on its progress curve. Optional — when omitted the
+   * registry falls back to `getClimateContribution(scn, 1.0, ctx)`.
+   */
+  peakClimateContribution?(scn: Scenario<K>, ctx: ScenarioContext): ClimateContribution;
   /**
    * Optional cloud-side contribution. Used by Nuclear War to push soot
    * (global overcast tint + regional wasteland-driven cover bump) onto
@@ -513,31 +475,43 @@ export interface ScenarioKindHandler<K extends ScenarioKind> {
    */
   getCloudContribution?(scn: Scenario<K>, progress01: number): CloudContribution;
   /**
+   * Optional seafloor contribution. Only meaningful for climate-class
+   * scenarios that move sea level enough to expose the synthetic shelf
+   * biomes (Ice Age in particular). When omitted, the scenario does
+   * not influence the LAND seafloor branch — exposed shelf cells take
+   * the default palette.
+   */
+  getSeafloorContribution?(scn: Scenario<K>, progress01: number): SeafloorContribution;
+  /**
    * Optional override for the scalar climate envelope. When omitted the
    * registry falls back to `climateRisePlateauFall(progress01)`. Nuclear
    * War overrides so biome crossfade waits out the strike phase.
    */
   getClimateEnvelope?(scn: Scenario<K>, progress01: number): number;
   /**
-   * Strike-based scenarios expose their detonation points so the registry
-   * can build a destruction-census bbox without reading payload shape.
-   * Single Nuclear returns one point; Nuclear War returns one per scheduled
-   * strike (regardless of whether it has fired yet).
+   * Number of bombs the scenario has detonated so far. Surfaced through
+   * `WorldHealthSnapshot.stats.bombsActive`. Single Nuclear is `1` once
+   * its stamp is captured; Nuclear War counts every spawned child.
+   * Default: 0.
    */
-  getStrikePoints?(scn: Scenario<K>): readonly { latDeg: number; lonDeg: number }[];
+  getBombsActive?(scn: Scenario<K>): number;
   /**
-   * Census progress counters for the destruction card. `scheduled` is the
-   * total strikes the scenario plans to fire; `fired` is the count that
-   * have already spawned. Single Nuclear is `{ 1, 1 }` once the stamp is
-   * captured.
+   * Damage envelope sampled per frame. Multiplied by every channel of
+   * the scenario's `ScenarioImpactBudget` to derive the live world-health
+   * contribution. 0 = no damage (pristine), 1 = peak damage (every
+   * city / biome cell / radiation unit in the budget is currently
+   * impacting the world). Default: `(p) => p` (identity).
    */
-  getStrikeProgress?(scn: Scenario<K>): { fired: number; scheduled: number };
+  intensity?(scn: Scenario<K>, progress01: number): number;
   /**
-   * Spawned child scenario ids — the registry folds each child's wasteland
-   * stamps into the parent's kill-zone set. Returning an empty array (or
-   * omitting the hook) keeps the fold parent-only.
+   * One-shot impact tally taken right after `onStart` and reused for the
+   * rest of the scenario's life. Returns the population, cities, biome
+   * fractions, and radiation units the scenario will inflict at peak;
+   * the registry scales by `intensity()` every frame. Silent scenarios
+   * (Nuclear War's per-strike children) return `zeroBudget()` so the
+   * parent's budget isn't double-counted.
    */
-  getChildScenarioIds?(scn: Scenario<K>): readonly string[];
+  computeImpactBudget(scn: Scenario<K>, deps: ImpactBudgetDeps): ScenarioImpactBudget;
 }
 
 export type StartScenarioOpts = {

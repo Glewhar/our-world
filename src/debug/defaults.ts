@@ -46,6 +46,8 @@ export const DEFAULTS = {
     ocean: true,
     clouds: false,
     highways: true,
+    cities: true,
+    urban: true,
     airports: false,
     routeScaffold: false,
     trails: true,
@@ -78,19 +80,18 @@ export const DEFAULTS = {
       lerpStrengthIce: 1.0,
       lerpStrengthInfection: 1.0,
       lerpStrengthPollution: 1.0,
-      snowLineStrength: 0.55,
+      snowLineStrength: 0.85,
       alpineStrength: 0.7,
-      // Biome-color edge softening. 0 = hard cell-boundary palette (old
-      // behaviour); 1° ≈ one HEALPix-cell feather; 5° = strong continental
-      // smearing. Drives a separable gaussian blur baked into a
-      // 4096×2048 colour equirect; the land shader takes a single
-      // bilinear sample for its base colour.
-      biomeBlurDeg: 3.0,
-      // 16-entry palette indexed by WWF TEOW biome code (0 = no-data
+      // 20-entry palette indexed by WWF TEOW biome code (0 = no-data
       // fallback, 1..14 = TEOW biomes, 15 = synthetic ice/glacier used
-      // only by climate-scenario biome overrides — the baked
-      // attribute_static.G never produces 15). Tweakpane exposes each
-      // slot for live tuning.
+      // only by climate-scenario biome overrides, 16..18 = synthetic
+      // latitude-banded shelf biomes assigned at bake time to every
+      // TEOW-uncovered cell, 19 = synthetic wasteland used only by
+      // the uniform-driven nuclear path — the baked attribute_static.G
+      // never produces 15 or 19). Shelf slots are placeholders here:
+      // the LAND seafloor branch reads `materials.globe.seafloorPalette`
+      // (default + scenario palettes mixed by climate envelope) rather
+      // than these entries. Tweakpane exposes each slot for live tuning.
       biomePalette: [
         '#c4bcaa', //  0  no data / fallback (old land-base)
         '#2f6a3c', //  1  tropical moist forest
@@ -108,14 +109,18 @@ export const DEFAULTS = {
         '#c8b486', // 13  desert / xeric
         '#264c40', // 14  mangroves
         '#e8eef0', // 15  ice / glacier (override-only)
+        '#8aa3b3', // 16  polar shelf (placeholder; live colour from seafloorPalette)
+        '#6a6660', // 17  temperate shelf (placeholder)
+        '#c8b894', // 18  equatorial shelf (placeholder)
+        '#5b5550', // 19  wasteland (placeholder; live colour from scenarios.wastelandColor)
       ],
       // Per-realm HSV tint applied on top of the parent biome colour.
       // Length 9 (slot 0 unused; 1..8 = realms in the order
       // 1 Australasia, 2 Antarctic, 3 Afrotropic, 4 Indomalay,
       // 5 Nearctic, 6 Neotropic, 7 Oceania, 8 Palearctic — matching
-      // `data-pipeline/src/earth_pipeline/ecoregion_lookup.py`). All
-      // defaults are neutral (no tint) so a fresh bake matches the
-      // legacy 14-biome look until the user starts tuning.
+      // the REALM codes carried by the polygon lookup). All defaults
+      // are neutral (no tint) so a fresh bake matches the legacy
+      // 14-biome look until the user starts tuning.
       realmTint: [
         { dHue: 0, satMult: 1.0, valMult: 1.0 },     // 0 sentinel
         { dHue: -13.0, satMult: 1.35, valMult: 0.99 }, // 1 Australasia
@@ -137,7 +142,7 @@ export const DEFAULTS = {
       specularStrength: 1.4,
       // Elevation / climate-driven tints applied on top of the land base colour.
       alpineBareColor: '#c4bcb3',   // bare rock at high altitude
-      coldToneColor: '#bcb8b1',     // cold-climate desaturation
+      coldToneColor: '#7a92b8',     // cold-climate desaturation
       hotDryColor: '#e5dabc',       // hot/dry sun-baked tint
       // Two-tone specular highlight: warm tint for non-snow, cool tint for
       // snow. The shader lerps between them by the snow-line mix.
@@ -146,6 +151,33 @@ export const DEFAULTS = {
       // Moonlight reflectance — land base color desaturates toward this
       // neutral grey under antipodal moonlight.
       moonReflectanceBase: '#cbcbcb',
+      // Seafloor (shelf) — default palette for the three latitude-banded
+      // shelf biomes the bake emits at every TEOW-uncovered cell. The
+      // LAND fragment shader's seafloor branch reads these as the
+      // "no scenario" colour and crossfades against per-slot scenario
+      // palettes (e.g. Ice Age) by the climate envelope.
+      seafloorPalette: {
+        polar: '#8aa3b3',
+        temperate: '#6a6660',
+        equatorial: '#c8b894',
+      },
+      // Latitude cutoffs handed to `assign_shelf_biomes` at bake time.
+      // Tweakpane exposes these as "(rebake required)" sliders — moving
+      // them in the running game does not reclassify cells until the
+      // pipeline re-runs.
+      seafloorLatPolarDeg: 60.0,
+      seafloorLatTropicDeg: 23.5,
+      // Blur radii for the four pre-blurred LAND equirects. Each value
+      // is a unit fraction mapped to `sigmaPx = value × 375` against the
+      // 4096-wide equirect (the polygon-colour bake uses 8192-wide, so
+      // its sigma is scaled accordingly inside the baker). 0.08 keeps the
+      // biome blur at its historical σ = 30 px; mountain/snow stay tight
+      // for crisp peaks and snow lines; seafloor goes wide so the shelf
+      // colours bleed across the 23.5°/60° latitude bands.
+      biomeBlur: 0.08,
+      mountainBlur: 0.04,
+      snowBlur: 0.04,
+      seafloorBlur: 0.4,
     },
     atmosphere: {
       // Sky-physics preset id (see ATMOSPHERE_PRESETS in Tweakpane.ts).
@@ -173,7 +205,7 @@ export const DEFAULTS = {
       waveSpeed: 1.0,
       waveSteepness: 0.5,
       fresnelStrength: 1.0,
-      depthFalloff: 65,
+      depthFalloff: 250,
       abyssalColor: '#192551',
       deepColor: '#5b7cb7',
       shelfColor: '#296aa7',
@@ -181,7 +213,7 @@ export const DEFAULTS = {
       trenchStart: 3700,
       trenchEnd: 6900,
       coastalTintColor: '#ffffff',
-      coastalTintStrength: 0.08,
+      coastalTintStrength: 0.20,
       coastalTintFalloff: 400,
       currentStrength: 1.0,
       currentTintEnabled: true,
@@ -301,6 +333,15 @@ export const DEFAULTS = {
     wastelandColor: '#5a4d40',
     wastelandDesaturate: 0.6,
     wastelandStrength: 1.0,
+    // Global multiplier for the climate-class sea-level response. 1.0 =
+    // paleoclimate-anchored (LGM ~−120 m at ΔT ~−6 °C, etc.). Range 0..10
+    // supported by the launcher's slider; the climate handlers read it
+    // each tick via `ctx.getSeaLevelMultiplier()` to scale
+    // `seaLevelFromTempDelta`. Per `feedback_tweakpane_state_overrides_uniforms`,
+    // if a future binding ever mirrors this value into a uniform, this
+    // default must match the formula's neutral value (1.0) to avoid
+    // Tweakpane clobbering the design intent on load.
+    seaLevelMultiplier: 1.0,
   },
   pick: {
     lastPick: '(click on the globe)',

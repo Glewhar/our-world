@@ -32,4 +32,4 @@ export type {
 
 export { createWorldRuntime } from './WorldRuntime.js';
 export type { CreateWorldRuntimeOptions, SimControl, WorldRuntimeBundle } from './WorldRuntime.js';
-export type { EcoregionLookup, EcoregionLookupEntry } from './EcoregionTexture.js';
+export type { PolygonLookup, PolygonEntry } from './PolygonTexture.js';

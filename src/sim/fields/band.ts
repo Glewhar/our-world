@@ -186,17 +186,15 @@ export function computeBandStamp(
     }
   }
 
+  // Touched-list emit: ascending-ipix contract preserved via a sort over
+  // the few thousand cells we actually marked. Walking the full npix here
+  // used to scan all 12.6 M cells at nside=1024.
   const cells = new Uint32Array(count);
   const values = new Float32Array(count);
-  let k = 0;
-  for (let i = 0; i < npix; i++) {
-    if (mark[i]) {
-      cells[k] = i;
-      values[k] = valBuf[i]!;
-      k++;
-      if (k === count) break;
-    }
-  }
+  const touchedView = scratch.getTouchedView();
+  for (let i = 0; i < count; i++) cells[i] = touchedView[i]!;
+  cells.sort();
+  for (let i = 0; i < count; i++) values[i] = valBuf[cells[i]!]!;
   scratch.release();
   return { cells, values };
 }

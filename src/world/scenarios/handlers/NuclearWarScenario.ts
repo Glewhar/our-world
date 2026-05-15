@@ -7,8 +7,11 @@
  *     downwind wasteland stamp the single-Nuclear scenario uses today.
  *     Its decay mode flips to `'sustained'` when `rebuildAfterWar` is off
  *     so cities + streets stay dead through the winter plateau.
- *   - `ctx.paintBiomeTransition(transitionRules)` kicks off the async
- *     biome-override walker that ice age + global warming already use.
+ *   - Polygon biome projection is driven by the registry's bake — the
+ *     handler exposes its peak ΔT / Δsea / Δprecip via
+ *     `peakClimateContribution`; the bake folds that into the combined
+ *     frame and projects polygons. If GW or IA is already running the
+ *     combined frame cancels the winter signal proportionally.
  *   - `getClimateContribution` + `getCloudContribution` ride a shared
  *     `nuclearWinterEnvelope` so cooling, sea-level fall, soot tint, and
  *     biome crossfade all line up on the same curve.
@@ -18,11 +21,23 @@
  *   - `ctx.setWorldEffect('airplaneSpawn', 0)` after day 1 stops planes
  *     respawning; `onEnd` restores it to 1.
  *
- * Per-card destruction census (`hasDestructionCensus: true`) is
- * maintained by the registry walking cities + major/arterial roads
- * inside the strike-set bbox.
+ * Impact budget: parent owns the whole war's tally — sum of every
+ * scheduled strike's city kills + non-city pop (BLT density) +
+ * residency-weighted radiation, plus the polygon-projection biome
+ * impact from the combined climate frame. Child Nuclear scenarios are
+ * silent and report `zeroBudget()`, so no double counting.
  */
 
+import {
+  tallyProjectionBiome,
+  tallyStrikeBiomeBlt,
+  tallyStrikeCities,
+  zeroBudget,
+  type ImpactBudgetDeps,
+  type ScenarioImpactBudget,
+  type StrikeEllipse,
+} from '../impactBudget.js';
+import { seaLevelFromTempDelta } from '../seaLevelFromTemp.js';
 import type {
   ClimateContribution,
   CloudContribution,
@@ -30,6 +45,9 @@ import type {
   ScenarioContext,
   ScenarioKindHandler,
 } from '../types.js';
+import {
+  DEFAULT_NUCLEAR_CONFIG,
+} from './NuclearScenario.config.js';
 import {
   DEFAULT_NUCLEAR_WAR_CONFIG,
   buildStrikeSchedule,
@@ -41,7 +59,6 @@ const SOOT_AMBIENT_TINT = { r: 0.30, g: 0.27, b: 0.26 };
 
 export const NuclearWarScenario: ScenarioKindHandler<'nuclearWar'> = {
   isClimateClass: true,
-  hasDestructionCensus: true,
 
   onStart(scn: Scenario<'nuclearWar'>, ctx: ScenarioContext): void {
     const cfg = DEFAULT_NUCLEAR_WAR_CONFIG;
@@ -66,7 +83,6 @@ export const NuclearWarScenario: ScenarioKindHandler<'nuclearWar'> = {
         ((scn.startedAtDay * 1000) | 0) ^ 0xc0ffee,
       );
     }
-    ctx.paintBiomeTransition(cfg.transitionRules);
   },
 
   onTick(scn: Scenario<'nuclearWar'>, progress01: number, ctx: ScenarioContext): void {
@@ -74,6 +90,11 @@ export const NuclearWarScenario: ScenarioKindHandler<'nuclearWar'> = {
     const childMode: 'quickThenSlow' | 'sustained' =
       scn.payload.rebuildAfterWar ? 'quickThenSlow' : 'sustained';
 
+    // One strike per tick: a front-loaded fire window at high sim speed
+    // can mature 8–12 strikes in a single frame, each spending a stamp
+    // dispatch + RAF cost. The schedule walk re-runs every tick so unfired
+    // strikes pick up on subsequent frames; total war extends by at most
+    // ~strikeCount × frame_period, invisible against the war envelope.
     const schedule = scn.payload.schedule;
     for (let i = 0; i < schedule.length; i++) {
       const s = schedule[i]!;
@@ -92,6 +113,7 @@ export const NuclearWarScenario: ScenarioKindHandler<'nuclearWar'> = {
         s.childDurationDays,
         { label: `Strike ${i + 1}`, silent: true },
       );
+      break;
     }
 
     if (elapsedRel >= scn.payload.airplaneStopAtDay) {
@@ -111,11 +133,28 @@ export const NuclearWarScenario: ScenarioKindHandler<'nuclearWar'> = {
   getClimateContribution(
     scn: Scenario<'nuclearWar'>,
     progress01: number,
+    ctx: ScenarioContext,
   ): ClimateContribution {
     const env = nuclearWinterEnvelope(progress01, scn.payload);
+    const liveTempC = scn.payload.maxTempDeltaC * env;
+    const precipPeak =
+      scn.payload.precipDeltaMm ?? DEFAULT_NUCLEAR_WAR_CONFIG.precipDeltaMm;
     return {
-      tempC: scn.payload.maxTempDeltaC * env,
-      seaLevelM: scn.payload.maxSeaLevelM * env,
+      tempC: liveTempC,
+      seaLevelM: seaLevelFromTempDelta(liveTempC, ctx.getSeaLevelMultiplier()),
+      precipMm: precipPeak * env,
+    };
+  },
+
+  peakClimateContribution(
+    scn: Scenario<'nuclearWar'>,
+    ctx: ScenarioContext,
+  ): ClimateContribution {
+    const peakTempC = scn.payload.maxTempDeltaC;
+    return {
+      tempC: peakTempC,
+      seaLevelM: seaLevelFromTempDelta(peakTempC, ctx.getSeaLevelMultiplier()),
+      precipMm: scn.payload.precipDeltaMm ?? DEFAULT_NUCLEAR_WAR_CONFIG.precipDeltaMm,
     };
   },
 
@@ -136,34 +175,67 @@ export const NuclearWarScenario: ScenarioKindHandler<'nuclearWar'> = {
     return nuclearWinterEnvelope(progress01, scn.payload);
   },
 
-  getStrikePoints(
-    scn: Scenario<'nuclearWar'>,
-  ): readonly { latDeg: number; lonDeg: number }[] {
-    const schedule = scn.payload.schedule;
-    const out: { latDeg: number; lonDeg: number }[] = new Array(schedule.length);
-    for (let i = 0; i < schedule.length; i++) {
-      const s = schedule[i]!;
-      out[i] = { latDeg: s.latDeg, lonDeg: s.lonDeg };
+  intensity(scn: Scenario<'nuclearWar'>, progress01: number): number {
+    // Damage envelope: ramps to peak during the strike phase (cities die
+    // immediately under the fireballs), holds while the winter scar is
+    // active, then decays as `nuclearWinterEnvelope` falls. Biome shown
+    // on the HUD slightly leads the GPU biome paint during strikes — by
+    // strikeEndFrac (≈3% of war duration) they're aligned again.
+    const cfg = scn.payload;
+    const env = nuclearWinterEnvelope(progress01, cfg);
+    if (progress01 <= cfg.strikeEndFrac) {
+      const ramp = cfg.strikeEndFrac <= 0 ? 1 : progress01 / cfg.strikeEndFrac;
+      return ramp > env ? ramp : env;
     }
-    return out;
+    if (progress01 < cfg.winterPlateauEndFrac) return 1;
+    return env;
   },
 
-  getStrikeProgress(scn: Scenario<'nuclearWar'>): { fired: number; scheduled: number } {
+  getBombsActive(scn: Scenario<'nuclearWar'>): number {
     const schedule = scn.payload.schedule;
     let fired = 0;
     for (let i = 0; i < schedule.length; i++) {
       if (schedule[i]!.spawnedScenarioId) fired++;
     }
-    return { fired, scheduled: schedule.length };
+    return fired;
   },
 
-  getChildScenarioIds(scn: Scenario<'nuclearWar'>): readonly string[] {
+  computeImpactBudget(
+    scn: Scenario<'nuclearWar'>,
+    deps: ImpactBudgetDeps,
+  ): ScenarioImpactBudget {
+    const budget = zeroBudget();
+    const killScale = DEFAULT_NUCLEAR_CONFIG.wasteland.killRadiusMultiplier;
+
+    // City + non-city pop + radiation tally per strike. Wind bearing is
+    // unknown until each child fires — use 0° here; the bearing only
+    // skews the ellipse downwind, so the kill set is roughly correct
+    // either way for HUD purposes. `tallyStrikeBiomeBlt` reads each
+    // polygon's BLT entry for non-city density + residency, so open
+    // desert / tundra strikes retain more fallout than rainforest strikes.
     const schedule = scn.payload.schedule;
-    const ids: string[] = [];
     for (let i = 0; i < schedule.length; i++) {
-      const id = schedule[i]!.spawnedScenarioId;
-      if (id) ids.push(id);
+      const s = schedule[i]!;
+      const ellipse: StrikeEllipse = {
+        centreLatDeg: s.latDeg,
+        centreLonDeg: s.lonDeg,
+        radiusKm: s.radiusKm * killScale,
+        stretchKm: s.stretchKm * killScale,
+        bearingDeg: 0,
+      };
+      tallyStrikeCities(ellipse, deps.cities, budget);
+      tallyStrikeBiomeBlt(ellipse, deps, budget);
     }
-    return ids;
+
+    // Winter biome shift — projection-driven against the combined frame
+    // so a concurrent climate scenario cancels appropriately.
+    const combined = deps.combinedClimate;
+    tallyProjectionBiome(
+      { tempC: combined.tempC, precipMm: combined.precipMm },
+      deps,
+      budget,
+    );
+
+    return budget;
   },
 };

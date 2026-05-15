@@ -595,7 +595,12 @@ CoverSample biomeProfileAt(vec3 dir) {
   float is13 = step(12.5, biomeF) * step(biomeF, 13.5);
   float is14 = step(13.5, biomeF) * step(biomeF, 14.5);
 
-  // Default = ocean (code 0): cover 1.00, W_TEMPERATE.
+  // Default = ocean (code 0) OR shelf ids 16/17/18 (synthetic seafloor
+  // biomes added by the bake): cover 1.00, W_TEMPERATE. Shelves are
+  // deliberately NOT detected here — over the ocean their cover should
+  // read identically to deep water, and they only ever become visible
+  // when a dropping sea-level slider exposes them, at which point the
+  // ocean-default profile is still the visually correct fallback.
   float cover = 1.00;
   cover = mix(cover, 1.20, is1);   // tropical moist forest
   cover = mix(cover, 0.80, is2);   // tropical dry forest
@@ -1030,6 +1035,12 @@ export class VolumetricCloudPass {
   }
   setElevationScale(v: number): void {
     this.cloudMaterial.uniforms.uElevationScale!.value = v;
+  }
+  setSunColor(css: string): void {
+    (this.cloudMaterial.uniforms.uSunColor!.value as THREE.Color).set(css);
+  }
+  setAmbientColor(css: string): void {
+    (this.cloudMaterial.uniforms.uAmbientColor!.value as THREE.Color).set(css);
   }
 
   /** Push per-frame soot contribution. Default zero = shader no-op. */

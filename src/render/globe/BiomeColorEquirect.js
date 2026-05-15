@@ -1,61 +1,36 @@
 /**
- * BiomeColorEquirect — pre-blurred biome-colour globe.
+ * BiomeColorEquirect — polygon-keyed biome-colour globe.
  *
- * Cells on the data side are HEALPix; sampling them per-fragment from the
- * land shader paints crisp cell edges between adjacent classes. To soften
- * those edges (and only those edges — the per-fragment elevation, snow,
- * wasteland tints stay sharp on top), we bake the palette into an
- * equirectangular colour texture, blur it once with a separable gaussian,
- * and let the land shader take a single bilinear sample.
+ * Source = the equirect polygon-ID raster (`attribute_polygon`,
+ * 8192×4096). Each output pixel maps 1:1 to an input pixel after
+ * `(uv → ivec2)` index, so no HEALPix indirection is needed: this is
+ * a direct polygon-ID texelFetch + palette lookup + sea-mask gate,
+ * rendered into an 8192×4096 RGBA8 colour equirect that the LAND
+ * shader samples bilinearly.
  *
- * Two modes — the class auto-detects which by inspecting the world
- * runtime at construction time:
+ * The palette is a 1D RGBA8 DataTexture sized to the polygon count
+ * (~14k entries × 4 B = ~56 KB), composed CPU-side from
+ * `biomePalette[14] × realmTint[8] × jitter` keyed by each polygon's
+ * baseline biome + realm.
  *
- *   - **Ecoregion mode** (modern bake). Source = `attribute_eco` (RG8
- *     dense ecoregion index, 0..825). Palette = a 1D RGBA8 DataTexture
- *     of length `count + 1` built CPU-side from
- *     `biomePalette[14] × realmTint[8] × jitter`. The land surface
- *     shows 826 distinct visual classes from 14 hand-picked colours
- *     plus a few realm/jitter knobs.
+ * Rebuild trigger: a dirty bit flips on palette change, realm-tint
+ * change, or ecoregion-jitter change. The bake runs once per dirty
+ * flip; in steady state the LAND shader keeps reading the previous
+ * frame's final texture.
  *
- *   - **Legacy 14-biome mode** (older bakes that didn't ship
- *     `attribute_eco`). Source = `attribute_static.G` (R8 biome ID,
- *     0..14). Palette = the existing 15-vec3 uniform array. Identical
- *     behaviour to pre-Phase-2.B.
- *
- * Three textures, two passes (both modes):
- *
- *   1. Index equirect: one-shot bake at startup. Maps every equirect
- *      texel to its HEALPix cell's class index. Texel-fetched
- *      (NearestFilter) so each tap reads a clean discrete index.
- *      Width = 4096, height = 2048. Format = R8 in legacy mode, RG8 in
- *      ecoregion mode (low byte → R, high byte → G; shader rebuilds
- *      `idx = r + g * 256`).
- *
- *   2. Horizontal blur (RGBA8, 4096×2048): for each output texel,
- *      sample (2k+1) index taps along the row, palette-look-up each,
- *      weighted-sum with a discrete gaussian.
- *
- *   3. Vertical blur (RGBA8, 4096×2048) = final colour: same kernel
- *      along the column, sampling the horizontal target.
- *
- * Rebuild trigger: a dirty bit set by the palette colour pickers, the
- * blur slider, or any future code path that mutates the per-cell index.
- * The two blur passes only run when the bit is set; the land shader
- * keeps reading the previous frame's final texture in between.
- *
- * Pole behaviour: equirect texels crowd the poles, so a fixed-texel-
- * radius kernel covers a smaller arc up there. Polar classes are
- * tundra/ice — they share a cold-grey tone with neighbours, so the
- * over-smoothing is invisible.
+ * Sea-mask gate: `distance_field.R > 0` (signed km to coast, positive
+ * on land) clips open-ocean pixels so the polygon raster's no-data
+ * holes don't paint land colour over water.
  */
 import * as THREE from 'three';
+import { EquirectBlurPass } from './EquirectBlurPass.js';
 import { buildEcoregionPalette, } from './ecoregionPalette.js';
-import { PALETTE_AT_GLSL } from './paletteAt.glsl.js';
-import { source as healpixGlsl } from './shaders/healpix.glsl.js';
-const TEX_WIDTH = 4096;
-const TEX_HEIGHT = 2048;
-const LEGACY_PALETTE_SIZE = 16;
+// Output target dimensions = polygon-ID raster dimensions (8192×4096).
+// At any smaller resolution each output texel covers a 2×2 polygon-ID
+// block and snaps to a single biome, re-introducing HEALPix-scale
+// stair-stepping along polygon edges.
+const POLY_TEX_WIDTH = 8192;
+const POLY_TEX_HEIGHT = 4096;
 const FULLSCREEN_VERT = /* glsl */ `
 out vec2 vEquirectUv;
 void main() {
@@ -63,8 +38,12 @@ void main() {
   gl_Position = vec4(position.xy, 0.0, 1.0);
 }
 `;
-// Legacy index bake — HEALPix attribute_static → equirect R8 biome ID.
-const INDEX_BAKE_FRAG_LEGACY = /* glsl */ `
+// Polygon-mode colour bake — equirect polygon-ID texture → equirect
+// RGBA8 colour. The polygon raster IS already equirect, so each output
+// pixel maps 1:1 to an input pixel. Palette is sampled by polygon ID
+// and gated by `distance_field.R > 0` so open ocean doesn't paint land
+// colour where the polygon raster has no-data gaps.
+const POLY_BAKE_FRAG = /* glsl */ `
 precision highp float;
 precision highp int;
 precision highp sampler2D;
@@ -72,190 +51,41 @@ precision highp sampler2D;
 in vec2 vEquirectUv;
 out vec4 fragColor;
 
-uniform sampler2D uAttrStatic;
-uniform int uHealpixNside;
-uniform int uHealpixOrdering;
-uniform int uAttrTexWidth;
-
-void main() {
-  float u = vEquirectUv.x;
-  float v = vEquirectUv.y;
-  float phi = u * 6.28318530 - 3.14159265;
-  float theta = 1.5707963 - v * 3.14159265;
-  float z = sin(theta);
-  int ipx = healpixZPhiToPix(uHealpixNside, uHealpixOrdering, z, phi);
-  ivec2 tx = healpixIpixToTexel(ipx, uAttrTexWidth);
-  // attribute_static.G stores the biome code in [0,1] (encoded as code/255).
-  float biomeF = texelFetch(uAttrStatic, tx, 0).g;
-  fragColor = vec4(biomeF, 0.0, 0.0, 1.0);
-}
-`;
-// Ecoregion index bake — HEALPix attribute_eco → equirect RG8 dense ID.
-// attribute_eco stores `idx = r + g * 256` per cell (little-endian uint16
-// packed across two uint8 channels). We pass it through to the equirect
-// target unchanged; the blur stage rebuilds the integer.
-const INDEX_BAKE_FRAG_ECO = /* glsl */ `
-precision highp float;
-precision highp int;
-precision highp sampler2D;
-
-in vec2 vEquirectUv;
-out vec4 fragColor;
-
-uniform sampler2D uAttrEco;
-uniform int uHealpixNside;
-uniform int uHealpixOrdering;
-uniform int uAttrTexWidth;
-
-void main() {
-  float u = vEquirectUv.x;
-  float v = vEquirectUv.y;
-  float phi = u * 6.28318530 - 3.14159265;
-  float theta = 1.5707963 - v * 3.14159265;
-  float z = sin(theta);
-  int ipx = healpixZPhiToPix(uHealpixNside, uHealpixOrdering, z, phi);
-  ivec2 tx = healpixIpixToTexel(ipx, uAttrTexWidth);
-  vec2 lohi = texelFetch(uAttrEco, tx, 0).rg;
-  fragColor = vec4(lohi.r, lohi.g, 0.0, 1.0);
-}
-`;
-// Legacy horizontal blur — palette-uniform path with 16 entries (slot 0
-// fallback, 1..14 TEOW biomes, 15 synthetic ice for override path only).
-const H_BLUR_FRAG_LEGACY = /* glsl */ `
-precision highp float;
-precision highp int;
-precision highp sampler2D;
-
-in vec2 vEquirectUv;
-out vec4 fragColor;
-
-uniform sampler2D uIndexEquirect;
-uniform vec3 uPalette[${LEGACY_PALETTE_SIZE}];
-uniform int uKernelHalf;
-uniform float uSigma;
-uniform int uTexWidth;
-uniform int uTexHeight;
-${PALETTE_AT_GLSL}
-void main() {
-  ivec2 base = ivec2(vEquirectUv * vec2(float(uTexWidth), float(uTexHeight)));
-  int kH = uKernelHalf;
-
-  vec3 acc = vec3(0.0);
-  float wsum = 0.0;
-  float invTwoSig2 = (uSigma > 0.0) ? 1.0 / (2.0 * uSigma * uSigma) : 0.0;
-
-  for (int i = -64; i <= 64; i++) {
-    if (i < -kH || i > kH) continue;
-    int u = base.x + i;
-    u = (u % uTexWidth + uTexWidth) % uTexWidth;
-    float idxF = texelFetch(uIndexEquirect, ivec2(u, base.y), 0).r;
-    int idx = int(idxF * 255.0 + 0.5);
-    if (idx < 0) idx = 0;
-    // Baseline biome ids only run 0..14; synthetic ice id 15 lives in
-    // the override path, never in attribute_static.G. Clamping an
-    // out-of-range tap to 15 would bleed near-white into every blurred
-    // fragment whose kernel touched an undefined neighbour.
-    if (idx > 14) idx = 14;
-    float w = (uSigma > 0.0)
-      ? exp(-float(i * i) * invTwoSig2)
-      : (i == 0 ? 1.0 : 0.0);
-    acc += paletteAt(idx) * w;
-    wsum += w;
-  }
-  fragColor = vec4(acc / max(wsum, 1e-6), 1.0);
-}
-`;
-// Ecoregion horizontal blur — palette is a 1D RGBA8 texture; index is
-// reconstructed from RG8 of the index equirect. Same gaussian shape as
-// the legacy path; only the palette source and index decode change.
-const H_BLUR_FRAG_ECO = /* glsl */ `
-precision highp float;
-precision highp int;
-precision highp sampler2D;
-
-in vec2 vEquirectUv;
-out vec4 fragColor;
-
-uniform sampler2D uIndexEquirect;
-uniform sampler2D uPaletteTex;
+uniform sampler2D uPolyId;
+uniform sampler2D uColorByPoly;
+uniform sampler2D uDistanceField;
+uniform int uHasDistanceField;
 uniform int uPaletteSize;
-uniform int uKernelHalf;
-uniform float uSigma;
-uniform int uTexWidth;
-uniform int uTexHeight;
-
-vec3 paletteAt(int idx) {
-  if (idx < 0) idx = 0;
-  if (idx > uPaletteSize - 1) idx = uPaletteSize - 1;
-  return texelFetch(uPaletteTex, ivec2(idx, 0), 0).rgb;
-}
+uniform int uPolyTexWidth;
+uniform int uPolyTexHeight;
 
 void main() {
-  ivec2 base = ivec2(vEquirectUv * vec2(float(uTexWidth), float(uTexHeight)));
-  int kH = uKernelHalf;
-
-  vec3 acc = vec3(0.0);
-  float wsum = 0.0;
-  float invTwoSig2 = (uSigma > 0.0) ? 1.0 / (2.0 * uSigma * uSigma) : 0.0;
-
-  for (int i = -64; i <= 64; i++) {
-    if (i < -kH || i > kH) continue;
-    int u = base.x + i;
-    u = (u % uTexWidth + uTexWidth) % uTexWidth;
-    vec2 lohi = texelFetch(uIndexEquirect, ivec2(u, base.y), 0).rg;
-    int idx = int(lohi.r * 255.0 + 0.5) | (int(lohi.g * 255.0 + 0.5) << 8);
-    float w = (uSigma > 0.0)
-      ? exp(-float(i * i) * invTwoSig2)
-      : (i == 0 ? 1.0 : 0.0);
-    acc += paletteAt(idx) * w;
-    wsum += w;
+  ivec2 px = ivec2(vEquirectUv * vec2(float(uPolyTexWidth), float(uPolyTexHeight)));
+  vec2 lohi = texelFetch(uPolyId, px, 0).rg;
+  int polyId = int(lohi.r * 255.0 + 0.5) | (int(lohi.g * 255.0 + 0.5) << 8);
+  // Sea-mask clip: distance_field.R is signed km to coast (positive
+  // on land). When the bake didn't ship a distance field, we trust the
+  // polygon raster's no-data sentinel (id == 0 → black + alpha 0).
+  float coastKm = uHasDistanceField == 1
+    ? texture(uDistanceField, vEquirectUv).r
+    : (polyId == 0 ? -1.0 : 1.0);
+  if (coastKm <= 0.0) {
+    fragColor = vec4(0.0, 0.0, 0.0, 0.0);
+    return;
   }
-  fragColor = vec4(acc / max(wsum, 1e-6), 1.0);
+  int paletteIdx = polyId;
+  if (paletteIdx < 0) paletteIdx = 0;
+  if (paletteIdx > uPaletteSize - 1) paletteIdx = uPaletteSize - 1;
+  vec3 col = texelFetch(uColorByPoly, ivec2(paletteIdx, 0), 0).rgb;
+  fragColor = vec4(col, 1.0);
 }
 `;
-// Vertical blur — same in both modes (it samples the H-blur RGBA8
-// target, not the index equirect).
-const V_BLUR_FRAG = /* glsl */ `
-precision highp float;
-precision highp int;
-precision highp sampler2D;
-
-in vec2 vEquirectUv;
-out vec4 fragColor;
-
-uniform sampler2D uHorizontal;
-uniform int uKernelHalf;
-uniform float uSigma;
-uniform int uTexWidth;
-uniform int uTexHeight;
-
-void main() {
-  ivec2 base = ivec2(vEquirectUv * vec2(float(uTexWidth), float(uTexHeight)));
-  int kH = uKernelHalf;
-
-  vec3 acc = vec3(0.0);
-  float wsum = 0.0;
-  float invTwoSig2 = (uSigma > 0.0) ? 1.0 / (2.0 * uSigma * uSigma) : 0.0;
-
-  for (int i = -64; i <= 64; i++) {
-    if (i < -kH || i > kH) continue;
-    int v = base.y + i;
-    if (v < 0) v = 0;
-    if (v > uTexHeight - 1) v = uTexHeight - 1;
-    vec3 c = texelFetch(uHorizontal, ivec2(base.x, v), 0).rgb;
-    float w = (uSigma > 0.0)
-      ? exp(-float(i * i) * invTwoSig2)
-      : (i == 0 ? 1.0 : 0.0);
-    acc += c * w;
-    wsum += w;
-  }
-  fragColor = vec4(acc / max(wsum, 1e-6), 1.0);
-}
-`;
-// Maximum half-kernel width the shader unrolls. 64 texels at the equator
-// (4096 px around 360°) ≈ 5.6° — matches the slider's 5° max with a
-// touch of headroom.
-const MAX_KERNEL_HALF = 64;
+// Separable Gaussian blur lives in `EquirectBlurPass` now — both
+// `BiomeColorEquirect` and `BiomeOverrideEquirect` instantiate one with
+// `maxRadius = 60` (σ up to 30 px) and run it after their crisp polygon
+// bake. Alpha-weighted accumulation in the shared pass keeps coastline
+// land colour clean even when the kernel straddles ocean cut-out
+// pixels.
 function paletteHash(palette) {
     let s = '';
     for (let i = 0; i < palette.length; i++) {
@@ -276,44 +106,43 @@ function realmTintHash(tints) {
     }
     return s;
 }
+/**
+ * Default Gaussian sigma for the colour-equirect blur, in pixels of
+ * the 8192×4096 grid. Thirty pixels gives ~50° of soft transition
+ * along the equator — the polygon mosaic dissolves into broad
+ * continental tints, biome borders read as zones rather than lines.
+ * The shared `EquirectBlurPass` caps the kernel half-width at
+ * `maxRadius = 60` (= 2σ for σ = 30); bumping much further requires
+ * raising that constant.
+ *
+ * The live value is driven from `materials.globe.biomeBlur` × 375 by
+ * `scene-graph.ts`; this default stands in until that wiring runs.
+ */
+export const BLUR_SIGMA_PX = 30.0;
+export const BLUR_FULLSCREEN_VERT = FULLSCREEN_VERT;
 export class BiomeColorEquirect {
-    indexRT;
-    hBlurRT;
-    finalRT;
-    hMat;
-    vMat;
-    indexMat;
+    polyRT;
+    polyMat;
+    blurPass;
+    paletteTexture;
     quadScene;
     quadCam;
     quadMesh;
     dirty = true;
-    indexBaked = false;
-    currentBlurDeg = -1;
     cachedPaletteHash = '';
     cachedRealmHash = '';
     cachedJitter = -1;
-    /** True if the runtime shipped the new ecoregion artifacts. */
-    ecoMode;
-    ecoLookup;
-    paletteTexture = null;
+    cachedSigma = -1;
+    pendingSigma = BLUR_SIGMA_PX;
+    polyLookup;
     constructor(world) {
-        const ecoTex = world.getEcoregionTexture();
-        const ecoLookup = world.getEcoregionLookup();
-        this.ecoMode = !!(ecoTex && ecoLookup);
-        this.ecoLookup = ecoLookup;
-        // Index equirect: R8 in legacy mode, RG8 in ecoregion mode.
-        this.indexRT = new THREE.WebGLRenderTarget(TEX_WIDTH, TEX_HEIGHT, {
-            format: this.ecoMode ? THREE.RGFormat : THREE.RedFormat,
-            type: THREE.UnsignedByteType,
-            minFilter: THREE.NearestFilter,
-            magFilter: THREE.NearestFilter,
-            wrapS: THREE.RepeatWrapping,
-            wrapT: THREE.ClampToEdgeWrapping,
-            depthBuffer: false,
-            stencilBuffer: false,
-            generateMipmaps: false,
-        });
-        this.hBlurRT = new THREE.WebGLRenderTarget(TEX_WIDTH, TEX_HEIGHT, {
+        const polyTex = world.getPolygonTexture();
+        const polyLookup = world.getPolygonLookup();
+        if (!polyTex || !polyLookup) {
+            throw new Error('BiomeColorEquirect: polygon artifacts missing — `attribute_polygon` and `polygon_lookup` are now required');
+        }
+        this.polyLookup = polyLookup;
+        const rtOpts = {
             format: THREE.RGBAFormat,
             type: THREE.UnsignedByteType,
             minFilter: THREE.LinearFilter,
@@ -323,211 +152,121 @@ export class BiomeColorEquirect {
             depthBuffer: false,
             stencilBuffer: false,
             generateMipmaps: false,
-        });
-        this.finalRT = new THREE.WebGLRenderTarget(TEX_WIDTH, TEX_HEIGHT, {
+        };
+        // Crisp polygon bake target; the blur step then runs through the
+        // shared `EquirectBlurPass`, which owns its own hBlur + final RTs.
+        this.polyRT = new THREE.WebGLRenderTarget(POLY_TEX_WIDTH, POLY_TEX_HEIGHT, rtOpts);
+        this.blurPass = new EquirectBlurPass({
+            width: POLY_TEX_WIDTH,
+            height: POLY_TEX_HEIGHT,
+            maxRadius: 60,
             format: THREE.RGBAFormat,
             type: THREE.UnsignedByteType,
-            minFilter: THREE.LinearFilter,
-            magFilter: THREE.LinearFilter,
-            wrapS: THREE.RepeatWrapping,
-            wrapT: THREE.ClampToEdgeWrapping,
-            depthBuffer: false,
-            stencilBuffer: false,
-            generateMipmaps: false,
         });
-        const { nside, ordering } = world.getHealpixSpec();
-        if (this.ecoMode && ecoTex) {
-            this.indexMat = new THREE.ShaderMaterial({
-                glslVersion: THREE.GLSL3,
-                vertexShader: FULLSCREEN_VERT,
-                fragmentShader: `${healpixGlsl}\n${INDEX_BAKE_FRAG_ECO}`,
-                uniforms: {
-                    uAttrEco: { value: ecoTex },
-                    uHealpixNside: { value: nside },
-                    uHealpixOrdering: { value: ordering === 'ring' ? 0 : 1 },
-                    uAttrTexWidth: { value: 4 * nside },
-                },
-                depthTest: false,
-                depthWrite: false,
-            });
-        }
-        else {
-            this.indexMat = new THREE.ShaderMaterial({
-                glslVersion: THREE.GLSL3,
-                vertexShader: FULLSCREEN_VERT,
-                fragmentShader: `${healpixGlsl}\n${INDEX_BAKE_FRAG_LEGACY}`,
-                uniforms: {
-                    uAttrStatic: { value: world.getAttributeTexture('elevation') },
-                    uHealpixNside: { value: nside },
-                    uHealpixOrdering: { value: ordering === 'ring' ? 0 : 1 },
-                    uAttrTexWidth: { value: 4 * nside },
-                },
-                depthTest: false,
-                depthWrite: false,
-            });
-        }
-        if (this.ecoMode && ecoLookup) {
-            // Ecoregion mode: palette comes from a 1D DataTexture rebuilt on
-            // each tuning change. Allocate the buffer once at the right size.
-            const w = ecoLookup.count + 1;
-            this.paletteTexture = new THREE.DataTexture(new Uint8Array(w * 4), w, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
-            this.paletteTexture.minFilter = THREE.NearestFilter;
-            this.paletteTexture.magFilter = THREE.NearestFilter;
-            this.paletteTexture.wrapS = THREE.ClampToEdgeWrapping;
-            this.paletteTexture.wrapT = THREE.ClampToEdgeWrapping;
-            this.paletteTexture.needsUpdate = true;
-            this.hMat = new THREE.ShaderMaterial({
-                glslVersion: THREE.GLSL3,
-                vertexShader: FULLSCREEN_VERT,
-                fragmentShader: H_BLUR_FRAG_ECO,
-                uniforms: {
-                    uIndexEquirect: { value: this.indexRT.texture },
-                    uPaletteTex: { value: this.paletteTexture },
-                    uPaletteSize: { value: w },
-                    uKernelHalf: { value: 0 },
-                    uSigma: { value: 0 },
-                    uTexWidth: { value: TEX_WIDTH },
-                    uTexHeight: { value: TEX_HEIGHT },
-                },
-                depthTest: false,
-                depthWrite: false,
-            });
-        }
-        else {
-            const paletteUniform = [];
-            for (let i = 0; i < LEGACY_PALETTE_SIZE; i++) {
-                paletteUniform.push(new THREE.Vector3(0, 0, 0));
-            }
-            this.hMat = new THREE.ShaderMaterial({
-                glslVersion: THREE.GLSL3,
-                vertexShader: FULLSCREEN_VERT,
-                fragmentShader: H_BLUR_FRAG_LEGACY,
-                uniforms: {
-                    uIndexEquirect: { value: this.indexRT.texture },
-                    uPalette: { value: paletteUniform },
-                    uKernelHalf: { value: 0 },
-                    uSigma: { value: 0 },
-                    uTexWidth: { value: TEX_WIDTH },
-                    uTexHeight: { value: TEX_HEIGHT },
-                },
-                depthTest: false,
-                depthWrite: false,
-            });
-        }
-        this.vMat = new THREE.ShaderMaterial({
+        // 1D palette texture, length = polygon count + 1. ~14k entries × 4 B
+        // = ~56 KB. Rebuilt CPU-side every dirty flip from biome × realm ×
+        // jitter using the polygon-keyed `biomeOf` / `realmOf` arrays.
+        const w = polyLookup.count + 1;
+        this.paletteTexture = new THREE.DataTexture(new Uint8Array(w * 4), w, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
+        this.paletteTexture.minFilter = THREE.NearestFilter;
+        this.paletteTexture.magFilter = THREE.NearestFilter;
+        this.paletteTexture.wrapS = THREE.ClampToEdgeWrapping;
+        this.paletteTexture.wrapT = THREE.ClampToEdgeWrapping;
+        this.paletteTexture.needsUpdate = true;
+        const distanceField = world.getDistanceFieldTexture();
+        this.polyMat = new THREE.ShaderMaterial({
             glslVersion: THREE.GLSL3,
             vertexShader: FULLSCREEN_VERT,
-            fragmentShader: V_BLUR_FRAG,
+            fragmentShader: POLY_BAKE_FRAG,
             uniforms: {
-                uHorizontal: { value: this.hBlurRT.texture },
-                uKernelHalf: { value: 0 },
-                uSigma: { value: 0 },
-                uTexWidth: { value: TEX_WIDTH },
-                uTexHeight: { value: TEX_HEIGHT },
+                uPolyId: { value: polyTex },
+                uColorByPoly: { value: this.paletteTexture },
+                uDistanceField: { value: distanceField },
+                uHasDistanceField: { value: distanceField ? 1 : 0 },
+                uPaletteSize: { value: w },
+                uPolyTexWidth: { value: polyLookup.rasterWidth },
+                uPolyTexHeight: { value: polyLookup.rasterHeight },
             },
             depthTest: false,
             depthWrite: false,
         });
         this.quadScene = new THREE.Scene();
         this.quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-        this.quadMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.indexMat);
+        this.quadMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.polyMat);
         this.quadScene.add(this.quadMesh);
     }
     /** Texture handed to the land shader. Stable reference; contents update on rebuild. */
     get colorTexture() {
-        return this.finalRT.texture;
+        return this.blurPass.texture;
+    }
+    /** Live blur sigma in pixels of the 8192×4096 grid. Scene-graph pushes this every frame. */
+    setSigmaPx(sigmaPx) {
+        this.pendingSigma = sigmaPx;
+    }
+    /**
+     * 1D `RGBAFormat / UnsignedByteType` palette indexed by polygon ID
+     * (length = polygon count + 1). Same buffer the bake material reads
+     * to colour each polygon; exposed so the LAND shader's mode-1 path
+     * can look up `colA = colorByPoly[polyA]` and
+     * `colB = colorByPoly[polyB]` at fragment rate without re-baking the
+     * whole equirect. Contents update on the same dirty-bit cadence as
+     * `colorTexture`.
+     */
+    get colorByPolyTexture() {
+        return this.paletteTexture;
     }
     markDirty() {
         this.dirty = true;
     }
-    markIndexDirty() {
-        this.indexBaked = false;
-        this.dirty = true;
-    }
     /**
-     * Run the blur passes if dirty. Called once per frame from the scene
-     * graph; cheap when nothing changed.
-     *
-     * `palette` is the 16-entry biome palette (slot 0 fallback, 1..14 TEOW
-     * biomes, 15 override-only ice). In ecoregion mode `eco` carries the realm-tint table and
-     * jitter strength used to compose the 826-entry palette texture; the
-     * legacy biome colours still drive the per-ecoregion HSV bases. In
-     * legacy mode `eco` is ignored.
+     * Rebuild the colour equirect if anything changed. Called once per
+     * frame from the scene graph; cheap when nothing is dirty.
      */
-    rebuildIfDirty(renderer, palette, blurDeg, eco) {
+    rebuildIfDirty(renderer, palette, eco) {
         const hash = paletteHash(palette);
+        const rHash = realmTintHash(eco.realmTint);
         if (hash !== this.cachedPaletteHash)
             this.dirty = true;
-        if (blurDeg !== this.currentBlurDeg)
+        if (rHash !== this.cachedRealmHash)
             this.dirty = true;
-        if (this.ecoMode && eco) {
-            const rHash = realmTintHash(eco.realmTint);
-            if (rHash !== this.cachedRealmHash)
-                this.dirty = true;
-            if (eco.ecoregionJitter !== this.cachedJitter)
-                this.dirty = true;
-        }
+        if (eco.ecoregionJitter !== this.cachedJitter)
+            this.dirty = true;
+        if (this.pendingSigma !== this.cachedSigma)
+            this.dirty = true;
         if (!this.dirty)
             return;
         this.cachedPaletteHash = hash;
+        this.cachedRealmHash = rHash;
+        this.cachedJitter = eco.ecoregionJitter;
+        this.cachedSigma = this.pendingSigma;
+        const inputs = {
+            biomePalette: eco.biomePalette,
+            realmTint: eco.realmTint,
+            ecoregionJitter: eco.ecoregionJitter,
+            // PolygonLookup carries biome/realm as Int8Array (values 0..14
+            // / 0..8 fit safely); reinterpret the underlying bytes as
+            // Uint8Array without copying.
+            biomeOf: new Uint8Array(this.polyLookup.biome.buffer, this.polyLookup.biome.byteOffset, this.polyLookup.biome.byteLength),
+            realmOf: new Uint8Array(this.polyLookup.realm.buffer, this.polyLookup.realm.byteOffset, this.polyLookup.realm.byteLength),
+        };
+        const bytes = buildEcoregionPalette(inputs);
+        const dst = this.paletteTexture.image.data;
+        dst.set(bytes);
+        this.paletteTexture.needsUpdate = true;
         const prevTarget = renderer.getRenderTarget();
-        if (!this.indexBaked) {
-            this.quadMesh.material = this.indexMat;
-            renderer.setRenderTarget(this.indexRT);
-            renderer.render(this.quadScene, this.quadCam);
-            this.indexBaked = true;
-        }
-        const halfWidth = Math.min(MAX_KERNEL_HALF, Math.max(0, Math.round((blurDeg / 360.0) * TEX_WIDTH)));
-        const sigma = halfWidth > 0 ? halfWidth / 2.5 : 0;
-        if (this.ecoMode && this.ecoLookup && this.paletteTexture && eco) {
-            // Recompose the 1D palette texture from the current biome
-            // colours, realm tints, and jitter strength. ~1 ms on 825 entries.
-            const inputs = {
-                biomePalette: eco.biomePalette,
-                realmTint: eco.realmTint,
-                ecoregionJitter: eco.ecoregionJitter,
-                biomeOf: this.ecoLookup.biome,
-                realmOf: this.ecoLookup.realm,
-            };
-            const bytes = buildEcoregionPalette(inputs);
-            const dst = this.paletteTexture.image.data;
-            dst.set(bytes);
-            this.paletteTexture.needsUpdate = true;
-            this.cachedRealmHash = realmTintHash(eco.realmTint);
-            this.cachedJitter = eco.ecoregionJitter;
-        }
-        else {
-            // Legacy path: push the 16-entry vec3 palette directly.
-            const pUni = this.hMat.uniforms['uPalette'].value;
-            for (let i = 0; i < LEGACY_PALETTE_SIZE; i++) {
-                const c = palette[i];
-                if (c)
-                    pUni[i].set(c.r, c.g, c.b);
-            }
-        }
-        this.hMat.uniforms['uKernelHalf'].value = halfWidth;
-        this.hMat.uniforms['uSigma'].value = sigma;
-        this.quadMesh.material = this.hMat;
-        renderer.setRenderTarget(this.hBlurRT);
-        renderer.render(this.quadScene, this.quadCam);
-        this.vMat.uniforms['uKernelHalf'].value = halfWidth;
-        this.vMat.uniforms['uSigma'].value = sigma;
-        this.quadMesh.material = this.vMat;
-        renderer.setRenderTarget(this.finalRT);
+        // Crisp polygon-ID → palette colour into polyRT.
+        renderer.setRenderTarget(this.polyRT);
         renderer.render(this.quadScene, this.quadCam);
         renderer.setRenderTarget(prevTarget);
-        this.currentBlurDeg = blurDeg;
+        // Two-pass separable Gaussian blur via the shared helper.
+        this.blurPass.run(renderer, this.polyRT.texture, this.cachedSigma);
         this.dirty = false;
     }
     dispose() {
-        this.indexRT.dispose();
-        this.hBlurRT.dispose();
-        this.finalRT.dispose();
-        this.indexMat.dispose();
-        this.hMat.dispose();
-        this.vMat.dispose();
+        this.polyRT.dispose();
+        this.polyMat.dispose();
+        this.blurPass.dispose();
         this.quadMesh.geometry.dispose();
-        if (this.paletteTexture)
-            this.paletteTexture.dispose();
+        this.paletteTexture.dispose();
     }
 }
