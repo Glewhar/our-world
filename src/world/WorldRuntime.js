@@ -248,6 +248,9 @@ export async function createWorldRuntime(opts = {}) {
         setSpeed: (multiplier) => bridge.postCommand({ type: 'set_speed', multiplier }),
         snapshotSave: (tag) => bridge.postCommand({ type: 'snapshot_save', tag }),
         snapshotLoad: (tag) => bridge.postCommand({ type: 'snapshot_load', tag }),
+        requestStamp: (kind, args, n, o) => kind === 'ellipse'
+            ? bridge.requestStamp('ellipse', args, n, o)
+            : bridge.requestStamp('band', args, n, o),
     };
     return { world: runtime, sim };
 }

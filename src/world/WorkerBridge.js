@@ -13,9 +13,13 @@
  * etc.) — the bridge stays effects-free so unit tests can swap in a
  * fake worker without touching texture state.
  */
+import { computeEllipseStamp } from '../sim/fields/ellipse.js';
+import { computeBandStamp } from '../sim/fields/band.js';
 export class WorkerBridge {
     listeners = new Set();
     worker = null;
+    pendingStamps = new Map();
+    nextStampId = 1;
     constructor() {
         // Allow tests to construct a no-worker bridge by setting
         // `globalThis.__ED_DISABLE_SIM_WORKER = true` before construction.
@@ -52,11 +56,53 @@ export class WorkerBridge {
     }
     /** Internal helper. Public so tests can simulate inbound updates. */
     dispatch(update) {
+        if (update.type === 'stamp_ready') {
+            // Stamp replies are correlated by id and resolved into the
+            // matching pending promise. Listeners don't see them — the
+            // contract is one resolver per id, fire once, delete.
+            const resolver = this.pendingStamps.get(update.id);
+            if (resolver) {
+                this.pendingStamps.delete(update.id);
+                resolver({ cells: update.cells, values: update.values });
+            }
+            return;
+        }
         for (const cb of this.listeners)
             cb(update);
     }
+    requestStamp(kind, args, nside, ordering) {
+        if (!this.worker) {
+            const result = kind === 'ellipse'
+                ? computeEllipseStamp(args, nside, ordering)
+                : computeBandStamp(args, nside, ordering);
+            return Promise.resolve({ cells: result.cells, values: result.values });
+        }
+        const id = this.nextStampId++;
+        return new Promise((resolve) => {
+            this.pendingStamps.set(id, resolve);
+            const cmd = kind === 'ellipse'
+                ? {
+                    type: 'compute_stamp',
+                    id,
+                    kind: 'ellipse',
+                    args: args,
+                    nside,
+                    ordering,
+                }
+                : {
+                    type: 'compute_stamp',
+                    id,
+                    kind: 'band',
+                    args: args,
+                    nside,
+                    ordering,
+                };
+            this.worker.postMessage(cmd);
+        });
+    }
     dispose() {
         this.listeners.clear();
+        this.pendingStamps.clear();
         this.worker?.terminate();
         this.worker = null;
     }

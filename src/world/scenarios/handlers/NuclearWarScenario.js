@@ -55,6 +55,11 @@ export const NuclearWarScenario = {
     onTick(scn, progress01, ctx) {
         const elapsedRel = progress01 * scn.durationDays;
         const childMode = scn.payload.rebuildAfterWar ? 'quickThenSlow' : 'sustained';
+        // One strike per tick: a front-loaded fire window at high sim speed
+        // can mature 8–12 strikes in a single frame, each spending a stamp
+        // dispatch + RAF cost. The schedule walk re-runs every tick so unfired
+        // strikes pick up on subsequent frames; total war extends by at most
+        // ~strikeCount × frame_period, invisible against the war envelope.
         const schedule = scn.payload.schedule;
         for (let i = 0; i < schedule.length; i++) {
             const s = schedule[i];
@@ -70,6 +75,7 @@ export const NuclearWarScenario = {
                 windBearingDeg: 0,
                 decayMode: childMode,
             }, s.childDurationDays, { label: `Strike ${i + 1}`, silent: true });
+            break;
         }
         if (elapsedRel >= scn.payload.airplaneStopAtDay) {
             ctx.setWorldEffect('airplaneSpawn', 0);

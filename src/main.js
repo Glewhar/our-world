@@ -142,6 +142,12 @@ async function boot() {
         context: scenarioContext,
         nside: hpNside,
         ordering: hpOrdering,
+        // Dispatch stamp compute to the sim worker so a 70-strike Nuclear
+        // War's onStart doesn't freeze the page for a hundred milliseconds.
+        // The scar appears one frame after the fireball; user-accepted.
+        requestStamp: (kind, args, n, o) => kind === 'ellipse'
+            ? sim.requestStamp('ellipse', args, n, o)
+            : sim.requestStamp('band', args, n, o),
     });
     scenarioRegistry.registerHandler('nuclear', NuclearScenario);
     scenarioRegistry.registerHandler('globalWarming', GlobalWarmingScenario);

@@ -191,6 +191,21 @@ export type ScenarioRegistryDeps = {
   context: ScenarioContext;
   nside: number;
   ordering: 'ring' | 'nested';
+  /**
+   * Optional dispatcher that runs the stamp compute off the main thread
+   * (sim worker). When present, `paintAttributeEllipse` /
+   * `paintAttributeBand` capture an empty stamp shell immediately and
+   * fill it asynchronously when the worker replies — `__ED.nukeAt()`
+   * cost drops from ~160 ms to ~1 ms, the wasteland scar appears one
+   * frame later than the fireball. When absent (tests, no-worker
+   * builds), capture stays synchronous.
+   */
+  requestStamp?: (
+    kind: 'ellipse' | 'band',
+    args: EllipsePaintArgs | BandPaintArgs,
+    nside: number,
+    ordering: 'ring' | 'nested',
+  ) => Promise<{ cells: Uint32Array; values: Float32Array }>;
 };
 
 /**
@@ -284,6 +299,8 @@ export class ScenarioRegistry {
   private readonly context: ScenarioContext;
   private readonly nside: number;
   private readonly ordering: 'ring' | 'nested';
+  /** Async stamp dispatcher (sim worker). Null = synchronous compute. */
+  private readonly requestStamp: ScenarioRegistryDeps['requestStamp'];
 
   /** Last `totalDays` value seen by `tick` — used by recompose at start/stop. */
   private lastTotalDays = 0;
@@ -382,6 +399,7 @@ export class ScenarioRegistry {
     this.biomeOverrideSink = deps.biomeOverrideSink ?? null;
     this.nside = deps.nside;
     this.ordering = deps.ordering;
+    this.requestStamp = deps.requestStamp;
     const npix = 12 * deps.nside * deps.nside;
     this.accBuf = new Float32Array(npix);
     this.markBuf = new Uint8Array(npix);
@@ -1253,10 +1271,15 @@ export class ScenarioRegistry {
       userCtx.paintAttributeEllipse(args);
       return;
     }
-    const result = computeEllipseStamp(args, this.nside, this.ordering);
+    // Async path (worker): push an empty shell now, fill its cells +
+    // values when the worker replies. The shell carries the routing
+    // metadata (attribute, biomeId, decayMode) up front so `start()`'s
+    // accounting (slot pick, peakCombinedClimate, bake passes) still
+    // sees a well-formed stamp — it just has zero cells until the
+    // worker resolves.
     const stamp: ScenarioStamp = {
-      cells: result.cells,
-      values: result.values,
+      cells: new Uint32Array(0),
+      values: new Float32Array(0),
       attribute: args.attribute,
     };
     if (args.attribute === 'biomeOverride' && args.biomeOverride) {
@@ -1264,6 +1287,16 @@ export class ScenarioRegistry {
     }
     if (args.decayMode) stamp.decayMode = args.decayMode;
     this.capturingStamps.push(stamp);
+
+    if (this.requestStamp) {
+      void this.requestStamp('ellipse', args, this.nside, this.ordering).then((r) =>
+        this.fillCapturedStamp(stamp, r),
+      );
+    } else {
+      const result = computeEllipseStamp(args, this.nside, this.ordering);
+      stamp.cells = result.cells;
+      stamp.values = result.values;
+    }
   }
 
   private captureBandPaint(args: BandPaintArgs, userCtx: ScenarioContext): void {
@@ -1271,10 +1304,9 @@ export class ScenarioRegistry {
       userCtx.paintAttributeBand(args);
       return;
     }
-    const result = computeBandStamp(args, this.nside, this.ordering);
     const stamp: ScenarioStamp = {
-      cells: result.cells,
-      values: result.values,
+      cells: new Uint32Array(0),
+      values: new Float32Array(0),
       attribute: args.attribute,
     };
     if (args.attribute === 'biomeOverride' && args.biomeOverride) {
@@ -1282,6 +1314,51 @@ export class ScenarioRegistry {
     }
     if (args.decayMode) stamp.decayMode = args.decayMode;
     this.capturingStamps.push(stamp);
+
+    if (this.requestStamp) {
+      void this.requestStamp('band', args, this.nside, this.ordering).then((r) =>
+        this.fillCapturedStamp(stamp, r),
+      );
+    } else {
+      const result = computeBandStamp(args, this.nside, this.ordering);
+      stamp.cells = result.cells;
+      stamp.values = result.values;
+    }
+  }
+
+  /**
+   * Worker-reply landing for an async-captured stamp shell. Writes the
+   * cells + values, then re-fires the post-start work the registry
+   * normally does in `start()`. Drops the reply if the owning scenario
+   * has already been retired (stop() / autoRepeat may close it before
+   * the worker replies).
+   */
+  private fillCapturedStamp(
+    stamp: ScenarioStamp,
+    result: { cells: Uint32Array; values: Float32Array },
+  ): void {
+    // Verify the stamp is still attached to an active scenario. Stop()
+    // / autoRepeat may have retired it; cross-scenario contamination is
+    // impossible because the closure captures the specific stamp object.
+    let owner: ActiveEntry | null = null;
+    for (const e of this.active) {
+      if (e.stamps.indexOf(stamp) >= 0) {
+        owner = e;
+        break;
+      }
+    }
+    if (!owner) return;
+
+    stamp.cells = result.cells;
+    stamp.values = result.values;
+
+    this.dirty = true;
+    this.composedFrame = null;
+    this.forceRecomposeNext = true;
+    this.recomposeFrame(this.lastTotalDays);
+    if (stamp.attribute === 'biomeOverride' && owner.climateSlot !== null) {
+      this.bakeBiomeOverrideTextures();
+    }
   }
 }
 

@@ -276,6 +276,10 @@ const DEFAULT_CITY_RADIAL_BIAS = 5e-4;
  * here: the back hemisphere is still inside the camera FOV cone, just
  * occluded by the globe in front; this CPU-side test is what actually
  * drops those buckets' draw calls + vertex shading.
+ *
+ * Per-vertex GPU cull doesn't work here: triangles spanning the limb
+ * end up with one vertex culled to a clip-volume corner and the others
+ * at the horizon, which rasterizes as a long air-line streak.
  */
 const HEMISPHERE_THRESHOLD = 0.0;
 export class CitiesLayer {
@@ -378,7 +382,9 @@ export class CitiesLayer {
         if (!this.layerActive)
             return;
         for (const b of this.buckets) {
-            const d = b.centroidDir.x * cameraDir.x + b.centroidDir.y * cameraDir.y + b.centroidDir.z * cameraDir.z;
+            const d = b.centroidDir.x * cameraDir.x +
+                b.centroidDir.y * cameraDir.y +
+                b.centroidDir.z * cameraDir.z;
             b.mesh.visible = d > HEMISPHERE_THRESHOLD;
         }
     }

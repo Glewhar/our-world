@@ -21,6 +21,8 @@
 import { Scheduler } from './scheduler.js';
 import { serializeScheduler, deserializeScheduler } from '../snapshot.js';
 import { fetchMaybeGz, fetchMaybeGzJson } from '../../world/fetch-gz.js';
+import { computeEllipseStamp } from '../fields/ellipse.js';
+import { computeBandStamp } from '../fields/band.js';
 const ROOT_SEED = 0xc0ffeed00d1234n;
 let scheduler = null;
 const snapshots = new Map();
@@ -52,8 +54,25 @@ self.onmessage = (e) => {
             // when the YAML loader exists. Drop quietly so the host can call
             // it without errors.
             return;
+        case 'compute_stamp':
+            handleComputeStamp(cmd);
+            return;
     }
 };
+function handleComputeStamp(cmd) {
+    // Stamp compute is pure — no scheduler state. Runs off the main thread
+    // so a 70-strike Nuclear War onStart doesn't stall the page. Each
+    // result transfers its cell + value buffers back; the main thread
+    // resolves the matching pending request by id.
+    // `args` is typed `EllipsePaintArgs | BandPaintArgs` on the wire union;
+    // the kind flag tells us which compute to call. The geometry fields
+    // each function reads are a subset of both arg shapes, so the cast
+    // is sound.
+    const stamp = cmd.kind === 'ellipse'
+        ? computeEllipseStamp(cmd.args, cmd.nside, cmd.ordering)
+        : computeBandStamp(cmd.args, cmd.nside, cmd.ordering);
+    postUpdate({ type: 'stamp_ready', id: cmd.id, cells: stamp.cells, values: stamp.values }, [stamp.cells.buffer, stamp.values.buffer]);
+}
 async function handleInit(manifestUrl) {
     const manifest = await fetchManifest(manifestUrl);
     const baseUrl = manifestUrl.slice(0, manifestUrl.lastIndexOf('/'));

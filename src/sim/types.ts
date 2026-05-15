@@ -7,6 +7,8 @@
  */
 
 import type { AttributeKey, TileId, TopologyChange, WorldAggregates } from '../world/types.js';
+import type { HealpixOrdering } from '../world/healpix.js';
+import type { BandPaintArgs, EllipsePaintArgs } from '../world/scenarios/types.js';
 import type { WorldEvent } from './events/primitives.js';
 
 // ─── Main thread → Worker ─────────────────────────────────────────────────
@@ -20,7 +22,15 @@ export type SimCommand =
   | { type: 'snapshot_save'; tag: string }
   | { type: 'snapshot_load'; tag: string }
   | { type: 'inject_event'; event: WorldEvent }
-  | { type: 'reload_balance'; yaml: string };
+  | { type: 'reload_balance'; yaml: string }
+  | {
+      type: 'compute_stamp';
+      id: number;
+      kind: 'ellipse' | 'band';
+      args: EllipsePaintArgs | BandPaintArgs;
+      nside: number;
+      ordering: HealpixOrdering;
+    };
 
 // ─── Worker → Main thread ─────────────────────────────────────────────────
 
@@ -43,4 +53,5 @@ export type SimUpdate =
   | { type: 'topology_change'; changes: TopologyChange[] }
   | { type: 'entity_event'; event: EntityEvent }
   | { type: 'snapshot_saved'; tag: string; bytes: number }
-  | { type: 'snapshot_loaded'; tag: string; tick: number };
+  | { type: 'snapshot_loaded'; tag: string; tick: number }
+  | { type: 'stamp_ready'; id: number; cells: Uint32Array; values: Float32Array };

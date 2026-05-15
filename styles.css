@@ -771,12 +771,18 @@ body {
 /* The HTML adds `.chip.is-panel` for the glass surface; the panel rule
    sets `display: block`, so we need a same-or-higher specificity
    selector to switch back to grid here. */
+/* Position fixed so the chip sizes to its content instead of being squeezed
+   by the overlay grid's 1fr center column (which is narrowed by the
+   scenarios-launcher widget anchored in the top-right column above). */
 .chip.is-panel.health-hud {
+  position: fixed;
+  bottom: max(var(--gutter), env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, max-content);
   gap: 14px;
-  min-width: 720px;
-  max-width: min(900px, calc(100vw - 2 * var(--gutter)));
+  max-width: calc(100vw - 2 * var(--gutter));
   padding: 14px 16px;
 }
 .vital-module {
@@ -1194,9 +1200,7 @@ body {
 @media (max-width: 799px) {
   .chip.is-panel.health-hud {
     grid-template-columns: 1fr;
-    min-width: 0;
     width: min(420px, calc(100vw - 2 * var(--gutter)));
-    max-width: 100%;
     gap: 8px;
     padding: 10px 12px;
   }

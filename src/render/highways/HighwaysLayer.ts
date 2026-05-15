@@ -396,6 +396,13 @@ function hashLatLonToUnit(latDeg: number, lonDeg: number): number {
  * here: back-hemisphere buckets are inside the FOV cone but occluded
  * by the globe in front; this CPU-side test is what actually drops
  * their draw call + vertex stage.
+ *
+ * Why CPU per-bucket and not a per-vertex GPU cull: ribbon triangles
+ * span the limb, and culling individual vertices yanks them to a clip-
+ * volume corner while their triangle-mates stay at the limb. The
+ * surviving triangle stretches from the horizon into the sky as a long
+ * air line. Per-bucket toggles either all or none of a draw, so the
+ * limb stays clean.
  */
 const HEMISPHERE_THRESHOLD = 0.0;
 
@@ -549,7 +556,10 @@ export class HighwaysLayer {
   update(cameraDir: THREE.Vector3): void {
     if (!this.layerActive) return;
     for (const b of this.buckets) {
-      const d = b.centroidDir.x * cameraDir.x + b.centroidDir.y * cameraDir.y + b.centroidDir.z * cameraDir.z;
+      const d =
+        b.centroidDir.x * cameraDir.x +
+        b.centroidDir.y * cameraDir.y +
+        b.centroidDir.z * cameraDir.z;
       b.mesh.visible = d > HEMISPHERE_THRESHOLD;
     }
   }

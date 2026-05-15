@@ -35,6 +35,8 @@ import { OceanCurrentsTexture } from './OceanCurrentsTexture.js';
 import { WindFieldTexture } from './WindFieldTexture.js';
 import type { SimSpeed, SimUpdate } from '../sim/types.js';
 import type { WorldEvent } from '../sim/events/primitives.js';
+import type { HealpixOrdering } from './healpix.js';
+import type { BandPaintArgs, EllipsePaintArgs } from './scenarios/types.js';
 import type {
   AttributeKey,
   CitiesFile,
@@ -87,6 +89,19 @@ export type SimControl = {
   setSpeed(multiplier: SimSpeed): void;
   snapshotSave(tag: string): void;
   snapshotLoad(tag: string): void;
+  /**
+   * Dispatch a stamp compute to the sim worker. Used by the scenario
+   * registry to keep `__ED.nukeAt()` / `startNuclearWar()` off the main
+   * thread — the worker runs the same pure compute and transfers the
+   * cells + values back. No-worker fallback (tests) computes
+   * synchronously on the main thread.
+   */
+  requestStamp(
+    kind: 'ellipse' | 'band',
+    args: EllipsePaintArgs | BandPaintArgs,
+    nside: number,
+    ordering: HealpixOrdering,
+  ): Promise<{ cells: Uint32Array; values: Float32Array }>;
 };
 
 export type WorldRuntimeBundle = {
@@ -346,6 +361,15 @@ export async function createWorldRuntime(
     setSpeed: (multiplier) => bridge.postCommand({ type: 'set_speed', multiplier }),
     snapshotSave: (tag) => bridge.postCommand({ type: 'snapshot_save', tag }),
     snapshotLoad: (tag) => bridge.postCommand({ type: 'snapshot_load', tag }),
+    requestStamp: (
+      kind: 'ellipse' | 'band',
+      args: EllipsePaintArgs | BandPaintArgs,
+      n: number,
+      o: HealpixOrdering,
+    ) =>
+      kind === 'ellipse'
+        ? bridge.requestStamp('ellipse', args as EllipsePaintArgs, n, o)
+        : bridge.requestStamp('band', args as BandPaintArgs, n, o),
   };
 
   return { world: runtime, sim };
