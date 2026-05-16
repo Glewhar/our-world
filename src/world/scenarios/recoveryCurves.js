@@ -59,7 +59,7 @@ export function decaySustained(progress01, holdFrac = 0.85, exponent = 2.5, ramp
  * No 0.4 startup pop (unlike decayQuickThenSlow). Used by climate scenarios
  * so peak temp/sea-level deviation builds smoothly and decays gracefully.
  */
-export function climateRisePlateauFall(progress01, riseFrac = 0.10, fallFrac = 0.30) {
+export function climateRisePlateauFall(progress01, riseFrac = 0.30, fallFrac = 0.30) {
     const p = progress01 < 0 ? 0 : progress01 > 1 ? 1 : progress01;
     if (p < riseFrac)
         return p / riseFrac;

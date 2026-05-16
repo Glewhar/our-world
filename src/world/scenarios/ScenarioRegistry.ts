@@ -66,6 +66,7 @@ import type {
   BandPaintArgs,
   ClimateContribution,
   CloudContribution,
+  DestructionContribution,
   EllipsePaintArgs,
   Scenario,
   ScenarioCity,
@@ -407,6 +408,15 @@ export class ScenarioRegistry {
    * subtracts / adds per-frame deltas on top in `getWorldHealth`.
    */
   private baselineSharesCache: BiomeCategoryShares | null = null;
+
+  /**
+   * Persistent destruction-mask buffer the registry rewrites each
+   * frame and hands to the cities + highways layers. Lazy-allocated
+   * to `polyFlipMask.length` on the first contributing climate
+   * scenario; reused across frames so the mask setter can detect
+   * "bytes unchanged" cheaply and skip the GPU upload.
+   */
+  private destructionMaskBuffer: Uint8Array | null = null;
 
   /** Composed climate + cloud + seafloor frame cache, keyed by `lastTotalDays`. */
   private composedFrame: {
@@ -824,6 +834,62 @@ export class ScenarioRegistry {
       else if (slot === 1) slotBTaken = true;
     }
     return slotATaken && slotBTaken;
+  }
+
+  /**
+   * Per-frame destruction frame the cities + highways layers consume.
+   * Walks active climate-class scenarios, OR-merges their polygon flip
+   * masks into the persistent registry buffer, and max-picks the
+   * sea-level + envelope.
+   *
+   * The climate-class mutex caps concurrent contributors at one today,
+   * but the OR-merge keeps behaviour correct if the mutex is ever
+   * relaxed. When no scenario contributes, the buffer is zero-filled
+   * so the renderer always has something to push — the mask setter
+   * skips the GPU upload when bytes are unchanged from the previous
+   * frame.
+   */
+  getDestructionFrame(): DestructionContribution {
+    let polyFlipMask: Uint8Array | null = null;
+    let seaLevelM = 0;
+    let intensity = 0;
+
+    for (let i = 0; i < this.active.length; i++) {
+      const entry = this.active[i]!;
+      const handler = this.handlers.get(entry.scn.kind);
+      if (!handler?.getDestructionContribution) continue;
+      const elapsed = this.lastTotalDays - entry.scn.startedAtDay;
+      const raw = elapsed / Math.max(1e-6, entry.scn.durationDays);
+      const progress01 = raw < 0 ? 0 : raw > 1 ? 1 : raw;
+      const c = handler.getDestructionContribution(entry.scn, progress01, this.context);
+      if (c.polyFlipMask) {
+        if (
+          !this.destructionMaskBuffer ||
+          this.destructionMaskBuffer.length !== c.polyFlipMask.length
+        ) {
+          this.destructionMaskBuffer = new Uint8Array(c.polyFlipMask.length);
+        }
+        if (!polyFlipMask) {
+          this.destructionMaskBuffer.set(c.polyFlipMask);
+          polyFlipMask = this.destructionMaskBuffer;
+        } else {
+          const m = this.destructionMaskBuffer;
+          const src = c.polyFlipMask;
+          for (let p = 0; p < m.length; p++) {
+            if (src[p]! > m[p]!) m[p] = src[p]!;
+          }
+        }
+      }
+      if (c.seaLevelM > seaLevelM) seaLevelM = c.seaLevelM;
+      if (c.intensity > intensity) intensity = c.intensity;
+    }
+
+    if (!polyFlipMask && this.destructionMaskBuffer) {
+      this.destructionMaskBuffer.fill(0);
+      polyFlipMask = this.destructionMaskBuffer;
+    }
+
+    return { polyFlipMask, seaLevelM, intensity };
   }
 
   /**

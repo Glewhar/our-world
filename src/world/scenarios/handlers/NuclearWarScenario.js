@@ -109,9 +109,10 @@ export const NuclearWarScenario = {
         const env = nuclearWinterEnvelope(progress01, scn.payload);
         const liveTempC = scn.payload.maxTempDeltaC * env;
         const precipPeak = scn.payload.precipDeltaMm ?? DEFAULT_NUCLEAR_WAR_CONFIG.precipDeltaMm;
+        const peakSeaLevelM = seaLevelFromTempDelta(scn.payload.maxTempDeltaC, ctx.getSeaLevelMultiplier());
         return {
             tempC: liveTempC,
-            seaLevelM: seaLevelFromTempDelta(liveTempC, ctx.getSeaLevelMultiplier()),
+            seaLevelM: peakSeaLevelM * env,
             precipMm: precipPeak * env,
         };
     },

@@ -71,7 +71,7 @@ export function decaySustained(
  */
 export function climateRisePlateauFall(
   progress01: number,
-  riseFrac = 0.10,
+  riseFrac = 0.30,
   fallFrac = 0.30,
 ): number {
   const p = progress01 < 0 ? 0 : progress01 > 1 ? 1 : progress01;

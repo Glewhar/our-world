@@ -26,9 +26,9 @@
 import * as THREE from 'three';
 import { EquirectBlurPass } from './EquirectBlurPass.js';
 import { source as healpixGlsl } from './shaders/healpix.glsl.js';
-const EQUIRECT_WIDTH = 4096;
-const EQUIRECT_HEIGHT = 2048;
-const MAX_RADIUS = 300;
+const EQUIRECT_WIDTH = 1024;
+const EQUIRECT_HEIGHT = 512;
+const MAX_RADIUS = 75;
 const FULLSCREEN_VERT = /* glsl */ `
 out vec2 vEquirectUv;
 void main() {
@@ -168,7 +168,7 @@ export class SeafloorColorEquirect {
         return this.blurPass.texture;
     }
     setSigmaPx(sigmaPx) {
-        this.pendingSigma = sigmaPx;
+        this.pendingSigma = sigmaPx * (EQUIRECT_WIDTH / 4096);
     }
     setFrame(frame) {
         this.pendingFrame = frame;
@@ -183,10 +183,12 @@ export class SeafloorColorEquirect {
         let mixedPolar = { r: 0, g: 0, b: 0 };
         let mixedTemperate = { r: 0, g: 0, b: 0 };
         let mixedEquatorial = { r: 0, g: 0, b: 0 };
+        const qA = frame ? Math.round(frame.weightA * 32) / 32 : 0;
+        const qB = frame ? Math.round(frame.weightB * 32) / 32 : 0;
         if (frame) {
-            mixedPolar = mixShelfTriplet(frame.defaultPolar, frame.scenarioAPolar, frame.scenarioBPolar, frame.weightA, frame.weightB);
-            mixedTemperate = mixShelfTriplet(frame.defaultTemperate, frame.scenarioATemperate, frame.scenarioBTemperate, frame.weightA, frame.weightB);
-            mixedEquatorial = mixShelfTriplet(frame.defaultEquatorial, frame.scenarioAEquatorial, frame.scenarioBEquatorial, frame.weightA, frame.weightB);
+            mixedPolar = mixShelfTriplet(frame.defaultPolar, frame.scenarioAPolar, frame.scenarioBPolar, qA, qB);
+            mixedTemperate = mixShelfTriplet(frame.defaultTemperate, frame.scenarioATemperate, frame.scenarioBTemperate, qA, qB);
+            mixedEquatorial = mixShelfTriplet(frame.defaultEquatorial, frame.scenarioAEquatorial, frame.scenarioBEquatorial, qA, qB);
         }
         const hash = `${colorHash(mixedPolar)}|${colorHash(mixedTemperate)}|${colorHash(mixedEquatorial)}`;
         if (hash !== this.cachedColorsHash)

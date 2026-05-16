@@ -306,6 +306,32 @@ export type ClimateContribution = {
 };
 
 /**
+ * Per-frame destruction contribution from a climate-class scenario.
+ * The cities + highways shaders consume the polygon flip mask + the
+ * sea-level threshold to gate per-fragment destruction. CPU does no
+ * per-cell work — the mask is computed once at `onStart` (~14k entries),
+ * the sea-level is a scalar, the envelope is a scalar.
+ *
+ * Cancellation: the registry max-merges flip masks across active
+ * climate scenarios and max-picks the sea-level / intensity, so a
+ * GW + IA pair still publishes the union of both kill regions.
+ */
+export type DestructionContribution = {
+  /**
+   * R8 mask, length = `polyLookup.count + 1`, indexed by polyId.
+   * 255 inside polygons that flip to a destruction-class biome at
+   * peak, 0 elsewhere. Null when the bake has no polygon lookup
+   * (fixture builds) — the scenario degrades to "no polygon-driven
+   * destruction" on those bakes.
+   */
+  polyFlipMask: Uint8Array | null;
+  /** Peak sea-level rise in metres, always >= 0. Cold scenarios pass 0. */
+  seaLevelM: number;
+  /** Envelope in [0, 1] — `climateRisePlateauFall(progress01)`. */
+  intensity: number;
+};
+
+/**
  * Cloud-side contribution from a climate-class scenario. `sootGlobal` is
  * an overcast multiplier + tint weight applied scene-wide; `sootRegional
  * Weight` gates the wasteland-texture-driven local cover bump (denser
@@ -529,6 +555,19 @@ export interface ScenarioKindHandler<K extends ScenarioKind> {
    * the volumetric cloud pass.
    */
   getCloudContribution?(scn: Scenario<K>, progress01: number): CloudContribution;
+  /**
+   * Optional destruction contribution. Climate scenarios use this to
+   * publish the polygon flip mask + flooded sea-level threshold the
+   * cities + highways shaders consume to gate per-fragment destruction.
+   * Returning a null mask + zero `seaLevelM` is equivalent to "no
+   * destruction". The registry calls this every frame — handlers must
+   * cache any expensive bake (polygon walk) at `onStart`.
+   */
+  getDestructionContribution?(
+    scn: Scenario<K>,
+    progress01: number,
+    ctx: ScenarioContext,
+  ): DestructionContribution;
   /**
    * Optional seafloor contribution. Only meaningful for climate-class
    * scenarios that move sea level enough to expose the synthetic shelf

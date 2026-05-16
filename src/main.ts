@@ -298,6 +298,7 @@ async function boot(): Promise<void> {
     sceneGraph.setClimateEnvelopes(scenarioRegistry.getClimateEnvelopes());
     sceneGraph.setSeafloorFrame(scenarioRegistry.getSeafloorFrame());
     sceneGraph.setCloudFrame(scenarioRegistry.getCloudFrame());
+    sceneGraph.setDestructionFrame(scenarioRegistry.getDestructionFrame());
 
     // UI updates.
     topbar.update(deltaMs);

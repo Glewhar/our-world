@@ -148,6 +148,18 @@ export type SceneGraph = {
     sootAmbientTint: { r: number; g: number; b: number };
   }): void;
   /**
+   * Per-frame destruction frame from `ScenarioRegistry.getDestructionFrame()`.
+   * Pushes the polygon flip mask + flooded sea-level threshold + envelope
+   * into the cities + highways layers; both layers gate per-fragment
+   * destruction on the GPU. Mask setter compares against the previously
+   * uploaded bytes and skips the GPU upload when unchanged.
+   */
+  setDestructionFrame(frame: {
+    polyFlipMask: Uint8Array | null;
+    seaLevelM: number;
+    intensity: number;
+  }): void;
+  /**
    * Scale the airplane respawn target (0..1). Default is 1 (normal).
    * Nuclear War sets to 0 after day 1 to stop new spawns; existing
    * planes finish their current flight cycle.
@@ -354,6 +366,20 @@ export function createSceneGraph(): SceneGraph {
   }
   function setAirplaneSpawnScale(scale: number): void {
     airplaneSpawnScale = Math.max(0, scale);
+  }
+  function setDestructionFrame(frame: {
+    polyFlipMask: Uint8Array | null;
+    seaLevelM: number;
+    intensity: number;
+  }): void {
+    if (frame.polyFlipMask) {
+      cities?.setPolyFlipMask(frame.polyFlipMask);
+      highways?.setPolyFlipMask(frame.polyFlipMask);
+    }
+    cities?.setDestructionSeaLevel(frame.seaLevelM);
+    cities?.setDestructionIntensity(frame.intensity);
+    highways?.setDestructionSeaLevel(frame.seaLevelM);
+    highways?.setDestructionIntensity(frame.intensity);
   }
 
   function attachRenderer(r: THREE.WebGLRenderer): void {
@@ -1110,6 +1136,7 @@ export function createSceneGraph(): SceneGraph {
     setSeafloorFrame,
     setCloudFrame,
     setAirplaneSpawnScale,
+    setDestructionFrame,
     dispose,
   };
 }

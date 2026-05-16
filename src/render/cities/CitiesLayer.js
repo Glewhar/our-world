@@ -104,6 +104,17 @@ uniform int uHealpixNside;
 uniform int uHealpixOrdering;
 uniform int uAttrTexWidth;
 
+// Climate destruction (Plan A) — polygon-keyed flip mask + sea-level drown.
+// Defaults make this a no-op until Plan B feeds it.
+uniform sampler2D uPolyTex;            // equirect uint16 polyId (RG8 LE)
+uniform int uPolyTexWidth;
+uniform int uPolyTexHeight;
+uniform sampler2D uElevMetersTex;      // per-HEALPix-cell R16F half-float metres
+uniform sampler2D uPolyFlipMask;       // R8, 1 × (polyCount + 1). 1.0 inside flipped polygons.
+uniform float uDestructionSeaLevelM;
+uniform float uDestructionIntensity;
+uniform int uHasPolyFlipMask;          // 0 on bakes without polygon data — shader skips the branch.
+
 uniform float uMinPopulation;
 
 uniform float uGridDensity;
@@ -159,7 +170,33 @@ void main() {
   // a parallel infrastructure_loss field; both gate the same threshold.
   float wasteland = texelFetch(uWastelandTex, tx, 0).r;
   float infra = texelFetch(uInfraLossTex, tx, 0).r;
-  if (max(wasteland, infra) > seedToThreshold(vPatternSeed)) discard;
+
+  // Climate destruction gate. Off when no polygon data shipped or intensity is 0.
+  // Two-part: polygon flip (Sahara expansion, glaciation) and sea-level drown.
+  float infraClimate = 0.0;
+  if (uHasPolyFlipMask == 1 && uDestructionIntensity > 0.0) {
+    float lon = atan(sphereDir.y, sphereDir.x);
+    float lat = asin(clamp(sphereDir.z, -1.0, 1.0));
+    vec2 uv = vec2(lon * 0.15915494 + 0.5, 0.5 - lat * 0.31830989);
+    ivec2 ppx = ivec2(
+      clamp(int(uv.x * float(uPolyTexWidth)),  0, uPolyTexWidth  - 1),
+      clamp(int(uv.y * float(uPolyTexHeight)), 0, uPolyTexHeight - 1)
+    );
+    vec4 lohi = texelFetch(uPolyTex, ppx, 0);
+    int polyId = int(lohi.r * 255.0 + 0.5) | (int(lohi.g * 255.0 + 0.5) << 8);
+    float flipped = texelFetch(uPolyFlipMask, ivec2(polyId, 0), 0).r;
+
+    // Drown test. Skip if sea-level uniform is 0 (cold scenarios + idle).
+    // Skip cells already at/below sea level (elev <= 0) so existing ocean stays unaffected.
+    float elevM = texelFetch(uElevMetersTex, tx, 0).r; // R16F raw metres
+    float drowned = step(0.5, uDestructionSeaLevelM)
+                  * step(0.5, elevM)
+                  * step(elevM, uDestructionSeaLevelM);
+
+    infraClimate = max(flipped, drowned) * uDestructionIntensity;
+  }
+
+  if (max(max(wasteland, infra), infraClimate) > seedToThreshold(vPatternSeed)) discard;
 
   vec2 localKm = vLocalKm;
 
@@ -294,11 +331,30 @@ export class CitiesLayer {
     geometries = [];
     drawableCount = 0;
     layerActive = true;
+    /** Persistent byte array backing uPolyFlipMask. Null when no polygon data. */
+    polyFlipBytes = null;
+    polyFlipTex = null;
     constructor(world, urbanAreas) {
         const { nside, ordering } = world.getHealpixSpec();
         this.group = new THREE.Group();
         console.info(`[cities] constructing CitiesLayer with ${urbanAreas.length} polygons`);
         const c = DEFAULTS.materials.cities;
+        // Polygon-keyed climate destruction wiring (Plan A). Defaults to off
+        // (uHasPolyFlipMask = 0) when the bake shipped no polygons.
+        const polyTex = world.getPolygonTexture();
+        const polyLookup = world.getPolygonLookup();
+        if (polyLookup.count > 0) {
+            const len = polyLookup.count + 1; // slot 0 reserved no-data
+            this.polyFlipBytes = new Uint8Array(len);
+            const data = this.polyFlipBytes;
+            const tex = new THREE.DataTexture(data, len, 1, THREE.RedFormat, THREE.UnsignedByteType);
+            tex.minFilter = THREE.NearestFilter;
+            tex.magFilter = THREE.NearestFilter;
+            tex.wrapS = THREE.ClampToEdgeWrapping;
+            tex.wrapT = THREE.ClampToEdgeWrapping;
+            tex.needsUpdate = true;
+            this.polyFlipTex = tex;
+        }
         this.uniforms = {
             uSunDirection: { value: new THREE.Vector3(1, 0, 0.3).normalize() },
             uIdRaster: { value: world.getIdRaster() },
@@ -307,6 +363,14 @@ export class CitiesLayer {
             uHealpixNside: { value: nside },
             uHealpixOrdering: { value: ordering === 'ring' ? 0 : 1 },
             uAttrTexWidth: { value: 4 * nside },
+            uPolyTex: { value: polyTex },
+            uPolyTexWidth: { value: polyLookup.rasterWidth },
+            uPolyTexHeight: { value: polyLookup.rasterHeight },
+            uElevMetersTex: { value: world.getElevationMetersTexture() },
+            uPolyFlipMask: { value: this.polyFlipTex },
+            uDestructionSeaLevelM: { value: 0 },
+            uDestructionIntensity: { value: 0 },
+            uHasPolyFlipMask: { value: this.polyFlipTex ? 1 : 0 },
             uElevationScale: { value: DEFAULT_ELEVATION_SCALE },
             uCityRadialBias: { value: DEFAULT_CITY_RADIAL_BIAS },
             uMinPopulation: { value: c.minPopulation },
@@ -398,11 +462,43 @@ export class CitiesLayer {
     setOpacity(v) {
         this.uniforms.uOpacity.value = v;
     }
+    /**
+     * Copy the polygon flip mask (1 byte per polygon, slot 0 is no-data). Only
+     * flips needsUpdate when at least one byte differs, mirroring the
+     * `applyDynamicAttributeFrame` changed-flag pattern. No-op on bakes
+     * without polygon data.
+     */
+    setPolyFlipMask(bytes) {
+        if (!this.polyFlipBytes || !this.polyFlipTex)
+            return;
+        const dst = this.polyFlipBytes;
+        const len = Math.min(dst.length, bytes.length);
+        let changed = false;
+        for (let i = 0; i < len; i++) {
+            if (dst[i] !== bytes[i]) {
+                dst[i] = bytes[i];
+                changed = true;
+            }
+        }
+        if (changed)
+            this.polyFlipTex.needsUpdate = true;
+    }
+    setDestructionSeaLevel(m) {
+        this.uniforms.uDestructionSeaLevelM.value = m;
+    }
+    setDestructionIntensity(v) {
+        this.uniforms.uDestructionIntensity.value = v;
+    }
     dispose() {
         for (const g of this.geometries)
             g.dispose();
         this.geometries.length = 0;
         this.buckets.length = 0;
+        if (this.polyFlipTex) {
+            this.polyFlipTex.dispose();
+            this.polyFlipTex = null;
+            this.polyFlipBytes = null;
+        }
         this.material.dispose();
     }
 }

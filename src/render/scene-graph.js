@@ -223,6 +223,16 @@ export function createSceneGraph() {
     function setAirplaneSpawnScale(scale) {
         airplaneSpawnScale = Math.max(0, scale);
     }
+    function setDestructionFrame(frame) {
+        if (frame.polyFlipMask) {
+            cities?.setPolyFlipMask(frame.polyFlipMask);
+            highways?.setPolyFlipMask(frame.polyFlipMask);
+        }
+        cities?.setDestructionSeaLevel(frame.seaLevelM);
+        cities?.setDestructionIntensity(frame.intensity);
+        highways?.setDestructionSeaLevel(frame.seaLevelM);
+        highways?.setDestructionIntensity(frame.intensity);
+    }
     function attachRenderer(r) {
         webglRenderer = r;
         postFx = new PostFXChain(r, scene, camera);
@@ -914,6 +924,7 @@ export function createSceneGraph() {
         setSeafloorFrame,
         setCloudFrame,
         setAirplaneSpawnScale,
+        setDestructionFrame,
         dispose,
     };
 }

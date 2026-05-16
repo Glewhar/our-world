@@ -9,18 +9,26 @@
  *     If an Ice Age is already running, the combined frame is near-zero
  *     and the projection produces near-empty stamps; otherwise the
  *     warming projection rolls across the planet's polygon baseline.
+ *     A single ~14k polygon walk caches the desert flip mask + peak
+ *     sea level on a module-scoped WeakMap so the per-frame
+ *     destruction frame can hand them to the cities + highways shaders.
  *   onTick:
  *     no-op — envelope-scaled paint is owned by the LAND shader.
  *   onEnd:
- *     no-op — the registry retires stamps and re-bakes the override
- *     textures on the same frame.
+ *     drop the cached destruction state.
  *
  * Climate contribution:
  *   `getClimateContribution(progress01)` returns the per-frame ΔT /
  *   ΔseaLevel / Δprecip scaled by `climateRisePlateauFall(progress01)`.
- *   `peakClimateContribution(scn)` returns the unsScaled peak — the
+ *   `peakClimateContribution(scn)` returns the unscaled peak — the
  *   registry sums these across active climate scenarios to build the
  *   combined frame the polygon projection consumes at bake time.
+ *
+ * Destruction contribution:
+ *   The registry pulls `{ polyFlipMask, seaLevelM, intensity }` every
+ *   frame; the cities + highways shaders sample the mask by polyId
+ *   and gate per-fragment destruction by `seaLevelM` and the envelope
+ *   `intensity`. No per-frame CPU cell walks.
  *
  * Impact budget: polygon-projection biome loss + a magnitude-driven
  * extinction floor on populationAtRisk / citiesAtRisk. The floor is
@@ -42,76 +50,49 @@ import {
 } from '../impactBudget.js';
 import { climateRisePlateauFall } from '../recoveryCurves.js';
 import { seaLevelFromTempDelta } from '../seaLevelFromTemp.js';
-import { cellsBelowSeaLevel, cellsInProjectedFlipPolygons } from '../climateDestructionStamps.js';
+import { polygonsThatFlipTo } from '../climateDestructionStamps.js';
 import { BIOME } from '../../biomes/BiomeLookup.js';
 import type {
   ClimateContribution,
+  DestructionContribution,
   Scenario,
   ScenarioContext,
   ScenarioKindHandler,
 } from '../types.js';
 import { DEFAULT_GLOBAL_WARMING_CONFIG } from './GlobalWarmingScenario.config.js';
 
+type PeakState = {
+  polyFlipMask: Uint8Array | null;
+  seaLevelM: number;
+};
+
+const peakState = new WeakMap<Scenario<'globalWarming'>, PeakState>();
+
 export const GlobalWarmingScenario: ScenarioKindHandler<'globalWarming'> = {
   isClimateClass: true,
 
   onStart(scn: Scenario<'globalWarming'>, ctx: ScenarioContext): void {
-    // Polygon biome paint is handled by the registry bake. The one
-    // thing we paint here is infrastructure destruction along the
-    // flooded coastline — every HEALPix cell whose elevation falls
-    // under the peak sea-level rise loses its cities + highways.
-    // Cell set is computed once; the registry scales the stamp on
-    // `climateRisePlateauFall` every frame.
-    const peakSeaLevelM = seaLevelFromTempDelta(
-      scn.payload.maxTempDeltaC,
-      ctx.getSeaLevelMultiplier(),
-    );
-    if (peakSeaLevelM > 0) {
-      const cells = cellsBelowSeaLevel(
-        peakSeaLevelM,
-        (ipix) => ctx.getElevationMetersAtCell(ipix),
-        ctx.getCellCount(),
-      );
-      if (cells.length > 0) {
-        ctx.paintAttributeCells({
-          attribute: 'infrastructure_loss',
-          value: 1.0,
-          cells,
-          decayMode: 'climateRiseFall',
-        });
-      }
-    }
-
     const lookup = ctx.getPolygonLookup();
-    if (lookup) {
-      const peakDelta = {
-        tempC: scn.payload.maxTempDeltaC,
-        precipMm: scn.payload.precipDeltaMm ?? DEFAULT_GLOBAL_WARMING_CONFIG.precipDeltaMm,
-      };
-      const desertCells = cellsInProjectedFlipPolygons(
-        peakDelta,
-        BIOME.DESERT,
-        lookup,
-        (ipix) => ctx.getPolygonOfCell(ipix),
-        ctx.getCellCount(),
-      );
-      if (desertCells.length > 0) {
-        ctx.paintAttributeCells({
-          attribute: 'infrastructure_loss',
-          value: 1.0,
-          cells: desertCells,
-          decayMode: 'climateRiseFall',
-        });
-      }
-    }
+    const peakDelta = {
+      tempC: scn.payload.maxTempDeltaC,
+      precipMm: scn.payload.precipDeltaMm ?? DEFAULT_GLOBAL_WARMING_CONFIG.precipDeltaMm,
+    };
+    const polyFlipMask = lookup
+      ? polygonsThatFlipTo(peakDelta, BIOME.DESERT, lookup)
+      : null;
+    const peakSeaLevelM = Math.max(
+      0,
+      seaLevelFromTempDelta(scn.payload.maxTempDeltaC, ctx.getSeaLevelMultiplier()),
+    );
+    peakState.set(scn, { polyFlipMask, seaLevelM: peakSeaLevelM });
   },
 
   onTick(_scn: Scenario<'globalWarming'>, _progress01: number, _ctx: ScenarioContext): void {
     // No per-frame work — the LAND shader handles the envelope crossfade.
   },
 
-  onEnd(_scn: Scenario<'globalWarming'>, _ctx: ScenarioContext): void {
-    // No teardown — the registry retires stamps on the last frame.
+  onEnd(scn: Scenario<'globalWarming'>, _ctx: ScenarioContext): void {
+    peakState.delete(scn);
   },
 
   getClimateContribution(
@@ -123,9 +104,13 @@ export const GlobalWarmingScenario: ScenarioKindHandler<'globalWarming'> = {
     const liveTempC = scn.payload.maxTempDeltaC * env;
     const precipPeak =
       scn.payload.precipDeltaMm ?? DEFAULT_GLOBAL_WARMING_CONFIG.precipDeltaMm;
+    const peakSeaLevelM = seaLevelFromTempDelta(
+      scn.payload.maxTempDeltaC,
+      ctx.getSeaLevelMultiplier(),
+    );
     return {
       tempC: liveTempC,
-      seaLevelM: seaLevelFromTempDelta(liveTempC, ctx.getSeaLevelMultiplier()),
+      seaLevelM: peakSeaLevelM * env,
       precipMm: precipPeak * env,
     };
   },
@@ -139,6 +124,19 @@ export const GlobalWarmingScenario: ScenarioKindHandler<'globalWarming'> = {
       tempC: peakTempC,
       seaLevelM: seaLevelFromTempDelta(peakTempC, ctx.getSeaLevelMultiplier()),
       precipMm: scn.payload.precipDeltaMm ?? DEFAULT_GLOBAL_WARMING_CONFIG.precipDeltaMm,
+    };
+  },
+
+  getDestructionContribution(
+    scn: Scenario<'globalWarming'>,
+    progress01: number,
+    _ctx: ScenarioContext,
+  ): DestructionContribution {
+    const s = peakState.get(scn);
+    return {
+      polyFlipMask: s?.polyFlipMask ?? null,
+      seaLevelM: s?.seaLevelM ?? 0,
+      intensity: climateRisePlateauFall(progress01),
     };
   },
 

@@ -25,7 +25,7 @@ export const DEFAULT_NUCLEAR_WAR_CONFIG = {
     precipDeltaMm: -40,
     peakSootGlobal: 0.9,
     strikeEndFrac: 0.03,
-    winterRampEndFrac: 0.18,
+    winterRampEndFrac: 0.40,
     winterPlateauEndFrac: 0.75,
     durationDays: 15,
     sizeDistribution: [

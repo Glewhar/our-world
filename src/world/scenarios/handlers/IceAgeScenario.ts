@@ -2,18 +2,21 @@
  * IceAgeScenario — climate-class scenario that cools the planet.
  *
  * Behaviour: identical shape to GlobalWarming, opposite sign deltas.
- *   onStart: no paint — the registry bake reads `peakClimateContribution`
- *     and runs the polygon projection. When GW is already active, the
+ *   onStart: cache the ice flip mask (single ~14k polygon walk). No
+ *     paint — the registry bake reads `peakClimateContribution` and
+ *     runs the polygon projection. When GW is already active, the
  *     combined frame (GW peak + IA peak) cancels and the projection
  *     produces near-empty stamps — the planet barely moves.
  *   onTick: no-op — LAND shader owns envelope crossfade.
- *   onEnd: no-op — the registry retires stamps + re-bakes the override
- *     textures on the same frame.
+ *   onEnd: drop the cached destruction state.
  *
  * Climate contribution: peak ΔT / Δsea / Δprecip all negative; scaled
  * per frame by `climateRisePlateauFall`. `peakClimateContribution`
  * exposes the unscaled peak so the registry's bake sees the right
  * cancellation against any concurrent climate scenario.
+ *
+ * Destruction contribution: ice flip mask + `seaLevelM = 0` (cooling
+ * lowers the sea, never floods). Envelope = `climateRisePlateauFall`.
  *
  * Impact budget: polygon-projection biome loss + magnitude-driven
  * extinction floor on populationAtRisk / citiesAtRisk. Mirrors the
@@ -34,10 +37,11 @@ import {
 } from '../impactBudget.js';
 import { climateRisePlateauFall } from '../recoveryCurves.js';
 import { seaLevelFromTempDelta } from '../seaLevelFromTemp.js';
-import { cellsInProjectedFlipPolygons } from '../climateDestructionStamps.js';
+import { polygonsThatFlipTo } from '../climateDestructionStamps.js';
 import { BIOME } from '../../biomes/BiomeLookup.js';
 import type {
   ClimateContribution,
+  DestructionContribution,
   Scenario,
   ScenarioContext,
   ScenarioKindHandler,
@@ -45,43 +49,33 @@ import type {
 } from '../types.js';
 import { DEFAULT_ICE_AGE_CONFIG } from './IceAgeScenario.config.js';
 
+type PeakState = {
+  polyFlipMask: Uint8Array | null;
+};
+
+const peakState = new WeakMap<Scenario<'iceAge'>, PeakState>();
+
 export const IceAgeScenario: ScenarioKindHandler<'iceAge'> = {
   isClimateClass: true,
 
   onStart(scn: Scenario<'iceAge'>, ctx: ScenarioContext): void {
-    // Polygon biome paint is handled by the registry bake. The one
-    // thing we paint here is infrastructure destruction inside every
-    // polygon the projection flips to ICE — cities and highways under
-    // the advancing ice sheet vanish. ICE biome paint stays visible
-    // underneath via the LAND shader (no black wasteland scar).
     const lookup = ctx.getPolygonLookup();
-    if (!lookup) return;
     const peakDelta = {
       tempC: scn.payload.maxTempDeltaC,
       precipMm: scn.payload.precipDeltaMm ?? DEFAULT_ICE_AGE_CONFIG.precipDeltaMm,
     };
-    const cells = cellsInProjectedFlipPolygons(
-      peakDelta,
-      BIOME.ICE,
-      lookup,
-      (ipix) => ctx.getPolygonOfCell(ipix),
-      ctx.getCellCount(),
-    );
-    if (cells.length === 0) return;
-    ctx.paintAttributeCells({
-      attribute: 'infrastructure_loss',
-      value: 1.0,
-      cells,
-      decayMode: 'climateRiseFall',
-    });
+    const polyFlipMask = lookup
+      ? polygonsThatFlipTo(peakDelta, BIOME.ICE, lookup)
+      : null;
+    peakState.set(scn, { polyFlipMask });
   },
 
   onTick(_scn: Scenario<'iceAge'>, _progress01: number, _ctx: ScenarioContext): void {
     // No per-frame work.
   },
 
-  onEnd(_scn: Scenario<'iceAge'>, _ctx: ScenarioContext): void {
-    // No teardown.
+  onEnd(scn: Scenario<'iceAge'>, _ctx: ScenarioContext): void {
+    peakState.delete(scn);
   },
 
   getClimateContribution(
@@ -93,9 +87,13 @@ export const IceAgeScenario: ScenarioKindHandler<'iceAge'> = {
     const liveTempC = scn.payload.maxTempDeltaC * env;
     const precipPeak =
       scn.payload.precipDeltaMm ?? DEFAULT_ICE_AGE_CONFIG.precipDeltaMm;
+    const peakSeaLevelM = seaLevelFromTempDelta(
+      scn.payload.maxTempDeltaC,
+      ctx.getSeaLevelMultiplier(),
+    );
     return {
       tempC: liveTempC,
-      seaLevelM: seaLevelFromTempDelta(liveTempC, ctx.getSeaLevelMultiplier()),
+      seaLevelM: peakSeaLevelM * env,
       precipMm: precipPeak * env,
     };
   },
@@ -109,6 +107,19 @@ export const IceAgeScenario: ScenarioKindHandler<'iceAge'> = {
       tempC: peakTempC,
       seaLevelM: seaLevelFromTempDelta(peakTempC, ctx.getSeaLevelMultiplier()),
       precipMm: scn.payload.precipDeltaMm ?? DEFAULT_ICE_AGE_CONFIG.precipDeltaMm,
+    };
+  },
+
+  getDestructionContribution(
+    scn: Scenario<'iceAge'>,
+    progress01: number,
+    _ctx: ScenarioContext,
+  ): DestructionContribution {
+    const s = peakState.get(scn);
+    return {
+      polyFlipMask: s?.polyFlipMask ?? null,
+      seaLevelM: 0,
+      intensity: climateRisePlateauFall(progress01),
     };
   },
 
