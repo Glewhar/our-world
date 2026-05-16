@@ -1,23 +1,25 @@
 /**
- * PolygonAtlas — packs every urban-area polygon's vertices into a single
- * Float32 texture so the GPU can run a point-in-polygon test per fragment
- * using only a per-instance `(offset, count)` pair.
+ * PolygonAtlas — packs every city's outermost-tier footprint (the
+ * suburban SMOD polygon when present, otherwise the densest tier) into
+ * a single Float32 texture so a point-in-polygon test can run from
+ * texture lookups using only a per-instance `(offset, count)` pair.
  *
- * For each polygon we project the `[lat, lon]` vertices into the city's
- * local 2D tangent frame in kilometres (km along east, km along north),
- * then store them sequentially in a single 1D-style RG32F texture laid
- * out across `ATLAS_WIDTH` columns. A 256-wide × ceil(totalVerts/256)-tall
+ * For each city we project the `[lat, lon]` footprint vertices into the
+ * tangent frame in kilometres (km along east, km along north), then
+ * store them sequentially in a single 1D-style RG32F texture laid out
+ * across `ATLAS_WIDTH` columns. A 256-wide × ceil(totalVerts/256)-tall
  * RG32F texture fits all ~26 k verts comfortably under 1 MB GPU memory.
  *
  * The atlas also produces per-instance metadata:
- *   - `polyOffset` (first texel index of this polygon's vertex run)
- *   - `polyCount`  (number of verts in this polygon)
+ *   - `polyOffset` (first texel index of this footprint's vertex run)
+ *   - `polyCount`  (number of vertices in this footprint)
  *   - `halfExtentKm.xy` (bbox half-extent in the tangent frame — drives
  *                       the per-instance quad size and the centring of the
  *                       fragment shader's local UVs)
  *
- * Used by both the far-LOD CitiesLayer (polygon-shaped glow) and the
- * near-LOD UrbanDetailLayer (CPU-side inside-mask scanline rasterisation).
+ * Used by the near-LOD UrbanDetailLayer (CPU-side inside-mask scanline
+ * rasterisation). The far-LOD CitiesLayer triangulates per-tier polygons
+ * directly and does not consume this atlas.
  */
 
 import * as THREE from 'three';

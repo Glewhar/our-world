@@ -159,26 +159,24 @@ export type RoadRecord = {
 };
 
 /**
- * Urban-areas artifact (`urban_areas.json`). All ~11,400 urban-centre
- * outlines from GHS-UCDB R2024A (per-polygon 2025 population) that
- * drive the procedural in-browser streets-and-buildings layer. Sorted
- * by `pop` descending; `id` is the sequential rank (0-based). Empty
- * list on fixture bakes.
+ * Urban-areas artifact (`urban_areas.json`). Per-density tier polygons
+ * from GHS-SMOD R2023A (urban centre / dense / semi-dense / suburban),
+ * each tier joined to a name / population / country from GHS-UCDB
+ * R2024A. Drives the cities shader's density-keyed block-spray and the
+ * procedural in-browser streets-and-buildings layer. Sorted by `pop`
+ * descending; `id` is the sequential rank (0-based). Empty list on
+ * fixture bakes.
  *
  * This artifact sits OUTSIDE `WorldManifest.artifacts` — the runtime
  * fetches it by URL convention as a sibling of `world_manifest.json` so
  * older bakes that predate the artifact still validate against C1.
- *
- * Version 1 ships a single outer-ring `polygon` per record; the runtime
- * synthesises tiers at load time. Version 2 ships per-tier polygons
- * (GHS-SMOD urban centre / dense / semi-dense / suburban) directly.
  */
 export type UrbanAreasFile = {
-  version: 1 | 2;
-  source: string; // e.g. "ghs_ucdb_R2024A_V1.1"
+  version: 2;
+  source: string; // e.g. "ghs_smod_R2023A_E2020_1km + ghs_ucdb_R2024A_V1.1"
   generated_at: string; // ISO8601
   count: number;
-  urban_areas: UrbanAreaRecord[] | LegacyUrbanAreaRecord[];
+  urban_areas: UrbanAreaRecord[];
 };
 
 /**
@@ -198,35 +196,18 @@ export type UrbanDensityTier = {
 export type UrbanAreaRecord = {
   /** Sequential rank in the sorted list (0-based). Stable across re-bakes. */
   id: number;
-  /** Centroid latitude in degrees. */
+  /** Area-weighted centre-tier centroid latitude in degrees. */
   lat: number;
-  /** Centroid longitude in degrees. */
+  /** Area-weighted centre-tier centroid longitude in degrees. */
   lon: number;
-  /** Population from the nearest populated_places match. */
+  /** Population from the UCDB centroid that falls inside the city's centre tier. */
   pop: number;
-  /** City display name (best-effort from the nearest match). */
+  /** City display name from the matched UCDB centroid. */
   name: string;
+  /** Country (GADM) from the matched UCDB centroid. */
   country: string;
-  /**
-   * Density tiers, densest first. v2 bakes ship the real GHS-SMOD slices;
-   * the v1 loader synthesises them from the legacy outer-ring polygon.
-   */
+  /** GHS-SMOD density tiers, densest first. */
   tiers: UrbanDensityTier[];
-};
-
-/**
- * Legacy v1 raw record (single outer-ring polygon). Only used by the
- * loader to back-fill `tiers` until the v2 bake lands; never reaches the
- * render layer.
- */
-export type LegacyUrbanAreaRecord = {
-  id: number;
-  lat: number;
-  lon: number;
-  pop: number;
-  name: string;
-  country: string;
-  polygon: [number, number][];
 };
 
 export type GraphRef = {

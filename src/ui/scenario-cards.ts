@@ -224,6 +224,12 @@ function refreshCard(
     card.coords.textContent = 'no survivors — cities and roads collapsing worldwide';
     card.shape.textContent = `started year ${startedYear}, vanished year ${endsYear}`;
     card.timing.textContent = '';
+  } else if (scn.kind === 'rebuilding') {
+    const startedYear = START_YEAR + Math.floor(scn.startedAtDay / 12);
+    const endsYear = START_YEAR + Math.floor((scn.startedAtDay + scn.durationDays) / 12);
+    card.coords.textContent = 'survivors rebuilding — cities and roads regrowing worldwide';
+    card.shape.textContent = `started year ${startedYear}, restored year ${endsYear}`;
+    card.timing.textContent = '';
   }
 }
 
@@ -270,6 +276,8 @@ function iconFor(scn: Scenario): string {
       return '☢☣';
     case 'infraDecay':
       return '🏚';
+    case 'rebuilding':
+      return '🏗';
   }
 }
 

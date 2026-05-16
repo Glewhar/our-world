@@ -525,35 +525,71 @@ export function createDebugPanel(state = initialDebugState) {
     oWaves.addBinding(state.materials.ocean, 'fresnelStrength', {
         min: 0, max: 3, step: 0.05, label: 'fresnel',
     });
+    // Depth gate for fresnel + ripple shimmer (NOT colour stops).
+    oWaves.addBinding(state.materials.ocean, 'depthFadeStart', {
+        min: 0, max: 2000, step: 10, label: 'shallow→deep start (m)',
+    });
+    oWaves.addBinding(state.materials.ocean, 'depthFadeEnd', {
+        min: 50, max: 4000, step: 10, label: 'shallow→deep end (m)',
+    });
+    // Depth bands. Each colour stop has (start, end, falloff). See
+    // `bandWeight` in WaterMaterial.ts for the math.
     const oDepth = oceanMat.addFolder({ title: 'Depth colours', expanded: false });
     oceanSubFolders.push(oDepth);
-    oDepth.addBinding(state.materials.ocean, 'depthFalloff', {
-        // Range widened to 500 so the user can dial up the shallow-tint
-        // falloff when raising sea level — freshly-flooded interior reads
-        // as a real shallow→deep gradient instead of pure abyssal.
-        min: 0, max: 500, step: 1, label: 'depth falloff',
-    });
-    oDepth.addBinding(state.materials.ocean, 'shallowColor', { label: 'shallow' });
-    oDepth.addBinding(state.materials.ocean, 'shelfColor', { label: 'shelf' });
-    oDepth.addBinding(state.materials.ocean, 'deepColor', { label: 'deep' });
-    oDepth.addBinding(state.materials.ocean, 'abyssalColor', { label: 'abyssal' });
-    oDepth.addBinding(state.materials.ocean, 'trenchStart', {
-        min: 0, max: 11000, step: 100, label: 'trench start (m)',
-    });
-    oDepth.addBinding(state.materials.ocean, 'trenchEnd', {
-        min: 0, max: 12000, step: 100, label: 'trench end (m)',
-    });
     oDepth.addBinding(state.materials.ocean, 'seaLevelOffsetM', {
         min: -10000, max: 10000, step: 10, label: 'sea level (m)',
     });
-    const oCoast = oceanMat.addFolder({ title: 'Coastal tint', expanded: false });
-    oceanSubFolders.push(oCoast);
+    const oCoast = oDepth.addFolder({ title: 'Coast tint', expanded: false });
     oCoast.addBinding(state.materials.ocean, 'coastalTintColor', { label: 'color' });
     oCoast.addBinding(state.materials.ocean, 'coastalTintStrength', {
         min: 0, max: 1, step: 0.01, label: 'strength',
     });
     oCoast.addBinding(state.materials.ocean, 'coastalTintFalloff', {
         min: 0, max: 1500, step: 10, label: 'falloff (m)',
+    });
+    const oShallow = oDepth.addFolder({ title: 'Shallow', expanded: false });
+    oShallow.addBinding(state.materials.ocean, 'shallowColor', { label: 'color' });
+    oShallow.addBinding(state.materials.ocean, 'shallowStart', {
+        min: -100, max: 2000, step: 1, label: 'start (m)',
+    });
+    oShallow.addBinding(state.materials.ocean, 'shallowEnd', {
+        min: 0, max: 3000, step: 1, label: 'end (m)',
+    });
+    oShallow.addBinding(state.materials.ocean, 'shallowFalloff', {
+        min: 1, max: 4000, step: 1, label: 'falloff (m)',
+    });
+    const oShelf = oDepth.addFolder({ title: 'Shelf', expanded: false });
+    oShelf.addBinding(state.materials.ocean, 'shelfColor', { label: 'color' });
+    oShelf.addBinding(state.materials.ocean, 'shelfStart', {
+        min: -100, max: 3000, step: 1, label: 'start (m)',
+    });
+    oShelf.addBinding(state.materials.ocean, 'shelfEnd', {
+        min: 0, max: 4000, step: 1, label: 'end (m)',
+    });
+    oShelf.addBinding(state.materials.ocean, 'shelfFalloff', {
+        min: 1, max: 6000, step: 10, label: 'falloff (m)',
+    });
+    const oDeep = oDepth.addFolder({ title: 'Deep', expanded: false });
+    oDeep.addBinding(state.materials.ocean, 'deepColor', { label: 'color' });
+    oDeep.addBinding(state.materials.ocean, 'deepStart', {
+        min: 0, max: 5000, step: 10, label: 'start (m)',
+    });
+    oDeep.addBinding(state.materials.ocean, 'deepEnd', {
+        min: 0, max: 8000, step: 10, label: 'end (m)',
+    });
+    oDeep.addBinding(state.materials.ocean, 'deepFalloff', {
+        min: 100, max: 30000, step: 100, label: 'falloff (m)',
+    });
+    const oAbyssal = oDepth.addFolder({ title: 'Abyssal', expanded: false });
+    oAbyssal.addBinding(state.materials.ocean, 'abyssalColor', { label: 'color' });
+    oAbyssal.addBinding(state.materials.ocean, 'abyssalStart', {
+        min: 0, max: 11000, step: 50, label: 'start (m)',
+    });
+    oAbyssal.addBinding(state.materials.ocean, 'abyssalEnd', {
+        min: 0, max: 12000, step: 50, label: 'end (m)',
+    });
+    oAbyssal.addBinding(state.materials.ocean, 'abyssalFalloff', {
+        min: 100, max: 30000, step: 100, label: 'falloff (m)',
     });
     const oCurrents = oceanMat.addFolder({ title: 'Currents', expanded: false });
     oceanSubFolders.push(oCurrents);

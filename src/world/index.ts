@@ -24,7 +24,6 @@ export type {
   UrbanAreasFile,
   UrbanAreaRecord,
   UrbanDensityTier,
-  LegacyUrbanAreaRecord,
   PickResult,
   TopologyChange,
   WorldAggregates,

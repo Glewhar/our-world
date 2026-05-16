@@ -227,12 +227,11 @@ void main() {
   ivec2 tx = healpixIpixToTexel(ipx, uAttrTexWidth);
   if (isOceanIdTexel(texelFetch(uIdRaster, tx, 0))) discard;
 
-  // Wasteland kill — per-polyline threshold sweeps as wasteland decays
-  // (sampled per-fragment so road segments near the impact discard
-  // while distant segments of the same polyline keep drawing).
-  // Climate destruction (flooded coast, glaciated polygons) feeds the
-  // parallel infrastructure_loss field; both gate the same threshold.
-  float wasteland = texelFetch(uWastelandTex, tx, 0).r;
+  // Highway destruction gate is ledger-backed. The registry ratchets
+  // nuke + climate damage into the infrastructure_loss texture and
+  // drains it through the rebuilding scenario — a killer's natural
+  // fade no longer makes roads come back. uWastelandTex is left bound
+  // so the LAND scar texture (sampled in other passes) stays available.
   float infra = texelFetch(uInfraLossTex, tx, 0).r;
 
   // Climate destruction gate. Off when no polygon data shipped or intensity is 0.
@@ -260,7 +259,7 @@ void main() {
     infraClimate = max(flipped, drowned) * uDestructionIntensity;
   }
 
-  if (max(max(wasteland, infra), infraClimate) > seedToThreshold(vRoadSeed)) discard;
+  if (max(infra, infraClimate) > seedToThreshold(vRoadSeed)) discard;
 
   // Cross-ribbon distance, 0 at center, 1 at edge.
   float u01 = clamp(abs(vU), 0.0, 1.0);

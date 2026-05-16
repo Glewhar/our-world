@@ -204,16 +204,34 @@ export const DEFAULTS = {
             waveSpeed: 1.0,
             waveSteepness: 0.5,
             fresnelStrength: 1.0,
-            depthFalloff: 250,
-            abyssalColor: '#192551',
-            deepColor: '#5b7cb7',
-            shelfColor: '#296aa7',
-            shallowColor: '#7bdbfa',
-            trenchStart: 3700,
-            trenchEnd: 6900,
+            // Depth fade gate for fresnel + ripple shimmer (NOT colour stops).
+            depthFadeStart: 0,
+            depthFadeEnd: 400,
+            // Per-band depth gradient. Each band has (start, end, falloff):
+            //   start = depth (m) below which weight is 0
+            //   end   = depth (m) where weight reaches peak (1)
+            //   falloff = exponential decay scale (m) past `end`
+            // Final colour = stacked mix from deep (baseline) → abyssal → deep
+            // → shelf → shallow, each layer applied with its band weight.
+            shallowColor: '#7cbfd5',
+            shallowStart: 0,
+            shallowEnd: 10,
+            shallowFalloff: 2696,
+            shelfColor: '#0b4072',
+            shelfStart: 776,
+            shelfEnd: 1609,
+            shelfFalloff: 350,
+            deepColor: '#173c7f',
+            deepStart: 1410,
+            deepEnd: 4350,
+            deepFalloff: 100,
+            abyssalColor: '#000000',
+            abyssalStart: 4800,
+            abyssalEnd: 5850,
+            abyssalFalloff: 2100,
             coastalTintColor: '#ffffff',
-            coastalTintStrength: 0.20,
-            coastalTintFalloff: 400,
+            coastalTintStrength: 0.70,
+            coastalTintFalloff: 30,
             currentStrength: 1.0,
             currentTintEnabled: true,
             showMediumCurrents: false,

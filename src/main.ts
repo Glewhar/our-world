@@ -26,10 +26,9 @@ import {
   GlobalWarmingScenario,
   IceAgeScenario,
   InfraDecayScenario,
-  INFRA_DECAY_DURATION_DAYS,
-  INFRA_DECAY_LABEL,
   NuclearScenario,
   NuclearWarScenario,
+  RebuildingScenario,
   ScenarioRegistry,
   type BandPaintArgs,
   type EllipsePaintArgs,
@@ -188,12 +187,7 @@ async function boot(): Promise<void> {
   scenarioRegistry.registerHandler('iceAge', IceAgeScenario);
   scenarioRegistry.registerHandler('nuclearWar', NuclearWarScenario);
   scenarioRegistry.registerHandler('infraDecay', InfraDecayScenario);
-
-  // Fire-once-per-game flag for the Infrastructure-Decay auto-trigger.
-  // Once a killer scenario empties the planet, this flips true and the
-  // next frame's tick block starts the decay scenario — see the guard
-  // block right after `scenarioRegistry.tick(...)` in the RAF loop.
-  let infraDecayFired = false;
+  scenarioRegistry.registerHandler('rebuilding', RebuildingScenario);
 
   // --- UI mounting --------------------------------------------------------
   const topbar = mountTopbar(debug.state, () => debug.pane.refresh());
@@ -300,27 +294,8 @@ async function boot(): Promise<void> {
     tickPerfRingMs[tickPerfRingHead] = tickDtMs;
     tickPerfRingHead = (tickPerfRingHead + 1) % TICK_PERF_RING;
     if (tickPerfRingHead === 0) tickPerfRingFilled = true;
-    // Auto-trigger Infrastructure-Decay the moment world population
-    // hits zero. Must run AFTER `tick(...)` so this frame's
-    // `populationLost` reflects the killer's latest contribution, and
-    // BEFORE `setDestructionFrame(...)` below so the new scenario's
-    // mask is included from frame one. Fires at most once per game.
-    if (!infraDecayFired) {
-      const totals = scenarioRegistry.getWorldTotals();
-      if (totals && totals.population > 0) {
-        const health = scenarioRegistry.getWorldHealth();
-        if (health.stats.populationLost >= totals.population) {
-          scenarioRegistry.start(
-            'infraDecay',
-            {},
-            debug.state.timeOfDay.totalDays,
-            INFRA_DECAY_DURATION_DAYS,
-            { label: INFRA_DECAY_LABEL },
-          );
-          infraDecayFired = true;
-        }
-      }
-    }
+    // Distinction (infraDecay) and Rebuilding auto-triggers are owned
+    // by the registry now — see `ScenarioRegistry.tick()`.
     sceneGraph.setClimateFrame(scenarioRegistry.getClimateFrame());
     sceneGraph.setBiomeOverrideTextures(
       world.getBiomeOverrideTexture(),

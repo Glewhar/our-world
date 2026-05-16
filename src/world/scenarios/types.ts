@@ -13,7 +13,13 @@
 
 import type { ImpactBudgetDeps, ScenarioImpactBudget } from './impactBudget.js';
 
-export type ScenarioKind = 'nuclear' | 'globalWarming' | 'iceAge' | 'nuclearWar' | 'infraDecay';
+export type ScenarioKind =
+  | 'nuclear'
+  | 'globalWarming'
+  | 'iceAge'
+  | 'nuclearWar'
+  | 'infraDecay'
+  | 'rebuilding';
 
 /**
  * Names the registry passes through `ScenarioContext.setWorldEffect`. The
@@ -142,12 +148,20 @@ export type IceAgeScenarioPayload = {
  */
 export type InfraDecayScenarioPayload = Record<string, never>;
 
+/**
+ * Rebuilding payload. Auto-fires when killer damage stalls and the world
+ * still has survivors. Drains the registry's damage ledger over a long
+ * lifetime so cities, streets, and population climb back. No tunables.
+ */
+export type RebuildingScenarioPayload = Record<string, never>;
+
 export type ScenarioPayload = {
   nuclear: NuclearScenarioPayload;
   globalWarming: GlobalWarmingScenarioPayload;
   iceAge: IceAgeScenarioPayload;
   nuclearWar: NuclearWarScenarioPayload;
   infraDecay: InfraDecayScenarioPayload;
+  rebuilding: RebuildingScenarioPayload;
 };
 
 export type Scenario<K extends ScenarioKind = ScenarioKind> = {

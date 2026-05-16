@@ -129,6 +129,7 @@ function iconFor(scn) {
         case 'iceAge': return IceIcon;
         case 'nuclearWar': return NukeIcon;
         case 'infraDecay': return WarmingIcon;
+        case 'rebuilding': return WarmingIcon;
     }
 }
 function toneFor(scn) {
@@ -138,5 +139,6 @@ function toneFor(scn) {
         case 'iceAge': return 'ice';
         case 'nuclearWar': return 'war';
         case 'infraDecay': return 'decay';
+        case 'rebuilding': return 'rebuild';
     }
 }

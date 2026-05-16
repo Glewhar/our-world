@@ -61,7 +61,9 @@ import { computeEllipseStamp } from '../../sim/fields/ellipse.js';
 import { computeBandStamp } from '../../sim/fields/band.js';
 import { computeWorldTotals } from '../worldTotals.js';
 import { zeroBudget, } from './impactBudget.js';
-import { decayQuickThenSlow, decaySustained, climateRisePlateauFall } from './recoveryCurves.js';
+import { decayQuickThenSlow, decaySustained, climateRisePlateauFall, rebuildEnvelope, } from './recoveryCurves.js';
+import { REBUILD_DURATION_DAYS, REBUILD_LABEL } from './handlers/RebuildingScenario.config.js';
+import { INFRA_DECAY_DURATION_DAYS, INFRA_DECAY_LABEL, } from './handlers/InfraDecayScenario.config.js';
 import { pristineWorldHealth, zeroBiomeCategoryShares, } from './healthSnapshot.js';
 import { biomeCategoryOf, biomeName } from '../biomes/BiomeLookup.js';
 import { buildProjectionPolygonTextures } from './biomeProjection.js';
@@ -195,6 +197,60 @@ export class ScenarioRegistry {
      * "bytes unchanged" cheaply and skip the GPU upload.
      */
     destructionMaskBuffer = null;
+    /**
+     * Persistent damage ledger.
+     *
+     * Killer scenarios ratchet these monotonically up while they're alive
+     * and active; the rebuilding scenario drains them by multiplying by
+     * `(1 - rebuildProgress)` on read. The HUD readouts and the cities /
+     * highways destruction gate consume the ledger directly so a killer's
+     * natural recovery fade (the curve dropping back to 0) no longer
+     * makes pop/cities/streets climb back.
+     *
+     * Two infra channels:
+     *   `infraDamagedByPoly` — per-polygon climate flip + distinction
+     *     damage. Length = `polyLookup.count + 1`, indexed by polyId.
+     *   `infraDamagedByCell` — per-cell nuke-footprint damage that
+     *     doesn't cover a full polygon. Length = npix.
+     *
+     * Both lazy-allocate on first use.
+     */
+    damageLedger = {
+        populationKilled: 0,
+        citiesKilled: 0,
+        infraDamagedByPoly: null,
+        infraDamagedByCell: null,
+        /**
+         * Sparse list of HEALPix cells the per-cell infra ledger has ever
+         * ratcheted. Drives the per-frame emit into the `infrastructure_loss`
+         * sink: we walk this list (bounded by total strike area, not npix)
+         * and push `byte × (1 - rebuildProgress)` so the rebuild drain
+         * stays visible across the planet without an npix walk.
+         */
+        infraTouchedCells: null,
+        infraTouchedCount: 0,
+        /**
+         * `markBuf`-style flag per cell (1 = already in touched list).
+         * Parallel to `infraDamagedByCell`, sized identically. Lazy-alloc.
+         */
+        infraTouchedMark: null,
+        rebuildProgress: 0,
+    };
+    /**
+     * Sliding window of `populationKilled` samples for the rebuilding
+     * auto-trigger. Each tick the registry pushes `{ totalDays,
+     * populationKilled }`; samples older than `STALL_WINDOW_DAYS` drop.
+     * When the window's max - min falls under
+     * `STALL_EPSILON_FRAC × totals.population` AND there are survivors,
+     * the registry spawns a Rebuilding scenario.
+     */
+    popKilledHistory = [];
+    /**
+     * Damage-stall window for the rebuilding auto-trigger. Exposed on
+     * `tuning` so the debug panel can bind sliders later.
+     */
+    static STALL_WINDOW_DAYS = 1.0;
+    static STALL_EPSILON_FRAC = 0.0005;
     /** Composed climate + cloud + seafloor frame cache, keyed by `lastTotalDays`. */
     composedFrame = null;
     composedFrameTotalDays = Number.NaN;
@@ -250,6 +306,16 @@ export class ScenarioRegistry {
         const handler = this.handlers.get(kind);
         if (!handler) {
             throw new Error(`ScenarioRegistry: no handler registered for kind '${kind}'`);
+        }
+        // A fresh killer cancels any in-progress Rebuilding — the ledger
+        // bake preserves the rebuilt work, then the killer starts
+        // re-ratcheting on top.
+        if (isKillerKind(kind)) {
+            for (let i = this.active.length - 1; i >= 0; i--) {
+                if (this.active[i].scn.kind === 'rebuilding') {
+                    this.stop(this.active[i].scn.id);
+                }
+            }
         }
         // Climate-class scenarios get one of two slots. Both slots full
         // (two concurrent climate scenarios already running) → refuse.
@@ -313,6 +379,11 @@ export class ScenarioRegistry {
         const handler = this.handlers.get(entry.scn.kind);
         if (handler)
             handler.onEnd(entry.scn, this.context);
+        // Rebuilding scenarios bake their current progress into the ledger
+        // before the entry is removed — preserves rebuilt cities + pop
+        // when a fresh killer cancels rebuilding mid-curve.
+        if (entry.scn.kind === 'rebuilding')
+            this.bakeRebuildIntoLedger();
         this.retireStamps(entry.stamps);
         this.active.splice(idx, 1);
         this.dirty = true;
@@ -395,6 +466,8 @@ export class ScenarioRegistry {
                         climateMembershipChanged = true;
                 }
                 else {
+                    if (entry.scn.kind === 'rebuilding')
+                        this.bakeRebuildIntoLedger();
                     this.retireStamps(entry.stamps);
                     this.active.splice(i, 1);
                     if (handler?.isClimateClass)
@@ -412,6 +485,202 @@ export class ScenarioRegistry {
             this.bakeBiomeOverrideTextures();
             this.recomputeClimateBudgets();
         }
+        this.updateLedger(totalDays);
+        this.checkAutoTriggers(totalDays);
+    }
+    /**
+     * Per-frame ledger ratchet. Walks active killers (excluding
+     * `rebuilding` and `infraDecay`), computes their live damage
+     * contributions, and max-ratchets each ledger channel up. Reads
+     * `rebuilding`'s `intensity` directly into `ledger.rebuildProgress`
+     * so the HUD + renderer drain stays in lockstep with the curve.
+     */
+    updateLedger(totalDays) {
+        let livePop = 0;
+        let liveCities = 0;
+        let rebuildProgress = 0;
+        let liveInfraIntensityByte = 0;
+        let livePolyFlipMask = null;
+        for (let i = 0; i < this.active.length; i++) {
+            const entry = this.active[i];
+            const handler = this.handlers.get(entry.scn.kind);
+            if (!handler)
+                continue;
+            const elapsed = totalDays - entry.scn.startedAtDay;
+            const raw = elapsed / Math.max(1e-6, entry.scn.durationDays);
+            const progress01 = raw < 0 ? 0 : raw > 1 ? 1 : raw;
+            if (entry.scn.kind === 'rebuilding') {
+                rebuildProgress = handler.intensity
+                    ? handler.intensity(entry.scn, progress01)
+                    : progress01;
+                continue;
+            }
+            // Distinction does not push the ledger (its impact budget is
+            // zero and it kills nothing — it just paints the dead planet).
+            if (entry.scn.kind === 'infraDecay')
+                continue;
+            const intensity = handler.intensity
+                ? handler.intensity(entry.scn, progress01)
+                : progress01;
+            if (intensity <= 0)
+                continue;
+            const b = entry.impactBudget;
+            livePop += b.populationAtRisk * intensity;
+            liveCities += b.citiesAtRisk * intensity;
+            // Per-polygon infra ratchet. Only climate-class killers publish
+            // a polyFlipMask today; if more handlers add one later the
+            // max-merge below picks the strongest live byte per polygon.
+            if (handler.getDestructionContribution) {
+                const c = handler.getDestructionContribution(entry.scn, progress01, this.context);
+                if (c.polyFlipMask) {
+                    const intByte = clampByte(Math.round(c.intensity * 255));
+                    if (intByte > liveInfraIntensityByte)
+                        liveInfraIntensityByte = intByte;
+                    if (!livePolyFlipMask) {
+                        livePolyFlipMask = c.polyFlipMask;
+                    }
+                    else if (livePolyFlipMask.length === c.polyFlipMask.length) {
+                        // Both contribute — OR-merge into a fresh scratch so the
+                        // ratchet sees the union. Allocates once per multi-killer
+                        // frame; falls through to the single-killer fast path
+                        // otherwise.
+                        const a = livePolyFlipMask;
+                        const b2 = c.polyFlipMask;
+                        const mergedMask = new Uint8Array(a.length);
+                        for (let p = 0; p < mergedMask.length; p++) {
+                            mergedMask[p] = a[p] > b2[p] ? a[p] : b2[p];
+                        }
+                        livePolyFlipMask = mergedMask;
+                    }
+                }
+            }
+        }
+        if (livePop > this.damageLedger.populationKilled) {
+            this.damageLedger.populationKilled = livePop;
+        }
+        if (liveCities > this.damageLedger.citiesKilled) {
+            this.damageLedger.citiesKilled = liveCities;
+        }
+        if (livePolyFlipMask && liveInfraIntensityByte > 0) {
+            if (!this.damageLedger.infraDamagedByPoly ||
+                this.damageLedger.infraDamagedByPoly.length !== livePolyFlipMask.length) {
+                this.damageLedger.infraDamagedByPoly = new Uint8Array(livePolyFlipMask.length);
+            }
+            const dst = this.damageLedger.infraDamagedByPoly;
+            const src = livePolyFlipMask;
+            for (let p = 0; p < dst.length; p++) {
+                // src[p] = 255 inside flip polygons, 0 elsewhere — multiplied
+                // by the live envelope byte to get the damage this frame.
+                const live = src[p] > 0 ? liveInfraIntensityByte : 0;
+                if (live > dst[p])
+                    dst[p] = live;
+            }
+        }
+        this.damageLedger.rebuildProgress = rebuildProgress;
+    }
+    /**
+     * Auto-spawn the Distinction (`infraDecay`) and `rebuilding`
+     * scenarios. Runs every tick after the ledger update so spawn
+     * decisions see this frame's high-water marks.
+     *
+     *   Distinction — pop fully killed AND no infraDecay active.
+     *   Rebuilding — population-loss rate stayed near zero over the
+     *     stall window AND something has actually died AND not all
+     *     dead AND no infraDecay or rebuilding active.
+     */
+    checkAutoTriggers(totalDays) {
+        const totals = this.worldTotalsCache;
+        if (!totals || totals.population <= 0)
+            return;
+        let distinctionActive = false;
+        let rebuildingActive = false;
+        for (let i = 0; i < this.active.length; i++) {
+            const k = this.active[i].scn.kind;
+            if (k === 'infraDecay')
+                distinctionActive = true;
+            else if (k === 'rebuilding')
+                rebuildingActive = true;
+        }
+        const pop = totals.population;
+        const killed = this.damageLedger.populationKilled;
+        if (!distinctionActive && killed >= pop) {
+            this.start('infraDecay', {}, totalDays, INFRA_DECAY_DURATION_DAYS, {
+                label: INFRA_DECAY_LABEL,
+            });
+            return;
+        }
+        // Maintain the stall window. Drop stale samples first, then
+        // append the current one.
+        const win = ScenarioRegistry.STALL_WINDOW_DAYS;
+        const hist = this.popKilledHistory;
+        while (hist.length > 0 && totalDays - hist[0].totalDays > win)
+            hist.shift();
+        hist.push({ totalDays, value: killed });
+        if (distinctionActive || rebuildingActive)
+            return;
+        if (killed <= 0)
+            return;
+        if (killed >= pop)
+            return;
+        // Need a full window of samples before declaring a stall —
+        // otherwise the trigger fires the moment damage briefly plateaus.
+        if (hist.length < 2)
+            return;
+        if (totalDays - hist[0].totalDays < win * 0.95)
+            return;
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (let i = 0; i < hist.length; i++) {
+            const v = hist[i].value;
+            if (v < lo)
+                lo = v;
+            if (v > hi)
+                hi = v;
+        }
+        const eps = ScenarioRegistry.STALL_EPSILON_FRAC * pop;
+        if (hi - lo > eps)
+            return;
+        this.start('rebuilding', {}, totalDays, REBUILD_DURATION_DAYS, {
+            label: REBUILD_LABEL,
+        });
+    }
+    /**
+     * Bake the current rebuild progress into the ledger and reset it to
+     * 0. Called when a rebuilding scenario ends (cleanly or cancelled).
+     * Multiplying the ledger by `(1 - rebuildProgress)` preserves the
+     * rebuilt work: cities that came back stay back; a fresh killer
+     * only re-ratchets what it newly damages.
+     */
+    bakeRebuildIntoLedger() {
+        const factor = 1 - this.damageLedger.rebuildProgress;
+        if (factor >= 1)
+            return;
+        if (factor <= 0) {
+            this.damageLedger.populationKilled = 0;
+            this.damageLedger.citiesKilled = 0;
+            if (this.damageLedger.infraDamagedByPoly) {
+                this.damageLedger.infraDamagedByPoly.fill(0);
+            }
+            if (this.damageLedger.infraDamagedByCell) {
+                this.damageLedger.infraDamagedByCell.fill(0);
+            }
+        }
+        else {
+            this.damageLedger.populationKilled *= factor;
+            this.damageLedger.citiesKilled *= factor;
+            if (this.damageLedger.infraDamagedByPoly) {
+                const buf = this.damageLedger.infraDamagedByPoly;
+                for (let i = 0; i < buf.length; i++)
+                    buf[i] = clampByte(Math.round(buf[i] * factor));
+            }
+            if (this.damageLedger.infraDamagedByCell) {
+                const buf = this.damageLedger.infraDamagedByCell;
+                for (let i = 0; i < buf.length; i++)
+                    buf[i] = clampByte(Math.round(buf[i] * factor));
+            }
+        }
+        this.damageLedger.rebuildProgress = 0;
+        this.popKilledHistory.length = 0;
     }
     /**
      * Active scenarios visible to UI / `__ED.scenarios.list()`. Silent
@@ -604,9 +873,10 @@ export class ScenarioRegistry {
      * frame.
      */
     getDestructionFrame() {
-        let polyFlipMask = null;
+        // Sea level still comes from the live climate frame so natural
+        // recession follows the killer's own clock — the user explicitly
+        // wants water to recede on the geological side.
         let seaLevelM = 0;
-        let intensity = 0;
         for (let i = 0; i < this.active.length; i++) {
             const entry = this.active[i];
             const handler = this.handlers.get(entry.scn.kind);
@@ -616,34 +886,39 @@ export class ScenarioRegistry {
             const raw = elapsed / Math.max(1e-6, entry.scn.durationDays);
             const progress01 = raw < 0 ? 0 : raw > 1 ? 1 : raw;
             const c = handler.getDestructionContribution(entry.scn, progress01, this.context);
-            if (c.polyFlipMask) {
-                if (!this.destructionMaskBuffer ||
-                    this.destructionMaskBuffer.length !== c.polyFlipMask.length) {
-                    this.destructionMaskBuffer = new Uint8Array(c.polyFlipMask.length);
-                }
-                if (!polyFlipMask) {
-                    this.destructionMaskBuffer.set(c.polyFlipMask);
-                    polyFlipMask = this.destructionMaskBuffer;
-                }
-                else {
-                    const m = this.destructionMaskBuffer;
-                    const src = c.polyFlipMask;
-                    for (let p = 0; p < m.length; p++) {
-                        if (src[p] > m[p])
-                            m[p] = src[p];
-                    }
-                }
-            }
             if (c.seaLevelM > seaLevelM)
                 seaLevelM = c.seaLevelM;
-            if (c.intensity > intensity)
-                intensity = c.intensity;
         }
-        if (!polyFlipMask && this.destructionMaskBuffer) {
+        // Polygon-driven infrastructure damage now flows from the ledger —
+        // the ratchet absorbed the killer's peak and the rebuild factor
+        // drains it. Cities + highways shaders consume the resulting bytes
+        // directly; `intensity` stays at 1.0 because the byte values
+        // already encode the live envelope (pre-multiplied during the
+        // ratchet).
+        const ledgerPoly = this.damageLedger.infraDamagedByPoly;
+        let polyFlipMask = null;
+        let outIntensity = 0;
+        if (ledgerPoly) {
+            if (!this.destructionMaskBuffer ||
+                this.destructionMaskBuffer.length !== ledgerPoly.length) {
+                this.destructionMaskBuffer = new Uint8Array(ledgerPoly.length);
+            }
+            const dst = this.destructionMaskBuffer;
+            const rebuildFactor = 1 - this.damageLedger.rebuildProgress;
+            let anyNonZero = 0;
+            for (let p = 0; p < dst.length; p++) {
+                const v = clampByte(Math.round(ledgerPoly[p] * rebuildFactor));
+                dst[p] = v;
+                anyNonZero |= v;
+            }
+            polyFlipMask = dst;
+            outIntensity = anyNonZero > 0 ? 1 : 0;
+        }
+        else if (this.destructionMaskBuffer) {
             this.destructionMaskBuffer.fill(0);
             polyFlipMask = this.destructionMaskBuffer;
         }
-        return { polyFlipMask, seaLevelM, intensity };
+        return { polyFlipMask, seaLevelM, intensity: outIntensity };
     }
     /**
      * Composed cloud frame across every active scenario that emits a cloud
@@ -670,11 +945,16 @@ export class ScenarioRegistry {
     getWorldHealth() {
         const baselineShares = this.getBaselineCategoryShares();
         const citiesTotal = this.citiesCache?.length ?? 0;
-        if (this.active.length === 0) {
+        const ledger = this.damageLedger;
+        const ledgerHasDamage = ledger.populationKilled > 0 ||
+            ledger.citiesKilled > 0 ||
+            (ledger.infraDamagedByPoly !== null);
+        if (this.active.length === 0 && !ledgerHasDamage) {
             return pristineWorldHealth(baselineShares, citiesTotal);
         }
-        let popLost = 0;
-        let citiesLost = 0;
+        const rebuildFactor = 1 - ledger.rebuildProgress;
+        const popLost = ledger.populationKilled * rebuildFactor;
+        const citiesLost = ledger.citiesKilled * rebuildFactor;
         let radUnits = 0;
         let bombsActive = 0;
         let biomeQualityNetTotal = 0;
@@ -696,8 +976,8 @@ export class ScenarioRegistry {
             if (intensity <= 0)
                 continue;
             const b = entry.impactBudget;
-            popLost += b.populationAtRisk * intensity;
-            citiesLost += b.citiesAtRisk * intensity;
+            // Population and cities now come from the ledger (ratchet + drain).
+            // Radiation, biome shares, bombs remain on the live-sum path.
             radUnits += b.radiationUnits * intensity;
             biomeQualityNetTotal += b.biomeQualityNet * intensity;
             for (let c = 0; c < b.biomeChanges.length; c++) {
@@ -962,6 +1242,11 @@ export class ScenarioRegistry {
         // Per-sink composition drained its own retired bucket. Reset the
         // global counter so the tick-time short-circuit sees clean state.
         this.retiredCellsTotal = 0;
+        // Push the rebuild-drained per-cell infra ledger into the
+        // `infrastructure_loss` sink — cities + highways shaders gate on
+        // that texture, so the rebuild factor lands on the GPU at the
+        // same throttled cadence as the wasteland scar.
+        this.emitInfraLossFromLedger();
         this.dirty = false;
         this.lastComposedTotalDays = totalDays;
         this.lastComposedDecayExponent = this.tuning.decayExponent;
@@ -1028,6 +1313,14 @@ export class ScenarioRegistry {
                 const v = this.accBuf[ipix];
                 values[i] = v > 1 ? 1 : v;
             }
+            // While the wasteland frame is in-hand, ratchet per-cell damage
+            // into the ledger so the infrastructure-loss gate can drain on
+            // the same axes the LAND scar paints. The LAND scar itself keeps
+            // reading the live wasteland texture — only the cities + highways
+            // gate goes through the ledger.
+            if (sinkKey === 'wasteland') {
+                this.ratchetWastelandIntoLedger(cells, values, need);
+            }
             sink.applyFrame(cells.subarray(0, need), values.subarray(0, need));
             for (let i = 0; i < need; i++) {
                 const ipix = this.dirtyList[i];
@@ -1036,6 +1329,75 @@ export class ScenarioRegistry {
             }
             this.dirtyCount = 0;
         }
+    }
+    /**
+     * Max-merge this frame's per-cell composed wasteland values into the
+     * ledger's per-cell infra channel. Cells climb monotonically here;
+     * the rebuild drain reads them back at emit time.
+     */
+    ratchetWastelandIntoLedger(cells, values, count) {
+        if (count === 0)
+            return;
+        const npix = this.accBuf.length;
+        if (!this.damageLedger.infraDamagedByCell) {
+            this.damageLedger.infraDamagedByCell = new Uint8Array(npix);
+        }
+        if (!this.damageLedger.infraTouchedMark) {
+            this.damageLedger.infraTouchedMark = new Uint8Array(npix);
+        }
+        if (!this.damageLedger.infraTouchedCells ||
+            this.damageLedger.infraTouchedCells.length < this.damageLedger.infraTouchedCount + count) {
+            const need = this.damageLedger.infraTouchedCount + count;
+            const cap = Math.max(this.damageLedger.infraTouchedCells?.length ?? 1024, need * 2);
+            const grown = new Uint32Array(cap);
+            if (this.damageLedger.infraTouchedCells) {
+                grown.set(this.damageLedger.infraTouchedCells);
+            }
+            this.damageLedger.infraTouchedCells = grown;
+        }
+        const buf = this.damageLedger.infraDamagedByCell;
+        const mark = this.damageLedger.infraTouchedMark;
+        const touched = this.damageLedger.infraTouchedCells;
+        for (let i = 0; i < count; i++) {
+            const ipix = cells[i];
+            const v = values[i];
+            const byte = clampByte(Math.round((v > 1 ? 1 : v) * 255));
+            if (byte > buf[ipix])
+                buf[ipix] = byte;
+            if (buf[ipix] > 0 && mark[ipix] === 0) {
+                mark[ipix] = 1;
+                touched[this.damageLedger.infraTouchedCount++] = ipix;
+            }
+        }
+    }
+    /**
+     * Push the ledger's per-cell infra damage (drained by rebuild) into
+     * the `infrastructure_loss` sink. Walks the sparse touched-cells list
+     * so cost is bounded by total strike footprint, not by npix.
+     */
+    emitInfraLossFromLedger() {
+        const sink = this.sinkByKey.get('infrastructure_loss');
+        if (!sink)
+            return;
+        const buf = this.damageLedger.infraDamagedByCell;
+        const touched = this.damageLedger.infraTouchedCells;
+        const count = this.damageLedger.infraTouchedCount;
+        if (!buf || !touched || count === 0)
+            return;
+        if (this.scratchEmitCells.length < count) {
+            const cap = Math.max(this.scratchEmitCells.length * 2, count);
+            this.scratchEmitCells = new Uint32Array(cap);
+            this.scratchEmitValues = new Float32Array(cap);
+        }
+        const outCells = this.scratchEmitCells;
+        const outVals = this.scratchEmitValues;
+        const factor = 1 - this.damageLedger.rebuildProgress;
+        for (let i = 0; i < count; i++) {
+            const ipix = touched[i];
+            outCells[i] = ipix;
+            outVals[i] = (buf[ipix] / 255) * factor;
+        }
+        sink.applyFrame(outCells.subarray(0, count), outVals.subarray(0, count));
     }
     /**
      * Bake every active climate-class scenario's biome paint into the
@@ -1257,6 +1619,19 @@ export class ScenarioRegistry {
         }
     }
 }
+function clampByte(v) {
+    if (v < 0)
+        return 0;
+    if (v > 255)
+        return 255;
+    return v | 0;
+}
+function isKillerKind(kind) {
+    return (kind === 'nuclear' ||
+        kind === 'nuclearWar' ||
+        kind === 'globalWarming' ||
+        kind === 'iceAge');
+}
 function defaultLabel(kind) {
     switch (kind) {
         case 'nuclear':
@@ -1269,5 +1644,7 @@ function defaultLabel(kind) {
             return 'Nuclear war';
         case 'infraDecay':
             return 'Infrastructure Decay';
+        case 'rebuilding':
+            return 'Rebuilding';
     }
 }

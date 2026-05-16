@@ -287,11 +287,10 @@ export function createSceneGraph() {
         // each bucket's Mesh (set inside the layer) so transparent sort still
         // honours it. The Group itself is just a container.
         scene.add(highways.group);
-        // Urban-area layers: far-LOD polygon-shape glow (CitiesLayer) +
-        // near-LOD procedural streets/buildings (UrbanDetailLayer). The two
-        // are zoom-faded by `applyMaterials` — glow is full at globe view
-        // and fades out as the camera approaches; the detail layer is the
-        // mirror.
+        // Urban-area layers: far-LOD per-tier glow (CitiesLayer) + near-LOD
+        // procedural streets/buildings (UrbanDetailLayer). The two are
+        // zoom-faded by `applyMaterials` — glow is full at globe view and
+        // fades out as the camera approaches; the detail layer is the mirror.
         const urbans = w.getUrbanAreas();
         cities = new CitiesLayer(w, urbans);
         cities.setSunDirection(sunDirection);
@@ -510,8 +509,18 @@ export function createSceneGraph() {
             water.uOceanDeep.value.set(o.deepColor);
             water.uOceanShelf.value.set(o.shelfColor);
             water.uOceanShallow.value.set(o.shallowColor);
-            water.uOceanTrenchStart.value = o.trenchStart;
-            water.uOceanTrenchEnd.value = o.trenchEnd;
+            water.uOceanShallowStart.value = o.shallowStart;
+            water.uOceanShallowEnd.value = o.shallowEnd;
+            water.uOceanShallowFalloff.value = o.shallowFalloff;
+            water.uOceanShelfStart.value = o.shelfStart;
+            water.uOceanShelfEnd.value = o.shelfEnd;
+            water.uOceanShelfFalloff.value = o.shelfFalloff;
+            water.uOceanDeepStart.value = o.deepStart;
+            water.uOceanDeepEnd.value = o.deepEnd;
+            water.uOceanDeepFalloff.value = o.deepFalloff;
+            water.uOceanAbyssalStart.value = o.abyssalStart;
+            water.uOceanAbyssalEnd.value = o.abyssalEnd;
+            water.uOceanAbyssalFalloff.value = o.abyssalFalloff;
             water.uCoastalTintColor.value.set(o.coastalTintColor);
             water.uCoastalTintStrength.value = o.coastalTintStrength;
             water.uCoastalTintFalloff.value = o.coastalTintFalloff;
@@ -519,7 +528,8 @@ export function createSceneGraph() {
             water.uWaveSpeed.value = o.waveSpeed;
             water.uWaveSteepness.value = o.waveSteepness;
             water.uFresnelStrength.value = o.fresnelStrength;
-            water.uDepthFalloff.value = o.depthFalloff;
+            water.uDepthFadeStart.value = o.depthFadeStart;
+            water.uDepthFadeEnd.value = o.depthFadeEnd;
             water.uCurrentStrength.value = o.currentStrength;
             water.uCurrentTintEnabled.value = o.currentTintEnabled ? 1 : 0;
             water.uShowMediumCurrents.value = o.showMediumCurrents ? 1 : 0;

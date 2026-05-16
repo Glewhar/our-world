@@ -33,6 +33,11 @@ export {
   INFRA_DECAY_DURATION_DAYS,
   INFRA_DECAY_LABEL,
 } from './handlers/InfraDecayScenario.config.js';
+export { RebuildingScenario } from './handlers/RebuildingScenario.js';
+export {
+  REBUILD_DURATION_DAYS,
+  REBUILD_LABEL,
+} from './handlers/RebuildingScenario.config.js';
 export { NuclearWarScenario } from './handlers/NuclearWarScenario.js';
 export {
   DEFAULT_NUCLEAR_WAR_CONFIG,
@@ -57,6 +62,7 @@ export {
   decayQuickThenSlow,
   decaySustained,
   infraDecayEnvelope,
+  rebuildEnvelope,
 } from './recoveryCurves.js';
 export { pristineWorldHealth } from './healthSnapshot.js';
 export type { WorldHealthSnapshot } from './healthSnapshot.js';
@@ -78,6 +84,7 @@ export type {
   NuclearStrike,
   NuclearWarScenarioPayload,
   PaintArgs,
+  RebuildingScenarioPayload,
   Scenario,
   ScenarioCity,
   ScenarioContext,

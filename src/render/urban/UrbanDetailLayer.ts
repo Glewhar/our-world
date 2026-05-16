@@ -14,10 +14,11 @@
  *
  * Population density: the GHS-POP raster bake (Phase 2 in the plan) was
  * deferred; this layer falls back to a per-city heuristic — denser /
- * taller buildings near the polygon centroid, falling off radially —
- * scaled by the city's `pop` so a megacity shows skyscrapers and a
- * mid-tier city shows mostly low-rise. When GHS-POP later lands, swap
- * `sampleDensity()` for a real raster lookup; no other code changes.
+ * taller buildings near the city centroid, falling off radially across
+ * the outermost (suburban) SMOD tier polygon — scaled by the city's
+ * `pop` so a megacity shows skyscrapers and a mid-tier city shows mostly
+ * low-rise. When GHS-POP later lands, swap `sampleDensity()` for a real
+ * raster lookup; no other code changes.
  */
 
 import * as THREE from 'three';

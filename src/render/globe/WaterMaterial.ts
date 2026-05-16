@@ -219,18 +219,28 @@ uniform vec3 uOceanAbyssal;
 uniform vec3 uOceanDeep;
 uniform vec3 uOceanShelf;
 uniform vec3 uOceanShallow;
-// Exponential depth-falloff scale (m) for the shallow stop only. Shelf
-// uses a fixed 350 m falloff so the band stays at a realistic continental
-// shelf scale; the shallow falloff is the most visible knob so it's the
-// one we expose.
-uniform float uDepthFalloff;
-// Smoothstep band (m) over which \`uOceanAbyssal\` blends in for trenches.
-// Below \`uOceanTrenchStart\` the colour is pure \`uOceanDeep\`; above
-// \`uOceanTrenchEnd\` it's pure \`uOceanAbyssal\`. Earth's abyssal plain is
-// 3–5 km and most major trenches are 6–11 km, so a 5000 → 9000 m gate
-// keeps abyssal restricted to the deepest features.
-uniform float uOceanTrenchStart;
-uniform float uOceanTrenchEnd;
+// Per-band (start, end, falloff) gradient model. For each colour band:
+//   start   = depth (m) below which weight is 0
+//   end     = depth (m) where weight ramps to peak (1)
+//   falloff = exponential decay scale (m) past \`end\`
+// Layered mix from deep baseline → abyssal → deep → shelf → shallow.
+uniform float uOceanShallowStart;
+uniform float uOceanShallowEnd;
+uniform float uOceanShallowFalloff;
+uniform float uOceanShelfStart;
+uniform float uOceanShelfEnd;
+uniform float uOceanShelfFalloff;
+uniform float uOceanDeepStart;
+uniform float uOceanDeepEnd;
+uniform float uOceanDeepFalloff;
+uniform float uOceanAbyssalStart;
+uniform float uOceanAbyssalEnd;
+uniform float uOceanAbyssalFalloff;
+// Depth window (m) over which the shallow→deep behavior switch happens:
+// fresnel transitions from coastal-strength to open-ocean-strength and
+// the big rolling ripples fade in. NOT a colour stop.
+uniform float uDepthFadeStart;
+uniform float uDepthFadeEnd;
 
 // Coastal sediment / chlorophyll tint. Real shallow water carries a
 // greenish cast from algae and river runoff that pure-blue ramps can't
@@ -315,6 +325,18 @@ float wn_fbm(vec3 p, int octaves) {
     a *= 0.5;
   }
   return v;
+}
+
+// Per-band depth weight for the layered ocean colour gradient.
+//   start   — depth (m) below which weight is 0
+//   end     — depth (m) where weight ramps to peak (1)
+//   falloff — exponential decay scale (m) past \`end\`
+// Returns weight in [0, 1]: 0 below start, smoothstep ramp to 1 between
+// start and end, then exp(-(d-end)/falloff) decay past end.
+float bandWeight(float depth, float start, float end, float falloff) {
+  float gate = smoothstep(start, end, depth);
+  float decay = exp(-max(depth - end, 0.0) / max(falloff, 1.0));
+  return gate * decay;
 }
 
 // Sample the atmosphere's sky-view LUT in a world-space view direction.
@@ -443,19 +465,21 @@ void main() {
   // water surface (continents, exposed seafloor when slider drops) wins
   // via its outward vertex displacement; elsewhere water paints.
 
-  // Layered ocean gradient. \`uOceanDeep\` is the open-ocean baseline that
-  // most of the world ocean reads as. Shelf + shallow blend up via exp
-  // falloffs as depth drops toward the coast; abyssal blends in via a
-  // smoothstep gate restricted to trench-grade depths so it doesn't
-  // smother the typical 3-4 km abyssal-plain depth.
+  // Layered ocean gradient. Each band has independent (start, end,
+  // falloff) — see uniform comments. Band weight ramps 0→1 between
+  // start and end via smoothstep, then exp-decays past end with scale
+  // \`falloff\`. Deep is the baseline; abyssal/deep/shelf/shallow are
+  // mixed on top in order of increasing dominance toward the coast.
   float depth = max(vWaterSurface - landElev, 0.0);
-  float wShelf   = exp(-depth /  350.0);
-  float wShallow = exp(-depth / uDepthFalloff);
+  float wShallow = bandWeight(depth, uOceanShallowStart, uOceanShallowEnd, uOceanShallowFalloff);
+  float wShelf   = bandWeight(depth, uOceanShelfStart,   uOceanShelfEnd,   uOceanShelfFalloff);
+  float wDeep    = bandWeight(depth, uOceanDeepStart,    uOceanDeepEnd,    uOceanDeepFalloff);
+  float wAbyssal = bandWeight(depth, uOceanAbyssalStart, uOceanAbyssalEnd, uOceanAbyssalFalloff);
   vec3 base = uOceanDeep;
+  base = mix(base, uOceanAbyssal, wAbyssal);
+  base = mix(base, uOceanDeep,    wDeep);
   base = mix(base, uOceanShelf,   wShelf);
   base = mix(base, uOceanShallow, wShallow);
-  float trenchT = smoothstep(uOceanTrenchStart, uOceanTrenchEnd, depth);
-  base = mix(base, uOceanAbyssal, trenchT);
 
   // Coastal sediment / chlorophyll cast — green-teal tint over the
   // shallowest band only. River deltas (Amazon, Ganges, Mississippi)
@@ -466,7 +490,7 @@ void main() {
   // Depth-varying Fresnel: shallow/coast water reflects the sky more
   // strongly than open ocean. 0.3 at coast → 0.1 in deep water.
   // \`uFresnelStrength\` (Tweakpane) scales the result on top.
-  float depthFade = smoothstep(0.0, 400.0, depth);
+  float depthFade = smoothstep(uDepthFadeStart, uDepthFadeEnd, depth);
   float fresnelMix = mix(0.3, 0.1, depthFade);
 
   // Sample local current for a static (non-accumulating) warp of the
@@ -627,19 +651,36 @@ export type WaterUniforms = {
   uOceanDeep: { value: THREE.Color };
   uOceanShelf: { value: THREE.Color };
   uOceanShallow: { value: THREE.Color };
-  /** Trench gate start depth (m). Below this, no abyssal mixed in. */
-  uOceanTrenchStart: { value: number };
-  /** Trench gate end depth (m). Above this, fully abyssal. */
-  uOceanTrenchEnd: { value: number };
+  /** Per-band depth gradient. (start, end, falloff) per colour band — see
+   * `bandWeight` in the fragment shader.
+   *   start   = depth (m) below which the band's weight is 0
+   *   end     = depth (m) where the band reaches peak weight (1)
+   *   falloff = exponential decay scale (m) past `end`
+   */
+  uOceanShallowStart: { value: number };
+  uOceanShallowEnd: { value: number };
+  uOceanShallowFalloff: { value: number };
+  uOceanShelfStart: { value: number };
+  uOceanShelfEnd: { value: number };
+  uOceanShelfFalloff: { value: number };
+  uOceanDeepStart: { value: number };
+  uOceanDeepEnd: { value: number };
+  uOceanDeepFalloff: { value: number };
+  uOceanAbyssalStart: { value: number };
+  uOceanAbyssalEnd: { value: number };
+  uOceanAbyssalFalloff: { value: number };
   /** Coastal sediment / chlorophyll cast — mixed over the shallowest band. */
   uCoastalTintColor: { value: THREE.Color };
   /** 0 disables the tint; 0.25 is the default subtle cast; 1 saturates. */
   uCoastalTintStrength: { value: number };
-  /** Exponential falloff scale (m) for the coastal tint. 80 m by default. */
+  /** Exponential falloff scale (m) for the coastal tint. */
   uCoastalTintFalloff: { value: number };
-  /** Exponential depth-falloff scale (m). depthT = exp(-depth / k).
-   * Smaller = sharper/narrower shelves, larger = softer/wider shelves. */
-  uDepthFalloff: { value: number };
+  /** Depth (m) where the shallow→deep transition begins. Below this the
+   * fresnel and ripples behave as pure shallow / coast. */
+  uDepthFadeStart: { value: number };
+  /** Depth (m) where the shallow→deep transition completes. Above this
+   * the fresnel and ripples behave as pure open ocean. */
+  uDepthFadeEnd: { value: number };
 
   // M-water — Gerstner waves. `uTime` is driven by the scene-graph update
   // loop; the rest are exposed in Tweakpane (Materials → Ocean).
@@ -723,12 +764,23 @@ export function createWaterMaterial(): THREE.ShaderMaterial & {
     uOceanDeep: { value: new THREE.Color(o.deepColor) },
     uOceanShelf: { value: new THREE.Color(o.shelfColor) },
     uOceanShallow: { value: new THREE.Color(o.shallowColor) },
-    uOceanTrenchStart: { value: o.trenchStart },
-    uOceanTrenchEnd: { value: o.trenchEnd },
+    uOceanShallowStart: { value: o.shallowStart },
+    uOceanShallowEnd: { value: o.shallowEnd },
+    uOceanShallowFalloff: { value: o.shallowFalloff },
+    uOceanShelfStart: { value: o.shelfStart },
+    uOceanShelfEnd: { value: o.shelfEnd },
+    uOceanShelfFalloff: { value: o.shelfFalloff },
+    uOceanDeepStart: { value: o.deepStart },
+    uOceanDeepEnd: { value: o.deepEnd },
+    uOceanDeepFalloff: { value: o.deepFalloff },
+    uOceanAbyssalStart: { value: o.abyssalStart },
+    uOceanAbyssalEnd: { value: o.abyssalEnd },
+    uOceanAbyssalFalloff: { value: o.abyssalFalloff },
     uCoastalTintColor: { value: new THREE.Color(o.coastalTintColor) },
     uCoastalTintStrength: { value: o.coastalTintStrength },
     uCoastalTintFalloff: { value: o.coastalTintFalloff },
-    uDepthFalloff: { value: o.depthFalloff },
+    uDepthFadeStart: { value: o.depthFadeStart },
+    uDepthFadeEnd: { value: o.depthFadeEnd },
 
     uTime: { value: 0 },
     uWaveAmplitude: { value: o.waveAmplitude },

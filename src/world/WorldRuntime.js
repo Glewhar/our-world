@@ -31,7 +31,6 @@ import { zPhiToPix } from './healpix.js';
 import { loadManifest } from './manifest-loader.js';
 import { OceanCurrentsTexture } from './OceanCurrentsTexture.js';
 import { WindFieldTexture } from './WindFieldTexture.js';
-import { legacyToTieredRecord } from './urban-areas.js';
 const DEG = Math.PI / 180;
 const ZERO_AGGREGATES = {
     human_population: 0,
@@ -351,12 +350,10 @@ async function loadUrbanAreasArtifact(url) {
             console.warn(`[urban_areas] missing 'urban_areas' array in ${url}`);
             return [];
         }
-        // v1 ships a single outer-ring `polygon` per record; back-fill density
-        // tiers at load time so the render layer only ever sees the v2 shape.
-        // The cast is the single point where v1/v2 shapes are disambiguated.
         if (file.version !== 2) {
-            const legacy = file.urban_areas;
-            return legacy.map(legacyToTieredRecord);
+            console.warn(`[urban_areas] unsupported version ${file.version} from ${url} ` +
+                `(expected 2 — re-bake with the current pipeline)`);
+            return [];
         }
         return file.urban_areas;
     }

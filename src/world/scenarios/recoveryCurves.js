@@ -62,6 +62,18 @@ export function infraDecayEnvelope(progress01) {
     return Math.pow(p, 1.5);
 }
 /**
+ * Rebuilding envelope: monotonic 0 → 1 over the scenario's lifetime.
+ * Drives `damageLedger.rebuildProgress` — the registry multiplies the
+ * ledger by `(1 - rebuildProgress)` on read, so this is the fraction of
+ * accumulated damage already healed back. Same `p^1.5` shape as the
+ * infra-decay envelope: slow onset (calm regrowth), accelerates near
+ * the end so the planet visibly finishes recovering.
+ */
+export function rebuildEnvelope(progress01) {
+    const p = progress01 < 0 ? 0 : progress01 > 1 ? 1 : progress01;
+    return Math.pow(p, 1.5);
+}
+/**
  * Climate envelope: linear rise → plateau at 1 → linear fall.
  *
  *   - 0 → 1 over first `riseFrac` of lifetime (default 10%)

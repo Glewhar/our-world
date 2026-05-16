@@ -1,15 +1,17 @@
 /**
- * Cities layer — far-LOD polygon-shape glow that paints every urban-area
- * polygon as a soft, organically-textured patch tangent to the globe.
+ * Cities layer — far-LOD per-tier glow that paints every GHS-SMOD
+ * density tier of every urban area as a soft, organically-textured
+ * patch tangent to the globe.
  *
- * Geometry: each polygon is triangulated at construction (earcut via
- * `THREE.ShapeUtils.triangulateShape`) into a real triangle mesh in the
- * city's tangent frame, then merged into one BufferGeometry per spatial
- * bucket. Per-vertex attributes carry the tangent-frame km coordinate
- * (`aLocalKm`), the city's half-extent (`aHalfExtentKm`), population,
- * and pattern seed. The fragment shader paints the existing organic
- * block-spray pattern — no per-fragment point-in-polygon loop, no
- * wasted fragments outside the polygon.
+ * Geometry: each density tier polygon is triangulated at construction
+ * (earcut via `THREE.ShapeUtils.triangulateShape`) into a real triangle
+ * mesh in the city's tangent frame, then merged into one BufferGeometry
+ * per spatial bucket. Per-vertex attributes carry the tangent-frame km
+ * coordinate (`aLocalKm`), the tier's half-extent (`aHalfExtentKm`),
+ * population, pattern seed, and the tier's SMOD density (`aDensity`).
+ * The fragment shader reads density directly so suburb tiers paint
+ * sparser/dimmer blocks while centre tiers paint at full intensity —
+ * no per-fragment point-in-polygon loop, no centroid-out fade math.
  *
  * Spatial bucketing: cities are split into NUM_LAT × NUM_LON buckets by
  * centroid lat/lon. Each non-empty bucket becomes its own Mesh with a
@@ -25,13 +27,15 @@ import { source as healpixGlsl } from '../globe/shaders/healpix.glsl.js';
 import { source as hazeGlsl } from '../atmosphere/shaders/haze.glsl.js';
 import { DEFAULT_ELEVATION_SCALE } from '../globe/LandMaterial.js';
 
-const CITIES_VERT = `// Cities vertex shader — triangulated polygon mesh.
+const CITIES_VERT = `// Cities vertex shader — triangulated per-tier polygon mesh.
 //
-// Each polygon vertex carries its own unit-sphere position plus the
-// per-vertex tangent-frame (x_km, y_km) coordinate \`aLocalKm\` (computed
-// at construction in CitiesLayer.ts). The fragment shader uses
-// \`vLocalKm\` directly to drive the block-spray hashing — no shared
-// quad envelope, no per-fragment point-in-polygon test.
+// Each vertex carries its own unit-sphere position plus the per-vertex
+// tangent-frame (x_km, y_km) coordinate \`aLocalKm\` and the SMOD tier
+// density \`aDensity\` (computed at construction in CitiesLayer.ts). The
+// fragment shader uses \`vLocalKm\` to drive the block-spray hashing and
+// \`vDensity\` to scale the block-spray rate, outline weight, and alpha
+// per tier — no shared quad envelope, no per-fragment point-in-polygon
+// test.
 //
 // Radial lift: pre-baked CPU-side into the per-vertex
 // \`aLiftMeters\` attribute (see web/src/render/util/elevation-lift-bake.ts),
@@ -79,15 +83,14 @@ void main() {
 }
 `;
 
-const CITIES_FRAG = `// Cities fragment shader — triangulated polygon mesh.
+const CITIES_FRAG = `// Cities fragment shader — triangulated per-tier polygon mesh.
 //
-// The geometry IS the polygon now (triangulated CPU-side, see
-// CitiesLayer.ts), so there's no point-in-polygon loop and no
-// per-instance bbox reject — every shaded fragment is already inside
-// its city's polygon. The fragment paints the organic block-spray +
-// warm tungsten night palette using the interpolated tangent-frame
-// km coordinate, normalised by the city's half-extent for the
-// radial-density falloff.
+// Each fragment belongs to one GHS-SMOD density tier (urban centre /
+// dense / semi-dense / suburban) and carries that tier's density as a
+// per-vertex attribute. The painter reads density directly from the
+// data — block-spray rate, outline weight and alpha all scale with it,
+// so suburb tiers paint sparser, thinner, dimmer blocks while centre
+// tiers paint at full intensity across their entire footprint.
 //
 // Coastline-clipped via the same HEALPix id raster the land/water
 // meshes use, so a coastal polygon never paints onto ocean cells.
@@ -172,11 +175,11 @@ void main() {
   int ipx = healpixZPhiToPix(uHealpixNside, uHealpixOrdering, sphereDir.z, atan(sphereDir.y, sphereDir.x));
   ivec2 tx = healpixIpixToTexel(ipx, uAttrTexWidth);
 
-  // Wasteland kill — per-city threshold sweeps as wasteland decays, so
-  // cities pop back one-by-one rather than fading in unison.
-  // Climate-driven destruction (flooded coast, glaciated polygons) feeds
-  // a parallel infrastructure_loss field; both gate the same threshold.
-  float wasteland = texelFetch(uWastelandTex, tx, 0).r;
+  // City + highway destruction gate is now ledger-backed. The ledger
+  // ratchets nuke + climate damage up while killers run and drains
+  // back through the rebuilding scenario — so a killer's natural fade
+  // no longer makes cities regrow. The LAND shader still reads the
+  // live wasteland texture for the scar visual.
   float infra = texelFetch(uInfraLossTex, tx, 0).r;
 
   // Climate destruction gate. Off when no polygon data shipped or intensity is 0.
@@ -204,7 +207,7 @@ void main() {
     infraClimate = max(flipped, drowned) * uDestructionIntensity;
   }
 
-  if (max(max(wasteland, infra), infraClimate) > seedToThreshold(vPatternSeed)) discard;
+  if (max(infra, infraClimate) > seedToThreshold(vPatternSeed)) discard;
 
   vec2 localKm = vLocalKm;
 
@@ -230,7 +233,7 @@ void main() {
   // 1.0 = urban centre, 0.75 = dense cluster, 0.5 = semi-dense,
   // 0.25 = suburban. The painter's block-spray, outline weight, and alpha
   // all read this uniformly — sparser/dimmer blocks in suburb tiers, full
-  // intensity in the centre tier, with no centroid bias.
+  // intensity across the entire centre tier.
   float density = vDensity;
 
   float blockExists = step(uBlockThreshold + (1.0 - density), h);
@@ -609,16 +612,17 @@ function bucketByCentroid(records: readonly UrbanAreaRecord[]): UrbanAreaRecord[
 }
 
 /**
- * Triangulate every polygon in the bucket and merge into a single
- * BufferGeometry. Per-vertex attributes carry the tangent-frame km
- * coordinate, the per-city half-extent, population, and pattern seed.
+ * Triangulate every density tier of every city in the bucket and merge
+ * into a single BufferGeometry. Per-vertex attributes carry the
+ * tangent-frame km coordinate, the tier's half-extent, population,
+ * pattern seed, and SMOD density.
  *
  * Also returns the bucket's mean centroid direction (unit vector from
  * origin to the average vertex position) — used by the layer's per-
  * frame hemisphere-visibility test.
  *
  * Returns null if the bucket triangulates to zero triangles (every
- * polygon was degenerate).
+ * tier polygon was degenerate).
  */
 function buildBucketGeometry(
   records: UrbanAreaRecord[],
