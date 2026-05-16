@@ -122,6 +122,43 @@ export async function createWorldRuntime(opts = {}) {
     const bridge = new WorkerBridge();
     const tmpHit = new THREE.Vector3();
     const unitSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1);
+    // Lazy per-HEALPix-cell polygon lookup. Built once on first call by
+    // walking the equirect polygon raster: each pixel maps to a HEALPix
+    // cell via `zPhiToPix`; the polygon id written into `polygonByCell`
+    // is the last nonzero polygon seen (land overwrites ocean / no-data).
+    // ~33M ops at boot; ~25 MB peak memory (Uint16Array sized to npix).
+    // Climate-destruction scenarios use this to find cells inside
+    // polygons projected to flip to ICE / DESERT without an inverse
+    // HEALPix function.
+    const npix = 12 * nside * nside;
+    let polygonByCell = null;
+    const buildPolygonByCell = () => {
+        if (polygonByCell)
+            return polygonByCell;
+        const out = new Uint16Array(npix);
+        const w = polygon.lookup.rasterWidth;
+        const h = polygon.lookup.rasterHeight;
+        const bytes = polygon.bytes;
+        for (let py = 0; py < h; py++) {
+            const lat = 90 - (py + 0.5) * (180 / h);
+            const z = Math.sin(lat * DEG);
+            for (let px = 0; px < w; px++) {
+                const byteIdx = (py * w + px) * 2;
+                const lo = bytes[byteIdx] ?? 0;
+                const hi = bytes[byteIdx + 1] ?? 0;
+                const id = lo | (hi << 8);
+                if (id === 0)
+                    continue;
+                const lon = -180 + (px + 0.5) * (360 / w);
+                const phi = lon * DEG;
+                const ipix = zPhiToPix(nside, ordering, z, phi);
+                if (ipix >= 0 && ipix < npix)
+                    out[ipix] = id;
+            }
+        }
+        polygonByCell = out;
+        return out;
+    };
     // C2 callback bookkeeping — these never fire in Phase 2 (no sim).
     const attrListeners = new Set();
     const topoListeners = new Set();
@@ -168,6 +205,7 @@ export async function createWorldRuntime(opts = {}) {
             return attributes.getElevationMetersAtCell(cellIndex);
         },
         getElevationMetersAtCell: (ipix) => attributes.getElevationMetersAtCell(ipix),
+        getLandFraction: (seaLevelM) => attributes.getLandFraction(seaLevelM),
         getBodyIndexAtCell: (ipix) => idRaster.bodyIndexAtCell(ipix),
         getWindAt: (lat, lon) => (windField ? windField.sample(lat, lon) : null),
         getIdRaster: () => idRaster.toDataTexture(),
@@ -179,6 +217,11 @@ export async function createWorldRuntime(opts = {}) {
         getDistanceFieldTexture: () => (distanceField ? distanceField.texture : null),
         getPolygonTexture: () => polygon.getPolygonTexture(),
         getPolygonLookup: () => polygon.lookup,
+        getPolygonOfCell: (ipix) => {
+            const arr = polygonByCell ?? buildPolygonByCell();
+            return ipix >= 0 && ipix < arr.length ? arr[ipix] : 0;
+        },
+        getPolygonIdAt: (lat, lon) => polygon.getPolygonIdAt(lat, lon),
         getPolygonOverrideClassTexture: (slot) => polygon.getClassByPolygonTexture(slot),
         getPolygonOverrideWeightTexture: (slot) => polygon.getWeightByPolygonTexture(slot),
         getPolygonOverrideTStart01Texture: (slot) => polygon.getTStart01ByPolygonTexture(slot),

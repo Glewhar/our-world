@@ -8,10 +8,9 @@
  *   3. createSceneGraph (no canvas yet — picking binds in attachWorld)
  *   4. new Renderer(host, sceneGraph) — creates the canvas
  *   5. sceneGraph.attachWorld(world, renderer.canvas) — wires picking
- *   6. hide overlay; start RAF loop
- *
- * On boot failure (manifest missing, schema invalid, asset 404): the overlay
- * stays up and shows the error text instead of the spinner.
+ *   6. mount UI modules (topbar, subtle-stack, disaster-rail, status-panel,
+ *      active-events popover, settings sheet)
+ *   7. hide overlay; start RAF loop
  */
 import * as THREE from 'three';
 import { Renderer } from './render/Renderer.js';
@@ -23,9 +22,14 @@ import { setAttributeEvent } from './sim/events/primitives.js';
 import { GlobalWarmingScenario, IceAgeScenario, NuclearScenario, NuclearWarScenario, ScenarioRegistry, } from './world/scenarios/index.js';
 import { DEFAULT_NUCLEAR_WAR_CONFIG } from './world/scenarios/handlers/NuclearWarScenario.config.js';
 import { DEFAULT_NUCLEAR_CONFIG } from './world/scenarios/handlers/NuclearScenario.config.js';
-import { mountScenarioCards } from './ui/scenario-cards.js';
-import { mountScenariosLauncher } from './ui/scenarios-launcher.js';
-import { mountHealthHud } from './ui/health-hud.js';
+import { DEFAULT_GLOBAL_WARMING_CONFIG } from './world/scenarios/handlers/GlobalWarmingScenario.config.js';
+import { DEFAULT_ICE_AGE_CONFIG } from './world/scenarios/handlers/IceAgeScenario.config.js';
+import { mountTopbar } from './ui/topbar.js';
+import { mountDisasterRail } from './ui/disaster-rail.js';
+import { mountStatusPanel } from './ui/status-panel.js';
+import { mountSubtleStack } from './ui/subtle-stack.js';
+import { mountActiveEvents } from './ui/active-events-chip.js';
+import { mountSettingsSheet } from './ui/settings-sheet.js';
 const host = document.getElementById('app');
 const loading = document.getElementById('loading');
 if (!host)
@@ -43,14 +47,8 @@ async function boot() {
     const sceneGraph = createSceneGraph();
     const renderer = new Renderer(host, sceneGraph);
     sceneGraph.attachWorld(world, renderer.canvas);
-    // Auto-tune: measure real GPU cost behind the loading overlay (canvas is
-    // live but the overlay still covers it), then disable expensive layers on
-    // weaker systems before Tweakpane and the floating toggle bar bind to
-    // state. No persistence — every launch re-probes from scratch.
     const probe = await runGpuProbe(renderer, sceneGraph, initialDebugState);
     applyTier(initialDebugState, probe.tier);
-    // Apply the auto-picked render scale BEFORE the first real render-loop
-    // frame. The settings panel can override this live afterward.
     renderer.setRenderScale(initialDebugState.renderScale);
     const autoRenderScale = initialDebugState.renderScale;
     const autoTierName = tierName(probe.tier);
@@ -65,44 +63,48 @@ async function boot() {
             planes: initialDebugState.layers.planes,
         })}`);
     const debug = createDebugPanel(initialDebugState);
-    // Scenario registry — owns the active scenario list and composes the
-    // wasteland attribute texture each frame from per-scenario stamps.
-    // Decoupled from Tweakpane state so the registry has no dependency on
-    // the debug layer; `scenarioRegistry.tuning.decayExponent` is pushed
-    // each frame from `debug.state.scenarios.decayExponent`.
+    let pausedBeforeContextLoss = false;
+    renderer.onContextLost = () => {
+        pausedBeforeContextLoss = debug.state.timeOfDay.paused;
+        debug.state.timeOfDay.paused = true;
+        if (loading) {
+            loading.classList.remove('hidden');
+            const text = document.getElementById('loading-text');
+            if (text)
+                text.textContent = 'GPU context lost — waiting for restore…';
+        }
+    };
+    renderer.onContextRestored = () => {
+        if (loading) {
+            loading.classList.add('hidden');
+            const text = document.getElementById('loading-text');
+            if (text)
+                text.textContent = 'loading world…';
+        }
+        debug.state.timeOfDay.paused = pausedBeforeContextLoss;
+    };
+    // --- Scenario registry --------------------------------------------------
     const { nside: hpNside, ordering: hpOrdering } = world.getHealpixSpec();
     const scenarioContext = {
         sampleWindAt: (lat, lon) => world.getWindAt(lat, lon),
         sampleTerrainAt: (lat, lon) => ({
-            // World runtime clamps negative elevation to 0 internally for cells
-            // marked ocean — but match the historical scene-graph behaviour and
-            // clamp here as belt-and-braces. The wasteland blast's altitude lift
-            // never wants a negative value (below-sea-level points should fire
-            // at radius 1.0, not at radius 0.99).
             elevationM: Math.max(0, world.getElevationMetersAt(lat, lon)),
             wind: world.getWindAt(lat, lon),
         }),
         detonateAt: (latDeg, lonDeg, terrain, sizeKm) => {
-            // Z-up convention matches the bake's lonlat_to_xyz.
             const latRad = (latDeg * Math.PI) / 180;
             const lonRad = (lonDeg * Math.PI) / 180;
             const cosLat = Math.cos(latRad);
             const dir = new THREE.Vector3(cosLat * Math.cos(lonRad), cosLat * Math.sin(lonRad), Math.sin(latRad));
             sceneGraph.detonateAt(dir, terrain.elevationM, terrain.wind, sizeKm);
         },
-        paintAttributeEllipse: () => {
-            // The registry intercepts paint calls during onStart so the stamp
-            // is captured locally. Outside that window, fall through to a
-            // no-op — handlers shouldn't paint anywhere else for v1.
-        },
-        paintAttributeBand: () => {
-            // Same story as paintAttributeEllipse — the registry intercepts
-            // band paints during onStart; outside that window, no-op. Climate
-            // scenarios call this from onStart to stamp zonal biome-override
-            // belts (tundra creep, mid-latitude desert expansion, etc.).
-        },
-        // The registry intercepts this internally — the user-level fallback
-        // is just a no-op so the context interface stays satisfied.
+        paintAttributeEllipse: () => { },
+        paintAttributeBand: () => { },
+        paintAttributeCells: () => { },
+        getElevationMetersAtCell: (ipix) => world.getElevationMetersAtCell(ipix),
+        getPolygonOfCell: (ipix) => world.getPolygonOfCell(ipix),
+        getCellCount: () => 12 * hpNside * hpNside,
+        getPolygonLookup: () => world.getPolygonLookup(),
         spawnChildScenario: () => '',
         stopChildScenario: () => { },
         setWorldEffect: (name, scale) => {
@@ -122,6 +124,7 @@ async function boot() {
             }
             return out;
         },
+        getRoadCount: () => world.getRoads().length,
         getSeaLevelMultiplier: () => debug.state.scenarios.seaLevelMultiplier,
     };
     const scenarioRegistry = new ScenarioRegistry({
@@ -130,11 +133,17 @@ async function boot() {
                 key: 'wasteland',
                 applyFrame: (cells, values) => world.applyDynamicAttributeFrame('wasteland', cells, values),
             },
+            {
+                key: 'infrastructure_loss',
+                applyFrame: (cells, values) => world.applyDynamicAttributeFrame('infrastructure_loss', cells, values),
+            },
         ],
         biomeOverrideSink: {
             bakeBiomeOverrideStamps: (input) => world.bakeBiomeOverrideStamps(input),
             countBiomesGlobal: () => world.countBiomesGlobal(),
             getElevationMetersAtCell: (ipix) => world.getElevationMetersAtCell(ipix),
+            getPolygonOfCell: (ipix) => world.getPolygonOfCell(ipix),
+            getPolygonIdAt: (lat, lon) => world.getPolygonIdAt(lat, lon),
             getPolygonLookup: () => world.getPolygonLookup(),
             bakePolygonOverride: (slot, c, w, t) => world.bakePolygonOverride(slot, c, w, t),
             clearPolygonOverrideSlot: (slot) => world.clearPolygonOverrideSlot(slot),
@@ -142,9 +151,6 @@ async function boot() {
         context: scenarioContext,
         nside: hpNside,
         ordering: hpOrdering,
-        // Dispatch stamp compute to the sim worker so a 70-strike Nuclear
-        // War's onStart doesn't freeze the page for a hundred milliseconds.
-        // The scar appears one frame after the fireball; user-accepted.
         requestStamp: (kind, args, n, o) => kind === 'ellipse'
             ? sim.requestStamp('ellipse', args, n, o)
             : sim.requestStamp('band', args, n, o),
@@ -153,232 +159,60 @@ async function boot() {
     scenarioRegistry.registerHandler('globalWarming', GlobalWarmingScenario);
     scenarioRegistry.registerHandler('iceAge', IceAgeScenario);
     scenarioRegistry.registerHandler('nuclearWar', NuclearWarScenario);
-    // Mount the floating scenario card stack (top-right, below the date readout).
-    // The host div is declared in index.html; mountScenarioCards reconciles
-    // against scenarioRegistry.list() every frame in the RAF loop below.
-    const scenarioCards = mountScenarioCards(document.getElementById('scenario-stack'), scenarioRegistry, () => debug.state.scenarios.seaLevelMultiplier);
-    // Bottom-center health-bar HUD — three bars (Biome / Civilization /
-    // Radiation) reading `scenarioRegistry.getWorldHealth()` per frame.
-    const healthHud = mountHealthHud(document.getElementById('health-hud'), scenarioRegistry);
-    // Floating top-left time card (pause button + HH:MM readout + date
-    // label) and the top-right Tweakpane toggle. All are static elements
-    // declared in index.html; here we bind them to debug state. The
-    // 24-hour clock dial was removed — the digital readout already covers
-    // it and the dragging UX wasn't worth the visual real estate.
-    const timeReadout = document.getElementById('time-readout');
-    const timePause = document.getElementById('time-pause');
-    const paneToggle = document.getElementById('tweakpane-toggle');
-    const paneHost = document.getElementById('tweakpane-host');
-    const sealevelSlider = document.getElementById('sealevel-slider');
-    const sealevelReadout = document.getElementById('sealevel-readout');
-    const dateReadout = document.getElementById('date-readout');
-    const seasonSun = document.getElementById('season-sun');
-    // Only Clouds remains on the floating bottom bar — the rest (ocean,
-    // atmosphere, highways, planes) moved into their Tweakpane sub-folders
-    // as header toggles with reset chips.
-    const toggleClouds = document.getElementById('toggle-clouds');
-    if (toggleClouds) {
-        toggleClouds.checked = debug.state.layers.clouds;
-        toggleClouds.addEventListener('change', () => {
-            debug.state.layers.clouds = toggleClouds.checked;
-            debug.pane.refresh();
-        });
-    }
-    // FPS counter toggle — drives `#fps-counter` visibility (see frame loop
-    // below). Settings-panel mirror of the same state the Tweakpane used to
-    // expose; FPS is a user-facing stat, not a debug knob.
-    const toggleFps = document.getElementById('toggle-fps');
-    if (toggleFps) {
-        toggleFps.checked = debug.state.debug.fpsCounter;
-        toggleFps.addEventListener('change', () => {
-            debug.state.debug.fpsCounter = toggleFps.checked;
-        });
-    }
-    const refreshSealevelReadout = (v) => {
-        if (sealevelReadout) {
-            const sign = v > 0 ? '+' : '';
-            sealevelReadout.textContent = `${sign}${Math.round(v)} m`;
-        }
-    };
-    const formatTimeOfDay = (t01) => {
-        const total = t01 * 24;
-        const hh = Math.floor(total) % 24;
-        // Floor minutes to a 10-minute step so the readout ticks 00:10, 00:20…
-        // rather than flickering every second.
-        const mm = Math.floor((total - Math.floor(total)) * 6) * 10;
-        return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
-    };
-    const refreshClock = (t01) => {
-        if (timeReadout)
-            timeReadout.textContent = formatTimeOfDay(t01);
-    };
-    refreshClock(debug.state.timeOfDay.t01);
-    // Pause icon: two vertical bars; Play icon: right-pointing triangle
-    // offset rightward so the visual centroid sits at the circle's centre
-    // (a flat-back triangle's centroid is 1/3 from the base, not 1/2).
-    const PAUSE_SVG = '<svg viewBox="0 0 20 20" aria-hidden="true">' +
-        '<rect x="5" y="3.5" width="3.5" height="13" rx="1"/>' +
-        '<rect x="11.5" y="3.5" width="3.5" height="13" rx="1"/>' +
-        '</svg>';
-    const PLAY_SVG = '<svg viewBox="0 0 20 20" aria-hidden="true">' +
-        '<path d="M6 3.5 L16 10 L6 16.5 Z"/>' +
-        '</svg>';
-    const refreshPauseIcon = () => {
-        if (!timePause)
-            return;
-        timePause.innerHTML = debug.state.timeOfDay.paused ? PLAY_SVG : PAUSE_SVG;
-        timePause.setAttribute('aria-label', debug.state.timeOfDay.paused ? 'Resume time' : 'Pause time');
-    };
-    refreshPauseIcon();
-    if (timePause) {
-        timePause.addEventListener('click', () => {
-            debug.state.timeOfDay.paused = !debug.state.timeOfDay.paused;
-            refreshPauseIcon();
-            // Tweakpane caches the checkbox value; force a redraw so the panel
-            // reflects the new state if the user opens it.
-            debug.pane.refresh();
-        });
-    }
-    if (paneToggle && paneHost) {
-        paneToggle.addEventListener('click', () => {
-            paneHost.classList.toggle('open');
-        });
-    }
-    // Settings panel — user-facing quality knobs. Same toggle pattern as
-    // the tweakpane host, with a render-scale slider + AUTO chip wired to
-    // the renderer.
-    const settingsToggle = document.getElementById('settings-toggle');
-    const settingsPanel = document.getElementById('settings-panel');
-    const settingsSlider = document.getElementById('settings-renderscale-slider');
-    const settingsReadout = document.getElementById('settings-renderscale-readout');
-    const settingsHint = document.getElementById('settings-renderscale-hint');
-    const settingsAuto = document.getElementById('settings-renderscale-auto');
-    const formatPct = (s) => `${Math.round(s * 100)}%`;
+    // --- UI mounting --------------------------------------------------------
+    const topbar = mountTopbar(debug.state, () => debug.pane.refresh());
+    const subtleStack = mountSubtleStack(document.getElementById('subtle-stack'), scenarioRegistry);
+    const disasterRail = mountDisasterRail(document.getElementById('disaster-rail'), scenarioRegistry, () => debug.state.timeOfDay.totalDays);
+    const statusPanel = mountStatusPanel(document.getElementById('status-panel'), scenarioRegistry, () => {
+        const offset = debug.state.materials.ocean.seaLevelOffsetM;
+        const climate = scenarioRegistry.getClimateFrame();
+        return world.getLandFraction(offset + climate.seaLevelM);
+    });
+    const activeEvents = mountActiveEvents(document.getElementById('active-events-popover'), scenarioRegistry, () => debug.state.timeOfDay.totalDays);
     const applyRenderScale = (s) => {
         debug.state.renderScale = s;
         renderer.setRenderScale(s);
-        if (settingsReadout)
-            settingsReadout.textContent = formatPct(s);
     };
-    if (settingsSlider) {
-        settingsSlider.value = String(initialDebugState.renderScale);
-    }
-    if (settingsReadout)
-        settingsReadout.textContent = formatPct(initialDebugState.renderScale);
-    if (settingsHint) {
-        settingsHint.textContent = `Auto-detected: ${autoTierName} @ ${formatPct(autoRenderScale)}`;
-    }
-    if (settingsToggle && settingsPanel) {
-        settingsToggle.addEventListener('click', () => {
-            settingsPanel.classList.toggle('open');
-        });
-    }
-    if (settingsSlider) {
-        settingsSlider.addEventListener('input', () => {
-            applyRenderScale(parseFloat(settingsSlider.value));
-        });
-    }
-    if (settingsAuto) {
-        settingsAuto.addEventListener('click', () => {
-            if (settingsSlider)
-                settingsSlider.value = String(autoRenderScale);
-            applyRenderScale(autoRenderScale);
-        });
-    }
-    // Mount the floating Scenarios launcher. The toggle chip lives next to
-    // the Quality cog in the top-right rail; the popover is a sibling that
-    // owns three collapsible rows (Nuclear / Global Warming / Ice Age).
-    const scenariosToggle = document.getElementById('scenarios-toggle');
-    const scenariosPanel = document.getElementById('scenarios-launcher');
-    if (scenariosToggle && scenariosPanel) {
-        scenariosToggle.addEventListener('click', () => {
-            scenariosPanel.classList.toggle('open');
-        });
-        mountScenariosLauncher(scenariosToggle, scenariosPanel, scenarioRegistry, () => debug.state.timeOfDay.totalDays, debug.state);
-    }
-    // Make Tweakpane checkbox rows fully clickable, like the floating layer-toggle
-    // rows. Tweakpane's native label only wraps the small toggle visual on the
-    // right; this forwards row-level clicks to the underlying input.
-    if (paneHost) {
-        paneHost.querySelectorAll('input[type="checkbox"]').forEach((input) => {
-            const row = input.closest('.tp-lblv') ?? input.closest('.tp-bldv');
-            if (!row)
-                return;
-            row.style.cursor = 'pointer';
-            row.addEventListener('click', (e) => {
-                if (input.disabled)
-                    return;
-                const target = e.target;
-                // Native click already handled when it lands on the input or its
-                // label/wrapper — don't double-toggle.
-                if (!target || target === input)
-                    return;
-                if (target.closest('.tp-ckbv_l, .tp-ckbv_w'))
-                    return;
-                input.click();
-            });
-        });
-    }
-    if (sealevelSlider) {
-        sealevelSlider.value = String(debug.state.materials.ocean.seaLevelOffsetM);
-        refreshSealevelReadout(debug.state.materials.ocean.seaLevelOffsetM);
-        sealevelSlider.addEventListener('input', () => {
-            const v = parseFloat(sealevelSlider.value);
-            debug.state.materials.ocean.seaLevelOffsetM = v;
-            refreshSealevelReadout(v);
-        });
-    }
-    // Calendar readout under the clock dial. Reads the derived `timeOfYear01`
-    // (→ month index 0..11) and `yearsElapsed` (→ display year offset from
-    // START_YEAR) — both produced from `totalDays` each frame by scene-graph.ts.
-    // See DebugState.timeOfDay in debug/Tweakpane.ts for the data contract.
-    const START_YEAR = 2067;
-    const MONTH_NAMES = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
-        'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-    const formatDate = (timeOfYear01, yearsElapsed) => {
-        const m = Math.min(11, Math.max(0, Math.floor(timeOfYear01 * 12)));
-        return `${MONTH_NAMES[m]} ${START_YEAR + yearsElapsed}`;
-    };
-    const refreshDateReadout = (timeOfYear01, yearsElapsed) => {
-        if (dateReadout)
-            dateReadout.textContent = formatDate(timeOfYear01, yearsElapsed);
-    };
-    // Sub-solar latitude icon — mirrors the same sinusoid that scene-graph.ts
-    // uses to set sun declination (see MAX_SUN_TILT_RAD / YEAR_PHASE_OFFSET).
-    // Output is the normalized declination in [-1, +1]; +1 = sun over north
-    // (June solstice), -1 = sun over south (December solstice), 0 = equinox.
-    // viewBox y range [10, 30] → equator at y=20, tropics at y=10/30.
-    const SEASON_YEAR_PHASE_OFFSET = 0.221;
-    const refreshSeasonIcon = (timeOfYear01) => {
-        if (!seasonSun)
-            return;
-        const n = Math.sin((timeOfYear01 - SEASON_YEAR_PHASE_OFFSET) * Math.PI * 2);
-        seasonSun.setAttribute('cy', String(20 - n * 10));
-    };
-    refreshDateReadout(debug.state.timeOfDay.timeOfYear01, debug.state.timeOfDay.yearsElapsed);
-    refreshSeasonIcon(debug.state.timeOfDay.timeOfYear01);
-    const fpsCounter = document.getElementById('fps-counter');
-    let fpsAccumMs = 0;
-    let fpsFrames = 0;
-    // Background-window throttle. When the OS reports the window has lost
-    // focus, browser rAF is no longer vsync-aligned by the compositor —
-    // the render loop can fire faster than the display refresh and the GPU
-    // never gets its idle gaps between frames (seen as a 30–40% wattage
-    // spike when alt-tabbed). We cap to 30 FPS in that state by skipping
-    // rAF callbacks that arrive too soon. Skipped frames don't update
-    // \`prev\`, so the next rendered frame sees the correct accumulated
-    // delta and the simulation continues smoothly.
+    const settingsSheet = mountSettingsSheet(document.getElementById('settings-sheet'), debug.state, applyRenderScale, autoRenderScale, autoTierName, () => debug.pane.refresh());
+    // Re-parent the Tweakpane host the debug panel created into the settings
+    // sheet so it appears alongside the user-facing toggles. The debug panel
+    // creates its mount node lazily on first refresh; we copy children over.
+    // Tweakpane builds into `#tweakpane-host`; since the panel was already
+    // created above with whatever default mount, we don't move it for v1 —
+    // the sheet ships with its own #tweakpane-host div that Tweakpane reads
+    // by id at creation. (Tweakpane already accessed its previous mount;
+    // for v1 we just leave Tweakpane to its internal target — power users
+    // can find it via __ED.debug.pane.)
+    topbar.onSettings(() => {
+        activeEvents.hide();
+        settingsSheet.toggle();
+    });
+    topbar.onActiveEvents(() => {
+        settingsSheet.hide();
+        activeEvents.toggle();
+    });
+    // Dismiss popovers when clicking outside (canvas / non-UI).
+    document.addEventListener('mousedown', (e) => {
+        const target = e.target;
+        const popover = document.getElementById('active-events-popover');
+        const sheet = document.getElementById('settings-sheet');
+        if (popover && !popover.hidden && !popover.contains(target) && !target.closest('#active-events-chip')) {
+            activeEvents.hide();
+        }
+        if (sheet && !sheet.hidden && !sheet.contains(target) && !target.closest('#settings-toggle')) {
+            settingsSheet.hide();
+        }
+    });
+    // Rolling perf probe (kept).
+    const TICK_PERF_RING = 240;
+    const tickPerfRingMs = new Float64Array(TICK_PERF_RING);
+    let tickPerfRingHead = 0;
+    let tickPerfRingFilled = false;
+    // Background-window throttle.
     const BLURRED_MIN_FRAME_MS = 1000 / 30;
     let windowFocused = document.hasFocus();
     window.addEventListener('blur', () => { windowFocused = false; });
     window.addEventListener('focus', () => { windowFocused = true; });
-    // Rolling perf probe for the scenario-registry tick. Idle should be
-    // sub-microsecond; the old per-cell census walks pushed multi-ms
-    // spikes once per second. `__ED.scenarioTickPerf()` reads it out.
-    const TICK_PERF_RING = 240; // ~4 s at 60 FPS
-    const tickPerfRingMs = new Float64Array(TICK_PERF_RING);
-    let tickPerfRingHead = 0;
-    let tickPerfRingFilled = false;
     let prev = performance.now();
     let raf = requestAnimationFrame(function frame(now) {
         if (!windowFocused && (now - prev) < BLURRED_MIN_FRAME_MS) {
@@ -390,9 +224,6 @@ async function boot() {
         prev = now;
         sim.tick(deltaMs);
         renderer.tick(deltaSec, debug.state);
-        // Scenario registry runs AFTER renderer.tick so it reads the freshly
-        // advanced `totalDays`. Tweakpane's decay-exponent slider is pushed
-        // before the tick so the next composition uses the live value.
         scenarioRegistry.tuning.decayExponent = debug.state.scenarios.decayExponent;
         const tickT0 = performance.now();
         scenarioRegistry.tick(debug.state.timeOfDay.totalDays);
@@ -406,53 +237,18 @@ async function boot() {
         sceneGraph.setClimateEnvelopes(scenarioRegistry.getClimateEnvelopes());
         sceneGraph.setSeafloorFrame(scenarioRegistry.getSeafloorFrame());
         sceneGraph.setCloudFrame(scenarioRegistry.getCloudFrame());
-        scenarioCards.update();
-        healthHud.update();
-        if (fpsCounter) {
-            const wantVisible = debug.state.debug.fpsCounter;
-            if (fpsCounter.classList.contains('visible') !== wantVisible) {
-                fpsCounter.classList.toggle('visible', wantVisible);
-            }
-            if (wantVisible) {
-                fpsAccumMs += deltaMs;
-                fpsFrames += 1;
-                if (fpsAccumMs >= 500) {
-                    const fps = (fpsFrames * 1000) / fpsAccumMs;
-                    fpsCounter.textContent = `${fps.toFixed(0)} FPS`;
-                    fpsAccumMs = 0;
-                    fpsFrames = 0;
-                }
-            }
-            else if (fpsFrames !== 0) {
-                fpsAccumMs = 0;
-                fpsFrames = 0;
-            }
-        }
-        // Refresh the top-left time card from the derived state that
-        // scene-graph.ts just wrote: HH:MM digital readout, the JAN 2067 /
-        // FEB 2067 / … date label, and the pause-icon swap if Tweakpane's
-        // checkbox flipped `paused` from the side panel.
-        refreshClock(debug.state.timeOfDay.t01);
-        refreshDateReadout(debug.state.timeOfDay.timeOfYear01, debug.state.timeOfDay.yearsElapsed);
-        refreshSeasonIcon(debug.state.timeOfDay.timeOfYear01);
-        if (timePause) {
-            const wantPaused = debug.state.timeOfDay.paused;
-            const hasPlayIcon = timePause.firstElementChild?.querySelector('path') !== null;
-            if (wantPaused !== hasPlayIcon)
-                refreshPauseIcon();
-        }
-        if (sealevelSlider && document.activeElement !== sealevelSlider) {
-            const v = debug.state.materials.ocean.seaLevelOffsetM;
-            if (parseFloat(sealevelSlider.value) !== v) {
-                sealevelSlider.value = String(v);
-                refreshSealevelReadout(v);
-            }
-        }
+        // UI updates.
+        topbar.update(deltaMs);
+        topbar.setFpsVisible(debug.state.debug.fpsCounter);
+        subtleStack.update();
+        disasterRail.update();
+        statusPanel.update();
+        const count = activeEvents.update();
+        topbar.setActiveEventsCount(count);
         raf = requestAnimationFrame(frame);
     });
     if (loading)
         loading.classList.add('hidden');
-    // Browser-console handle. Open DevTools and run e.g. `__ED.fireAt(0, 0, 500)`.
     window.__ED = {
         world,
         sim,
@@ -460,12 +256,6 @@ async function boot() {
         renderer,
         debug,
         scenarios: scenarioRegistry,
-        /**
-         * Read out the rolling scenario-tick cost ring. Returns avg / p95 /
-         * max in microseconds over the last ~4 seconds of frames. Idle should
-         * be near 0; even a 70-strike Nuclear War should stay sub-microsecond
-         * (no per-cell census walks left after the impact-budget refactor).
-         */
         scenarioTickPerf() {
             const n = tickPerfRingFilled ? TICK_PERF_RING : tickPerfRingHead;
             if (n === 0)
@@ -484,59 +274,27 @@ async function boot() {
                 samples: n,
             };
         },
-        /**
-         * Manual wasteland paint — drops a single peak-value stamp directly
-         * onto the wasteland texture (no scenario, no decay). Useful for
-         * eyeballing the shader tint without firing a full scenario.
-         */
         paintWastelandAt(latDeg, lonDeg, radiusKm = 500, stretchKm = 500, bearingDeg = 0, value = 1.0) {
-            // Import lazily to keep the boot path free of the dep cycle.
             void import('./sim/fields/ellipse.js').then(({ computeEllipseStamp }) => {
-                const stamp = computeEllipseStamp({
-                    value,
-                    centreLatDeg: latDeg,
-                    centreLonDeg: lonDeg,
-                    radiusKm,
-                    stretchKm,
-                    bearingDeg,
-                }, hpNside, hpOrdering);
+                const stamp = computeEllipseStamp({ value, centreLatDeg: latDeg, centreLonDeg: lonDeg, radiusKm, stretchKm, bearingDeg }, hpNside, hpOrdering);
                 world.applyWastelandFrame(stamp.cells, stamp.values);
             });
         },
         nukeAt(latDeg, lonDeg) {
             const s = debug.state.scenarios.nuclear;
-            const r = scenarioRegistry.start('nuclear', {
-                latDeg,
-                lonDeg,
-                radiusKm: s.radiusKm,
-                stretchKm: s.stretchKm,
-                windBearingDeg: 0,
-            }, debug.state.timeOfDay.totalDays, s.durationDays, { label: `Nuclear strike — (${latDeg.toFixed(1)}, ${lonDeg.toFixed(1)})` });
+            const r = scenarioRegistry.start('nuclear', { latDeg, lonDeg, radiusKm: s.radiusKm, stretchKm: s.stretchKm, windBearingDeg: 0 }, debug.state.timeOfDay.totalDays, s.durationDays, { label: `Nuclear strike — (${latDeg.toFixed(1)}, ${lonDeg.toFixed(1)})` });
             return r.ok ? r.id : '';
         },
-        /**
-         * Console helper — fires a Global Warming scenario with the given
-         * params. Sea level is derived from `seaLevelFromTempDelta` —
-         * tweak `__ED.setSeaLevelMultiplier(x)` to scale.
-         */
         startGlobalWarming(opts = {}) {
-            const p = { maxTempDeltaC: opts.maxTempDeltaC ?? 8 };
-            const dur = opts.durationDays ?? 30;
+            const p = { maxTempDeltaC: opts.maxTempDeltaC ?? DEFAULT_GLOBAL_WARMING_CONFIG.maxTempDeltaC };
+            const dur = opts.durationDays ?? DEFAULT_GLOBAL_WARMING_CONFIG.durationDays;
             return scenarioRegistry.start('globalWarming', p, debug.state.timeOfDay.totalDays, dur, { label: 'Global Warming' });
         },
-        /**
-         * Console helper — fires an Ice Age scenario. Sea-level fall
-         * derives from the temperature curve.
-         */
         startIceAge(opts = {}) {
-            const p = { maxTempDeltaC: opts.maxTempDeltaC ?? -10 };
-            const dur = opts.durationDays ?? 60;
+            const p = { maxTempDeltaC: opts.maxTempDeltaC ?? DEFAULT_ICE_AGE_CONFIG.maxTempDeltaC };
+            const dur = opts.durationDays ?? DEFAULT_ICE_AGE_CONFIG.durationDays;
             return scenarioRegistry.start('iceAge', p, debug.state.timeOfDay.totalDays, dur, { label: 'Ice Age' });
         },
-        /**
-         * Console helper — fires Nuclear War. Strikes are generated from the
-         * top-N populated cities; defaults match the in-UI launcher row.
-         */
         startNuclearWar(opts = {}) {
             const cfg = DEFAULT_NUCLEAR_WAR_CONFIG;
             return scenarioRegistry.start('nuclearWar', {
@@ -552,11 +310,6 @@ async function boot() {
                 rebuildAfterWar: opts.rebuildAfterWar ?? false,
             }, debug.state.timeOfDay.totalDays, opts.durationDays ?? cfg.durationDays, { label: 'Nuclear War' });
         },
-        /**
-         * Console helper — set the global sea-level multiplier. 1.0 =
-         * paleoclimate-anchored; range [0, 10]. Read by climate handlers
-         * each tick via `ctx.getSeaLevelMultiplier()`.
-         */
         setSeaLevelMultiplier(x) {
             debug.state.scenarios.seaLevelMultiplier = x;
         },
@@ -577,19 +330,12 @@ async function boot() {
             }));
         },
         detonateAt(latDeg, lonDeg, sizeKm) {
-            // Z-up convention: +Z = north pole, equator in the XY plane.
             const latRad = (latDeg * Math.PI) / 180;
             const lonRad = (lonDeg * Math.PI) / 180;
             const cosLat = Math.cos(latRad);
             const dir = new THREE.Vector3(cosLat * Math.cos(lonRad), cosLat * Math.sin(lonRad), Math.sin(latRad));
-            // Same sampling the scenario context does, inlined for the debug
-            // console helper so DevTools `__ED.detonateAt(lat, lon)` still
-            // produces an elevation-lifted, wind-driven blast.
             const elevationM = Math.max(0, world.getElevationMetersAt(latDeg, lonDeg));
             const wind = world.getWindAt(latDeg, lonDeg);
-            // Default to the calibrated reference radius so legacy
-            // `__ED.detonateAt(lat, lon)` calls produce the legacy fixed-size
-            // blast (visual scale = 1.0).
             const size = sizeKm ?? DEFAULT_NUCLEAR_CONFIG.visuals.referenceRadiusKm;
             sceneGraph.detonateAt(dir, elevationM, wind, size);
         },

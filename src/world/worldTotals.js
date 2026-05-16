@@ -6,6 +6,10 @@
  * loading, so re-computing is wasted work.
  *
  *   TOTAL_POPULATION       Σ city.pop over `getCities()`.
+ *   roads                  Count of road polylines from `getRoads()` —
+ *                          drives the Streets HUD tile so the player sees
+ *                          a real "37K streets" number rather than just
+ *                          an INTACT/CRACKED/DESTROYED label.
  *   biomeCellsByClass      classId → HEALPix-cell count of baseline biome.
  *   landCells              Σ biomeCellsByClass[c] for c != 0.
  *   biomeAreaProxyByClass  classId → Σ polygon-bbox area (km²) of polygons
@@ -20,6 +24,7 @@ export function computeWorldTotals(deps) {
     let population = 0;
     for (const pop of deps.getCityPopulations())
         population += pop;
+    const roads = deps.getRoadCount();
     const biomeCellsByClass = deps.countBiomesGlobal();
     let landCells = 0;
     for (const k of Object.keys(biomeCellsByClass)) {
@@ -41,6 +46,7 @@ export function computeWorldTotals(deps) {
     }
     return {
         population,
+        roads,
         biomeCellsByClass,
         landCells,
         biomeAreaProxyByClass,

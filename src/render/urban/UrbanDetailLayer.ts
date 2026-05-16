@@ -248,7 +248,6 @@ void main() {
 `;
 import { ATLAS_WIDTH, type AtlasInstanceMeta, buildPolygonAtlas, pointInPolygon } from './PolygonAtlas.js';
 import { Pcg32 } from '../util/pcg32.js';
-import { tangentBasisAt } from '../../world/coordinates.js';
 import type { UrbanAreaRecord, WorldRuntime } from '../../world/index.js';
 
 const EARTH_RADIUS_KM = 6371;

@@ -168,6 +168,7 @@ uniform vec3 uSunDirection;
 
 uniform sampler2D uIdRaster;
 uniform sampler2D uWastelandTex;
+uniform sampler2D uInfraLossTex;
 uniform int uHealpixNside;
 uniform int uHealpixOrdering;
 uniform int uAttrTexWidth;
@@ -214,8 +215,11 @@ void main() {
   // Wasteland kill — per-polyline threshold sweeps as wasteland decays
   // (sampled per-fragment so road segments near the impact discard
   // while distant segments of the same polyline keep drawing).
+  // Climate destruction (flooded coast, glaciated polygons) feeds the
+  // parallel infrastructure_loss field; both gate the same threshold.
   float wasteland = texelFetch(uWastelandTex, tx, 0).r;
-  if (wasteland > seedToThreshold(vRoadSeed)) discard;
+  float infra = texelFetch(uInfraLossTex, tx, 0).r;
+  if (max(wasteland, infra) > seedToThreshold(vRoadSeed)) discard;
 
   // Cross-ribbon distance, 0 at center, 1 at edge.
   float u01 = clamp(abs(vU), 0.0, 1.0);
@@ -350,11 +354,10 @@ export class HighwaysLayer {
             uSunDirection: { value: new THREE.Vector3(1, 0, 0.3).normalize() },
             uIdRaster: { value: world.getIdRaster() },
             uWastelandTex: { value: world.getWastelandTexture() },
+            uInfraLossTex: { value: world.getDynamicAttributeTexture('infrastructure_loss') },
             uHealpixNside: { value: nside },
             uHealpixOrdering: { value: ordering === 'ring' ? 0 : 1 },
             uAttrTexWidth: { value: 4 * nside },
-            uElevationMeters: { value: world.getElevationMetersTexture() },
-            uDistanceField: { value: world.getDistanceFieldTexture() },
             uElevationScale: { value: DEFAULT_ELEVATION_SCALE },
             uHighwayRadialBiasM: { value: DEFAULT_HIGHWAY_RADIAL_BIAS_M },
             // Viewport stays at 1×1 until scene-graph wires the canvas size in.

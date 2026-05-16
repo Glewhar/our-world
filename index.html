@@ -3,7 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>Earth-Destroyer (Phase 2)</title>
+    <title>Our World beta 2.1</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -17,100 +19,53 @@
       <span id="loading-step-label"></span>
     </div>
 
-    <div id="overlay">
-
-      <div class="area top-left">
-        <div id="time-control" class="chip is-panel">
+    <div id="ui">
+      <header id="topbar">
+        <div id="clock-pill">
           <button id="time-pause" type="button" aria-label="Pause time">
             <svg viewBox="0 0 20 20" aria-hidden="true">
               <rect x="5" y="3.5" width="3.5" height="13" rx="1" />
               <rect x="11.5" y="3.5" width="3.5" height="13" rx="1" />
             </svg>
           </button>
-          <div id="time-readout-wrap">
+          <div id="clock-readout">
             <div id="time-readout">12:00</div>
             <div id="date-readout">JAN 2067</div>
           </div>
-          <svg id="season-icon" viewBox="0 0 16 40" aria-label="Sub-solar latitude">
-            <line x1="8" y1="4" x2="8" y2="36" stroke="rgba(230,236,246,0.55)" stroke-width="1" stroke-linecap="round" />
-            <line x1="5" y1="10" x2="11" y2="10" stroke="rgba(230,236,246,0.55)" stroke-width="1" stroke-linecap="round" />
-            <line x1="3" y1="20" x2="13" y2="20" stroke="rgba(230,236,246,0.55)" stroke-width="1" stroke-linecap="round" />
-            <line x1="5" y1="30" x2="11" y2="30" stroke="rgba(230,236,246,0.55)" stroke-width="1" stroke-linecap="round" />
-            <circle id="season-sun" cx="8" cy="20" r="3" fill="#f5b840" />
+          <svg id="season-icon" viewBox="0 0 18 36" aria-label="Sub-solar latitude">
+            <line x1="9" y1="4" x2="9" y2="32" stroke="rgba(230,236,246,0.45)" stroke-width="1" stroke-linecap="round" />
+            <line x1="2" y1="8" x2="16" y2="8" stroke="rgba(124,185,255,0.55)" stroke-width="0.9" stroke-linecap="round" stroke-dasharray="1.6 1.6" />
+            <line x1="2" y1="18" x2="16" y2="18" stroke="rgba(230,236,246,0.55)" stroke-width="0.9" stroke-linecap="round" />
+            <line x1="2" y1="28" x2="16" y2="28" stroke="rgba(124,185,255,0.55)" stroke-width="0.9" stroke-linecap="round" stroke-dasharray="1.6 1.6" />
+            <circle id="season-sun" cx="9" cy="18" r="3" fill="#f5b840" />
           </svg>
         </div>
-      </div>
 
-      <div class="area top-center">
-        <div id="fps-counter" class="chip">-- FPS</div>
-      </div>
+        <div id="fps-counter">-- FPS</div>
 
-      <div class="area top-right">
-        <div id="top-right-chips">
-          <button id="scenarios-toggle" class="chip is-button is-square" type="button" aria-label="Scenarios">⚡</button>
-          <button id="settings-toggle" class="chip is-button is-square" type="button" aria-label="Quality settings">⚙</button>
+        <div id="topbar-right">
+          <button id="active-events-chip" class="tb-chip" type="button" hidden>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 1L3 9h4l-1 6 6-8H8l1-6z" fill="currentColor"/></svg>
+            <span class="ae-label">Events</span>
+            <span class="ae-count" id="active-events-count">0</span>
+          </button>
+          <button id="settings-toggle" class="tb-chip tb-chip-square" type="button" aria-label="Settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/>
+            </svg>
+          </button>
         </div>
-        <div id="scenarios-launcher" class="chip is-panel">
-          <h3>Scenarios</h3>
-          <!-- Rows injected by scenarios-launcher.ts -->
-        </div>
-        <div id="settings-panel" class="chip is-panel">
-          <h3>Quality</h3>
-          <div class="setting-row">
-            <label for="settings-renderscale-slider">Render scale</label>
-            <span id="settings-renderscale-readout">100%</span>
-          </div>
-          <input id="settings-renderscale-slider" type="range" min="0.5" max="1.0" step="0.05" value="1.0" />
-          <div class="setting-row-actions">
-            <span id="settings-renderscale-hint">Auto-detected: —</span>
-            <button id="settings-renderscale-auto" type="button">AUTO</button>
-          </div>
-          <h3 class="subhead">Layers</h3>
-          <label class="layer-toggle clouds" for="toggle-clouds">
-            <span class="layer-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="22" height="22" xmlns="http://www.w3.org/2000/svg">
-                <path d="M7.2 18.5h10a3.9 3.9 0 0 0 .85-7.71 5.2 5.2 0 0 0-10.05-1.05A3.9 3.9 0 0 0 7.2 18.5z" fill="#f4f7fc" stroke="#cdd6e3" stroke-width="1.1" stroke-linejoin="round"/>
-              </svg>
-            </span>
-            <span class="layer-name">Clouds</span>
-            <input id="toggle-clouds" type="checkbox" checked />
-            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-          </label>
-          <h3 class="subhead">Debug</h3>
-          <label class="layer-toggle" for="toggle-fps">
-            <span class="layer-icon" aria-hidden="true" style="font-size: 9px; font-weight: 700; letter-spacing: 0.04em; color: #e6ecf6;">FPS</span>
-            <span class="layer-name">FPS counter</span>
-            <input id="toggle-fps" type="checkbox" />
-            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-          </label>
-        </div>
-      </div>
+      </header>
 
-      <div class="area middle-left">
-        <div id="sealevel-control" class="chip is-panel">
-          <div id="sealevel-readout">0 m</div>
-          <div id="sealevel-slider-wrap" class="slider-vert-wrap">
-            <input id="sealevel-slider" class="slider-vert" type="range" min="-10000" max="10000" step="10" value="0" aria-label="Sea level offset" />
-          </div>
-          <div id="sealevel-label">SEA LEVEL</div>
-        </div>
-      </div>
+      <aside id="subtle-stack"></aside>
+      <aside id="disaster-rail"></aside>
+      <section id="status-panel"></section>
 
-      <div class="area middle-right">
-        <div id="scenario-stack" aria-label="Active scenarios"></div>
+      <div id="active-events-popover" hidden></div>
+      <div id="settings-sheet" hidden>
+        <div id="tweakpane-host"></div>
       </div>
-
-      <div class="area bottom-center">
-        <div id="health-hud" class="chip is-panel">
-          <!-- Three .health-bar rows injected by health-hud.ts -->
-        </div>
-      </div>
-
-      <div class="area bottom-right">
-        <div id="tweakpane-host" class="chip is-panel"></div>
-        <button id="tweakpane-toggle" class="chip is-button is-square" type="button" aria-label="Toggle controls">≡</button>
-      </div>
-
     </div>
 
     <script type="importmap">

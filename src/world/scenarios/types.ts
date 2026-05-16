@@ -45,7 +45,7 @@ export type NuclearScenarioPayload = {
    * during the "no rebuild" run so cities and streets stay dead through
    * the plateau.
    */
-  decayMode?: 'quickThenSlow' | 'sustained';
+  decayMode?: 'quickThenSlow' | 'sustained' | 'climateRiseFall';
 };
 
 /**
@@ -194,7 +194,7 @@ export type EllipsePaintArgs = {
   bearingDeg: number;
   falloff: 'smoothstep';
   /** Carried onto the captured stamp; decides which decay curve applies. */
-  decayMode?: 'quickThenSlow' | 'sustained';
+  decayMode?: 'quickThenSlow' | 'sustained' | 'climateRiseFall';
 };
 
 /**
@@ -224,7 +224,7 @@ export type BandPaintArgs = {
   lonDegMax?: number;
   falloff: 'smoothstep';
   /** Carried onto the captured stamp; decides which decay curve applies. */
-  decayMode?: 'quickThenSlow' | 'sustained';
+  decayMode?: 'quickThenSlow' | 'sustained' | 'climateRiseFall';
 };
 
 /** Union of paint primitives the registry's capture hook understands. */
@@ -253,11 +253,13 @@ export type ScenarioStamp = {
   /** Target biome class when `attribute === 'biomeOverride'`. */
   biomeId?: number;
   /**
-   * Decay shape for wasteland stamps — defaults to `'quickThenSlow'`
-   * (single-strike Nuclear recovery shape). Climate / biome-override
-   * stamps ignore this field; the override pipeline scales them on the GPU.
+   * Decay shape for wasteland / infrastructure_loss stamps — defaults
+   * to `'quickThenSlow'` (single-strike Nuclear recovery shape).
+   * Climate-class scenarios set `'climateRiseFall'` so the stamp tracks
+   * the same plateau envelope as biome paint. Biome-override stamps
+   * ignore this field; the override pipeline scales them on the GPU.
    */
-  decayMode?: 'quickThenSlow' | 'sustained';
+  decayMode?: 'quickThenSlow' | 'sustained' | 'climateRiseFall';
   /**
    * Per-cell onset time in [0, 1] for biome-override stamps. When set,
    * the land shader gates the override per cell as
@@ -395,6 +397,51 @@ export type ScenarioContext = {
   paintAttributeBand(args: BandPaintArgs): void;
 
   /**
+   * Stamp a pre-computed cell list into a registered dynamic R8
+   * attribute sink at a constant `value` (in [0, 1]). Used by climate
+   * scenarios — they walk the planet once at `onStart` to figure out
+   * which cells flood / glaciate / desert-flip, then hand the list to
+   * the registry to compose on the standard decay envelope.
+   *
+   * `decayMode` defaults to `'quickThenSlow'`; climate handlers pass
+   * `'climateRiseFall'` so the stamp tracks the same
+   * `climateRisePlateauFall` envelope as the rest of the climate
+   * scenario.
+   */
+  paintAttributeCells(args: {
+    attribute: string;
+    value: number;
+    cells: Uint32Array;
+    decayMode?: 'quickThenSlow' | 'sustained' | 'climateRiseFall';
+  }): void;
+
+  /**
+   * Continuous elevation in metres at the given HEALPix cell. Climate
+   * destruction stamps walk every cell once at `onStart` to find the
+   * coastal cells whose elevation falls under the peak sea-level rise.
+   */
+  getElevationMetersAtCell(ipix: number): number;
+
+  /**
+   * Polygon id at the given HEALPix cell, or 0 if the cell isn't
+   * covered by any TEOW polygon (ocean, no-data). Climate destruction
+   * stamps use it to walk only the cells inside polygons that will
+   * flip to ICE / DESERT.
+   */
+  getPolygonOfCell(ipix: number): number;
+
+  /** Total HEALPix cell count (12 · nside²). */
+  getCellCount(): number;
+
+  /**
+   * Polygon lookup the climate destruction stamps walk to find
+   * projected ICE/DESERT flip polygons. Returns null on fixture bakes
+   * that didn't wire a biome-override sink — climate handlers degrade
+   * to "no infrastructure destruction" on those bakes.
+   */
+  getPolygonLookup(): import('../PolygonTexture.js').PolygonLookup | null;
+
+  /**
    * Spawn a child scenario; kind is restricted to prevent recursive
    * nesting. Returns the child id, or '' if the registry refused.
    */
@@ -424,6 +471,14 @@ export type ScenarioContext = {
 
   /** Top-N populated cities by `pop` descending. Empty on fixture bakes. */
   getMajorCities(maxCount: number): readonly ScenarioCity[];
+
+  /**
+   * Total number of road polylines in the loaded world. Drives the
+   * Streets HUD tile so the player sees a real count alongside the
+   * Civilization tier label. Returns 0 on fixture bakes that ship
+   * without the roads artifact.
+   */
+  getRoadCount(): number;
 
   /**
    * Global multiplier handed to `seaLevelFromTempDelta`. Climate

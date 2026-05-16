@@ -8,10 +8,9 @@
  * enough for the user to see the patch fade, fast enough to land the
  * acceptance test in "a few seconds."
  *
- * Why no spread yet: the reactive sandbox demo per
- * `docs/plans/04-sim-engine.md` is "patch fades cleanly." Spread (fire
- * jumps to neighbour cells) needs a HEALPix neighbourhood query and the
- * field-grid abstraction it's bound to; that's a follow-up PR.
+ * Why no spread yet: the reactive sandbox demo is "patch fades cleanly."
+ * Spread (fire jumps to neighbour cells) needs a HEALPix neighbourhood
+ * query and the field-grid abstraction it's bound to; that's a follow-up PR.
  *
  * Determinism (C6): pure data transform, no PRNG, no clocks. Inputs map
  * to outputs deterministically.

@@ -11,8 +11,6 @@
  *
  * The constructor requires a `THREE.WebGLRenderer` because the two static
  * LUTs (transmittance, multi-scatter) bake at construction.
- *
- * See `docs/adr/0007-bruneton-hillaire-atmosphere.md`.
  */
 
 import * as THREE from 'three';

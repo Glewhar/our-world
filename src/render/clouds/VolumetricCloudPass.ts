@@ -85,7 +85,7 @@ precision highp sampler2D;
 //
 // Both use the same \`cn_hash13\` so jitter is deterministic per
 // integer-grid cell. Frequencies in the cloud frag are tuned empirically
-// against a 6371 km Earth — see comments in clouds.frag.glsl.
+// against a 6371 km Earth.
 
 float cn_hash13(vec3 p) {
   p = fract(p * 0.1031);
@@ -914,7 +914,7 @@ export class VolumetricCloudPass {
         uSootAmbientTint: { value: new THREE.Color(1, 1, 1) },
         // Same metres → unit-sphere scale Land/Water use. Drives the cloud
         // shell altitude so the cloud base sits at exactly CLOUD_BASE_M
-        // (see clouds.frag.glsl.ts) above the rendered sea-level radius.
+        // above the rendered sea-level radius.
         // MUST stay in sync with LandMaterial / WaterMaterial.
         uElevationScale: { value: DEFAULT_ELEVATION_SCALE },
       },

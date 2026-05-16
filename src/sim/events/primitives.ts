@@ -5,8 +5,6 @@
  * these primitives to express their abilities — they NEVER introduce new ones.
  * Adding a primitive here requires an ADR and updates to:
  *   - web/src/sim/events/handlers/<primitive>.ts (impl)
- *   - web/src/debug/sandbox/EventInjectorPanel.ts (UI)
- *   - docs/roles/_primitive_coverage.md (research)
  *
  * Per-primitive `params` schemas live as JSDoc on each handler in `handlers/`.
  */

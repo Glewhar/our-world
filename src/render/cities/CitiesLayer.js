@@ -99,6 +99,7 @@ uniform vec3 uSunDirection;
 
 uniform sampler2D uIdRaster;
 uniform sampler2D uWastelandTex;
+uniform sampler2D uInfraLossTex;
 uniform int uHealpixNside;
 uniform int uHealpixOrdering;
 uniform int uAttrTexWidth;
@@ -139,8 +140,8 @@ float hash11(float n) {
 float seedToThreshold(float seed) {
   float h = fract(sin(seed * 12.9898 + 78.233) * 43758.5453);
   // Skewed toward the low end so most features only reappear once wasteland
-  // is mostly gone. Kept in lockstep with highways.frag.glsl.ts so cities
-  // and roads recover at the same pace.
+  // is mostly gone. Kept in lockstep with the same hash in HighwaysLayer.ts
+  // so cities and roads recover at the same pace.
   return mix(0.0, 0.5, h);
 }
 
@@ -154,8 +155,11 @@ void main() {
 
   // Wasteland kill — per-city threshold sweeps as wasteland decays, so
   // cities pop back one-by-one rather than fading in unison.
+  // Climate-driven destruction (flooded coast, glaciated polygons) feeds
+  // a parallel infrastructure_loss field; both gate the same threshold.
   float wasteland = texelFetch(uWastelandTex, tx, 0).r;
-  if (wasteland > seedToThreshold(vPatternSeed)) discard;
+  float infra = texelFetch(uInfraLossTex, tx, 0).r;
+  if (max(wasteland, infra) > seedToThreshold(vPatternSeed)) discard;
 
   vec2 localKm = vLocalKm;
 
@@ -299,10 +303,10 @@ export class CitiesLayer {
             uSunDirection: { value: new THREE.Vector3(1, 0, 0.3).normalize() },
             uIdRaster: { value: world.getIdRaster() },
             uWastelandTex: { value: world.getWastelandTexture() },
+            uInfraLossTex: { value: world.getDynamicAttributeTexture('infrastructure_loss') },
             uHealpixNside: { value: nside },
             uHealpixOrdering: { value: ordering === 'ring' ? 0 : 1 },
             uAttrTexWidth: { value: 4 * nside },
-            uElevationMeters: { value: world.getElevationMetersTexture() },
             uElevationScale: { value: DEFAULT_ELEVATION_SCALE },
             uCityRadialBias: { value: DEFAULT_CITY_RADIAL_BIAS },
             uMinPopulation: { value: c.minPopulation },

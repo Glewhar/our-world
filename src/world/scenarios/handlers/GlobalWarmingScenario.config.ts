@@ -32,7 +32,7 @@ export type GlobalWarmingScenarioConfig = {
 };
 
 export const DEFAULT_GLOBAL_WARMING_CONFIG: GlobalWarmingScenarioConfig = {
-  maxTempDeltaC: 8,
+  maxTempDeltaC: 30,
   precipDeltaMm: 50,
-  durationDays: 30,
+  durationDays: 15,
 };

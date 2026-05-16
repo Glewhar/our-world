@@ -1,5 +1,5 @@
 /**
- * Contract C1 + C2 — World types as defined in docs/plans/00-overview.md.
+ * Contract C1 + C2 — World types.
  *
  * IMPORTANT: this file is the canonical TypeScript representation of C1/C2.
  * The Python pipeline emits JSON conforming to these types; the runtime API
@@ -308,6 +308,14 @@ export interface WorldRuntime {
   getElevationMetersAtCell(ipix: number): number;
 
   /**
+   * Fraction of the planet's surface above the given sea level, in [0, 1].
+   * Land = `elev >= seaLevelM` (matches the land shader's discard rule).
+   * Cheap: a sorted elevation array is built once and binary-searched on
+   * every call, so callers may invoke this per frame.
+   */
+  getLandFraction(seaLevelM: number): number;
+
+  /**
    * Body index at a HEALPix cell. 0 means ocean / no body — used by
    * surface-anchored bakes to mirror the GLSL `isOceanIdTexel` check
    * (which compares the id raster's alpha sentinel) when computing
@@ -357,6 +365,21 @@ export interface WorldRuntime {
    * to paint biome transitions polygon-by-polygon in one frame.
    */
   getPolygonLookup(): PolygonLookup;
+
+  /**
+   * Polygon id covering the given HEALPix cell, or 0 if no polygon
+   * owns it (ocean / no-data). Lazy-built on first call by walking the
+   * equirect polygon raster once — ~33M pixels at 8192×4096, single
+   * pass. Cached for the runtime's life.
+   */
+  getPolygonOfCell(ipix: number): number;
+
+  /**
+   * Polygon id at the given lat/lon, sampled from the equirect polygon
+   * raster. 0 = ocean / no-data. Cheap — single pixel lookup, no
+   * caching needed.
+   */
+  getPolygonIdAt(latDeg: number, lonDeg: number): number;
 
   /**
    * Per-polygon override-class texture for a climate slot (0 = first

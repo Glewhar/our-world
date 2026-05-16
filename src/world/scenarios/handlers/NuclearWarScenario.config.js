@@ -17,18 +17,17 @@
  *     toward yellow-green grassland, rainforest core stays mostly green.
  */
 export const DEFAULT_NUCLEAR_WAR_CONFIG = {
-    strikeCount: 70,
-    strikeFireWindowDays: 2,
-    strikeFrontLoadPower: 2.2,
-    childDurationDays: 36,
+    strikeCount: 50,
+    strikeFireWindowDays: 3,
+    strikeFrontLoadPower: 0.8,
     airplaneStopAtDay: 1.0,
-    maxTempDeltaC: -7,
+    maxTempDeltaC: -10,
     precipDeltaMm: -40,
     peakSootGlobal: 0.9,
     strikeEndFrac: 0.03,
     winterRampEndFrac: 0.18,
     winterPlateauEndFrac: 0.75,
-    durationDays: 120,
+    durationDays: 15,
     sizeDistribution: [
         // City-buster — 55%.
         { radiusKm: 300, stretchKm: 700, weight: 0.55 },

@@ -110,11 +110,19 @@ function strikeBbox(e) {
  * keeps the inner geodesic test off the hot path for cities far from
  * the strike — global wars sweep 7k cities × 70 strikes, the bbox cuts
  * 99% of the cross-product to a cheap rectangle test.
+ *
+ * `cityHitMask` (optional, length ≥ cities.length) gates each city to
+ * count once across calls — Nuclear War's 50+ overlapping strike
+ * ellipses would otherwise tally Tokyo-cluster pops a dozen times each
+ * and drive `populationAtRisk` past total population. A byte set to 1
+ * means "already counted, skip"; the function flips bytes as it adds.
  */
-export function tallyStrikeCities(e, cities, budget) {
+export function tallyStrikeCities(e, cities, budget, cityHitMask = null) {
     const bb = strikeBbox(e);
     const wrapLon = bb.lonMin < -180 || bb.lonMax > 180;
     for (let i = 0; i < cities.length; i++) {
+        if (cityHitMask && cityHitMask[i])
+            continue;
         const c = cities[i];
         if (c.latDeg < bb.latMin || c.latDeg > bb.latMax)
             continue;
@@ -122,6 +130,8 @@ export function tallyStrikeCities(e, cities, budget) {
             continue;
         if (!pointInEllipse(c.latDeg, c.lonDeg, e))
             continue;
+        if (cityHitMask)
+            cityHitMask[i] = 1;
         budget.citiesAtRisk += 1;
         budget.populationAtRisk += c.pop;
     }
@@ -136,13 +146,15 @@ export function tallyStrikeCities(e, cities, budget) {
  * planet's ~10⁸ km² land — the HUD biome bar barely moves from any
  * single Nuclear strike, which is the correct vibe.
  */
-export function tallyStrikeBiome(e, deps, budget) {
+export function tallyStrikeBiome(e, deps, budget, polyHitMask = null) {
     const bb = strikeBbox(e);
     const lookup = deps.polygonLookup;
     const landAreaProxy = deps.totals.landAreaProxy;
     if (landAreaProxy <= 0)
         return;
     for (let i = 1; i <= lookup.count; i++) {
+        if (polyHitMask && polyHitMask[i])
+            continue;
         if (lookup.latMax[i] < bb.latMin)
             continue;
         if (lookup.latMin[i] > bb.latMax)
@@ -156,6 +168,8 @@ export function tallyStrikeBiome(e, deps, budget) {
         const cls = lookup.biome[i] & 0xff;
         if (cls === 0)
             continue;
+        if (polyHitMask)
+            polyHitMask[i] = 1;
         const area = polygonBboxAreaKm2(lookup, i);
         const frac = area / landAreaProxy;
         addBiomeChange(budget, cls, BIOME.WASTELAND, frac);
@@ -177,6 +191,19 @@ export function tallyProjectionBiome(delta, deps, budget) {
     const landAreaProxy = deps.totals.landAreaProxy;
     if (landAreaProxy <= 0)
         return;
+    // Pre-pass: bucket every city by its owning polygon id so the ICE
+    // city-kill stage below is `O(nCities) + O(flippedPolygons)` rather
+    // than `O(nCities × flippedPolygons)`. Walked once even when no
+    // polygon flips to ICE — the bucket itself is cheap.
+    const cities = deps.cities;
+    const polygonOfCity = new Int32Array(cities.length);
+    for (let i = 0; i < cities.length; i++) {
+        polygonOfCity[i] = deps.getPolygonIdAt(cities[i].latDeg, cities[i].lonDeg);
+    }
+    // Map polygonId → first matching ICE-flip city list index. A Map is
+    // overkill here; a flat array indexed by polygon id stays cache-hot.
+    const iceFlipPolyMask = new Uint8Array(lookup.count + 1);
+    let iceFlipAny = false;
     for (let i = 1; i <= lookup.count; i++) {
         const baselineId = lookup.biome[i] & 0xff;
         if (baselineId === 0)
@@ -187,6 +214,39 @@ export function tallyProjectionBiome(delta, deps, budget) {
         const area = polygonBboxAreaKm2(lookup, i);
         const frac = (area / landAreaProxy) * proj.weight;
         addBiomeChange(budget, baselineId, proj.toId, frac);
+        // Climate-destruction population kill: any polygon flipping (weight
+        // ≥ 0.1) toward DESERT or ICE bleeds rural population into the HUD
+        // impact budget, scaled by `proj.weight` so partial flips give
+        // partial kills (no dead-band). The 0.4 city-kill gate stays
+        // tighter — cities only fully evacuate when the polygon is mostly
+        // transformed. Note: at extreme deltas (±50°C) projections often
+        // skip DESERT/ICE in favour of wider-tolerance targets like
+        // TROPICAL_SAVANNA / BOREAL — see SCENARIO_TUNING_NOTES.md. The
+        // climate handlers add a magnitude-driven extinction floor on top
+        // of this tally so the kill curve stays monotonic to slider max.
+        if (proj.weight >= 0.1 && (proj.toId === BIOME.DESERT || proj.toId === BIOME.ICE)) {
+            const blt = BIOME_LOOKUP[baselineId];
+            if (blt) {
+                budget.populationAtRisk += proj.weight * area * blt.popDensityKm2;
+            }
+            if (proj.weight >= 0.4) {
+                iceFlipPolyMask[i] = 1;
+                iceFlipAny = true;
+            }
+        }
+    }
+    if (iceFlipAny) {
+        // ICE flips also crush every city inside the polygon — single walk
+        // through the pre-bucketed `polygonOfCity` array.
+        for (let i = 0; i < cities.length; i++) {
+            const polyId = polygonOfCity[i];
+            if (polyId <= 0 || polyId > lookup.count)
+                continue;
+            if (!iceFlipPolyMask[polyId])
+                continue;
+            budget.citiesAtRisk += 1;
+            budget.populationAtRisk += cities[i].pop;
+        }
     }
 }
 /**
@@ -197,10 +257,12 @@ export function tallyProjectionBiome(delta, deps, budget) {
  * by `radiationResidency` so canopy filters fallout while open desert
  * / tundra retain it.
  */
-export function tallyStrikeBiomeBlt(e, deps, budget) {
+export function tallyStrikeBiomeBlt(e, deps, budget, polyHitMask = null) {
     const bb = strikeBbox(e);
     const lookup = deps.polygonLookup;
     for (let i = 1; i <= lookup.count; i++) {
+        if (polyHitMask && polyHitMask[i])
+            continue;
         if (lookup.latMax[i] < bb.latMin)
             continue;
         if (lookup.latMin[i] > bb.latMax)
@@ -217,6 +279,8 @@ export function tallyStrikeBiomeBlt(e, deps, budget) {
         const blt = BIOME_LOOKUP[cls];
         if (!blt)
             continue;
+        if (polyHitMask)
+            polyHitMask[i] = 1;
         const area = polygonBboxAreaKm2(lookup, i);
         // Non-city pop: assume a constant slice of the polygon's bbox area
         // falls inside the strike footprint. Polygons are irregular and we

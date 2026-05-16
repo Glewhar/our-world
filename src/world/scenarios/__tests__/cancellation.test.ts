@@ -89,6 +89,8 @@ function buildRegistry(): ScenarioRegistry {
       return out;
     },
     getElevationMetersAtCell: () => 0,
+    getPolygonOfCell: () => 0,
+    getPolygonIdAt: () => 0,
     getPolygonLookup: () => lookup,
     bakePolygonOverride: () => {},
     clearPolygonOverrideSlot: () => {},
@@ -103,10 +105,16 @@ function buildRegistry(): ScenarioRegistry {
     detonateAt: () => {},
     paintAttributeEllipse: () => {},
     paintAttributeBand: () => {},
+    paintAttributeCells: () => {},
+    getElevationMetersAtCell: () => 0,
+    getPolygonOfCell: () => 0,
+    getCellCount: () => 12 * 16 * 16,
+    getPolygonLookup: () => null,
     spawnChildScenario: () => '',
     stopChildScenario: () => {},
     setWorldEffect: () => {},
     getMajorCities: () => [],
+    getRoadCount: () => 0,
     getSeaLevelMultiplier: () => 1,
   };
   const registry = new ScenarioRegistry({

@@ -107,12 +107,11 @@ export function createDebugPanel(state = initialDebugState) {
     // is missing (tests, alternate hosts).
     const host = document.getElementById('tweakpane-host');
     const pane = host
-        ? new Pane({ title: 'earth-destroyer', expanded: false, container: host })
-        : new Pane({ title: 'earth-destroyer', expanded: false });
+        ? new Pane({ title: 'Advanced', expanded: false, container: host })
+        : new Pane({ title: 'Advanced', expanded: false });
     // World — global camera + scene-wide lighting + sky background. Lives at
     // the top so the most-used knobs (orbit + sun colour) are one tab open.
-    const worldFolder = pane.addFolder({ title: 'World' });
-    worldFolder.addBinding(state.camera, 'autoOrbit', { label: 'auto orbit' });
+    const worldFolder = pane.addFolder({ title: 'World', expanded: false });
     worldFolder.addBinding(state.camera, 'orbitSpeed', {
         min: 0, max: 0.5, step: 0.001, label: 'orbit speed',
     });
@@ -123,7 +122,7 @@ export function createDebugPanel(state = initialDebugState) {
     // Airplanes folder: layer toggle (combined master for planes + trails)
     // and a reset chip stay at the top — the speed/density/opacity bindings
     // below are greyed out when the toggle is off.
-    const planesFolder = pane.addFolder({ title: 'Airplanes' });
+    const planesFolder = pane.addFolder({ title: 'Airplanes', expanded: false });
     const planesControls = [];
     const updatePlanesDisabled = () => {
         const off = !state.layers.planes;
@@ -316,7 +315,7 @@ export function createDebugPanel(state = initialDebugState) {
     // continent-wide. Opened by default so it's reachable at a glance — the
     // single knob the user hunts for most often when the world reads "too
     // pixelated" or "too smudged".
-    const gBlur = globeMat.addFolder({ title: 'Edge softening', expanded: true });
+    const gBlur = globeMat.addFolder({ title: 'Edge softening', expanded: false });
     globeSubFolders.push(gBlur);
     // biomeBlur drives the polygon-colour bake — softens every edge between
     // adjacent biome regions and coastlines (coastlines = biome ↔ sea floor).
@@ -544,9 +543,9 @@ export function createDebugPanel(state = initialDebugState) {
     oDepth.addBinding(state.materials.ocean, 'trenchEnd', {
         min: 0, max: 12000, step: 100, label: 'trench end (m)',
     });
-    // Sea-level offset has its own floating vertical slider (#sealevel-control
-    // in index.html). Tweakpane binding removed so the two surfaces can't
-    // race against each other.
+    oDepth.addBinding(state.materials.ocean, 'seaLevelOffsetM', {
+        min: -10000, max: 10000, step: 10, label: 'sea level (m)',
+    });
     const oCoast = oceanMat.addFolder({ title: 'Coastal tint', expanded: false });
     oceanSubFolders.push(oCoast);
     oCoast.addBinding(state.materials.ocean, 'coastalTintColor', { label: 'color' });

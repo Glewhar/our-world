@@ -5,8 +5,9 @@
  *   - `ctx.spawnChildScenario('nuclear', ...)` fires a per-strike Nuclear
  *     child at each scheduled `fireAtRelDay`. The child paints the same
  *     downwind wasteland stamp the single-Nuclear scenario uses today.
- *     Its decay mode flips to `'sustained'` when `rebuildAfterWar` is off
- *     so cities + streets stay dead through the winter plateau.
+ *     Each child lifetime = 50% of the parent war lifetime. Children run
+ *     past the parent's end on their own clock — no force-stop, no
+ *     immersion-breaking cut.
  *   - Polygon biome projection is driven by the registry's bake — the
  *     handler exposes its peak ΔT / Δsea / Δprecip via
  *     `peakClimateContribution`; the bake folds that into the combined
@@ -57,6 +58,31 @@ import {
 const SOOT_SUN_TINT = { r: 0.42, g: 0.31, b: 0.22 };
 const SOOT_AMBIENT_TINT = { r: 0.30, g: 0.27, b: 0.26 };
 
+/**
+ * Game-pace damage scales for the raw population / city tallies out of
+ * `tallyStrikeCities` + `tallyStrikeBiomeBlt`. Two separate knobs:
+ *
+ *   - `WAR_CITIES_SCALE` (flat 0.15) — keeps HUD "cities lost" pacing
+ *     in lockstep with the on-screen visual destruction. Without the
+ *     down-scale a 50-strike war reports ~3× as many city-losses as
+ *     ellipses have actually swept the surface.
+ *   - `warPopulationScale(strikes)` — slider-driven kill curve. Decays
+ *     linearly across [1..50] (first nukes more lethal per-strike than
+ *     later ones — early kills are clustered on the densest cities)
+ *     then snaps to 1.0 above 50 so the slider's upper third is the
+ *     "annihilation" range the brief asks for. The 50→51 step IS the
+ *     dramatic threshold — every nuke ≥51 kills 100%.
+ *
+ * See SCENARIO_TUNING_NOTES.md for the full sample table and how to
+ * re-tune the constants if telemetry drifts.
+ */
+const WAR_CITIES_SCALE = 0.15;
+
+function warPopulationScale(strikes: number): number {
+  if (strikes > 50) return 1.0;
+  return 0.45 - 0.0014 * (strikes - 1);
+}
+
 export const NuclearWarScenario: ScenarioKindHandler<'nuclearWar'> = {
   isClimateClass: true,
 
@@ -65,13 +91,7 @@ export const NuclearWarScenario: ScenarioKindHandler<'nuclearWar'> = {
     if (scn.payload.schedule.length === 0) {
       const wanted = scn.payload.strikeCount ?? cfg.strikeCount;
       const cities = ctx.getMajorCities(wanted);
-      // Sustained children must outlast the parent so kill zones hold
-      // through the winter plateau; in rebuild mode, the shorter
-      // child duration from config lets urban features return after the
-      // fireball fades.
-      const childDur = scn.payload.rebuildAfterWar
-        ? cfg.childDurationDays
-        : scn.durationDays;
+      const childDur = scn.durationDays * 0.5;
       scn.payload.schedule = buildStrikeSchedule(
         cfg,
         cities.map((c) => ({ latDeg: c.latDeg, lonDeg: c.lonDeg, pop: c.pop })),
@@ -122,11 +142,8 @@ export const NuclearWarScenario: ScenarioKindHandler<'nuclearWar'> = {
   },
 
   onEnd(_scn: Scenario<'nuclearWar'>, ctx: ScenarioContext): void {
-    const schedule = _scn.payload.schedule;
-    for (let i = 0; i < schedule.length; i++) {
-      const id = schedule[i]!.spawnedScenarioId;
-      if (id) ctx.stopChildScenario(id);
-    }
+    // Children are NOT force-stopped — they keep running on their own
+    // clock so kill zones fade naturally past the war's end.
     ctx.setWorldEffect('airplaneSpawn', 1);
   },
 
@@ -176,19 +193,26 @@ export const NuclearWarScenario: ScenarioKindHandler<'nuclearWar'> = {
   },
 
   intensity(scn: Scenario<'nuclearWar'>, progress01: number): number {
-    // Damage envelope: ramps to peak during the strike phase (cities die
-    // immediately under the fireballs), holds while the winter scar is
-    // active, then decays as `nuclearWinterEnvelope` falls. Biome shown
-    // on the HUD slightly leads the GPU biome paint during strikes — by
-    // strikeEndFrac (≈3% of war duration) they're aligned again.
+    // Damage envelope tracks the actual strike schedule: cities only die
+    // when their bomb has visibly landed. `strikeEndFrac` (3% of duration)
+    // was too aggressive — the HUD pinned to "fully destroyed" within
+    // ~11 game hours while bombs were still falling for another 2.5 days.
+    // Now `intensity` ramps in lockstep with `strikesFired / scheduled`,
+    // plateaus through the winter, then decays via `nuclearWinterEnvelope`.
     const cfg = scn.payload;
-    const env = nuclearWinterEnvelope(progress01, cfg);
-    if (progress01 <= cfg.strikeEndFrac) {
-      const ramp = cfg.strikeEndFrac <= 0 ? 1 : progress01 / cfg.strikeEndFrac;
-      return ramp > env ? ramp : env;
+    const schedule = scn.payload.schedule;
+
+    if (progress01 >= cfg.winterPlateauEndFrac) {
+      return nuclearWinterEnvelope(progress01, cfg);
     }
-    if (progress01 < cfg.winterPlateauEndFrac) return 1;
-    return env;
+
+    let fired = 0;
+    for (let i = 0; i < schedule.length; i++) {
+      if (schedule[i]!.spawnedScenarioId) fired++;
+    }
+    const strikeRamp = schedule.length === 0 ? 0 : fired / schedule.length;
+    if (strikeRamp >= 1) return 1;
+    return strikeRamp;
   },
 
   getBombsActive(scn: Scenario<'nuclearWar'>): number {
@@ -213,7 +237,17 @@ export const NuclearWarScenario: ScenarioKindHandler<'nuclearWar'> = {
     // either way for HUD purposes. `tallyStrikeBiomeBlt` reads each
     // polygon's BLT entry for non-city density + residency, so open
     // desert / tundra strikes retain more fallout than rainforest strikes.
+    //
+    // Dedupe masks are load-bearing: 50+ city-buster ellipses overlap
+    // heavily (Tokyo + Yokohama + Osaka, the BosWash corridor, the
+    // Pearl River delta), and without them every overlapping city /
+    // polygon is counted once per strike. Tallied populationAtRisk
+    // ballooned to ~5× world population, so as soon as the war's
+    // intensity envelope crossed ~20% the civilization bar pinned to 0
+    // ("DESTROYED" within seconds of launch).
     const schedule = scn.payload.schedule;
+    const cityHitMask = new Uint8Array(deps.cities.length);
+    const polyHitMask = new Uint8Array(deps.polygonLookup.count + 1);
     for (let i = 0; i < schedule.length; i++) {
       const s = schedule[i]!;
       const ellipse: StrikeEllipse = {
@@ -223,8 +257,8 @@ export const NuclearWarScenario: ScenarioKindHandler<'nuclearWar'> = {
         stretchKm: s.stretchKm * killScale,
         bearingDeg: 0,
       };
-      tallyStrikeCities(ellipse, deps.cities, budget);
-      tallyStrikeBiomeBlt(ellipse, deps, budget);
+      tallyStrikeCities(ellipse, deps.cities, budget, cityHitMask);
+      tallyStrikeBiomeBlt(ellipse, deps, budget, polyHitMask);
     }
 
     // Winter biome shift — projection-driven against the combined frame
@@ -235,6 +269,15 @@ export const NuclearWarScenario: ScenarioKindHandler<'nuclearWar'> = {
       deps,
       budget,
     );
+
+    // Game-pace tuning: scale civilization-side tallies down so the
+    // population / cities / streets bars decline visibly without
+    // bottoming out the moment a war is in mid-fire. Radiation is
+    // left at its raw tally — `RADIATION_HALF_FULL` already shapes
+    // that bar separately.
+    const strikes = scn.payload.strikeCount ?? DEFAULT_NUCLEAR_WAR_CONFIG.strikeCount;
+    budget.populationAtRisk *= warPopulationScale(strikes);
+    budget.citiesAtRisk *= WAR_CITIES_SCALE;
 
     return budget;
   },

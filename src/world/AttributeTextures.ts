@@ -149,6 +149,10 @@ export class AttributeTextures {
     ChannelSource | 'zero' | 'elevMeters',
     THREE.DataTexture
   >();
+  // Sorted copy of every cell's elevation (metres). Built lazily on first
+  // call to `getLandFraction`; reused for binary-search lookups thereafter.
+  // HEALPix cells are equal-area, so cell counts double as area fractions.
+  private sortedElevationsMetersCache: Float32Array | null = null;
 
   constructor(
     nside: number,
@@ -167,6 +171,11 @@ export class AttributeTextures {
     // Highways / VolumetricCloudPass) can resolve it via the same
     // generic path used by future kinds.
     this.registerDynamicR8Attribute('wasteland');
+    // 'infrastructure_loss' runs in parallel to wasteland: climate
+    // scenarios stamp into it to kill cities + highways without
+    // painting a black wasteland scar on the LAND shader. Cities and
+    // highways shaders gate on `max(wasteland, infrastructure_loss)`.
+    this.registerDynamicR8Attribute('infrastructure_loss');
     // RG8 class buffer — 2 bytes per cell (R = slot 0 class, G = slot 1 class).
     this.biomeOverrideClassBytes = new Uint8Array(12 * nside * nside * 2);
     // RGBA8 stamp buffer — 4 bytes per cell
@@ -503,6 +512,43 @@ export class AttributeTextures {
     const lo = this.elevMetersBytes[byteIdx] ?? 0;
     const hi = this.elevMetersBytes[byteIdx + 1] ?? 0;
     return halfToFloat((hi << 8) | lo);
+  }
+
+  /**
+   * Fraction of the planet's surface above the given sea level, in [0, 1].
+   * HEALPix cells are equal-area, so the answer is just
+   * `(cells with elev >= seaLevelM) / total cells`. On the first call we
+   * decode and sort every cell's elevation; subsequent calls binary-search
+   * the cached array, so per-frame cost is O(log n).
+   */
+  getLandFraction(seaLevelM: number): number {
+    if (!this.sortedElevationsMetersCache) {
+      const npix = 12 * this.nside * this.nside;
+      const out = new Float32Array(npix);
+      const bytes = this.elevMetersBytes;
+      for (let ipix = 0; ipix < npix; ipix++) {
+        const byteIdx = ipix * 2;
+        const lo = bytes[byteIdx] ?? 0;
+        const hi = bytes[byteIdx + 1] ?? 0;
+        out[ipix] = halfToFloat((hi << 8) | lo);
+      }
+      out.sort();
+      this.sortedElevationsMetersCache = out;
+    }
+    const sorted = this.sortedElevationsMetersCache;
+    const n = sorted.length;
+    if (n === 0) return 0;
+    // Count of cells strictly below the sea-level cutoff = water count.
+    // Land shader uses `elevHere < uSeaLevelOffsetM ? discard`, so `>=` is land.
+    let lo = 0;
+    let hi = n;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (sorted[mid]! < seaLevelM) lo = mid + 1;
+      else hi = mid;
+    }
+    const waterCount = lo;
+    return (n - waterCount) / n;
   }
 
   getValue(attr: AttributeKey, latDeg: number, lonDeg: number, ipix: number): number {

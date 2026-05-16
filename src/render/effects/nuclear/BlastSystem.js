@@ -1,7 +1,7 @@
 // One THREE.Points mesh + one ShaderMaterial shared across up to
 // MAX_CONCURRENT_BLASTS concurrent nuclear blasts. Replaces a pool of
 // per-blast NuclearExplosion instances with a single draw call:
-//   - One BufferGeometry with attributes sized `MAX_SLOTS * maxN`.
+//   - One BufferGeometry with attributes sized `MAX_CONCURRENT_BLASTS * maxN`.
 //   - 12 BlastSlot records own per-blast state (particles, splines,
 //     wind, quaternion, world origin, per-strike scale).
 //   - Each slot writes its own contiguous range [s*maxN, (s+1)*maxN).
@@ -164,7 +164,7 @@ function buildSplines(cfg) {
  * even when idle (size attribute is 0, but the vertex stage still runs).
  * Lower = strikes evict each other earlier when the war front is dense.
  */
-export const MAX_CONCURRENT_BLASTS = 12;
+export const MAX_CONCURRENT_BLASTS = 24;
 /**
  * PERF TUNABLE — far-side cull threshold.
  * In `update()`, a slot is skipped when `worldOrigin · camera.position`
@@ -176,6 +176,19 @@ export const MAX_CONCURRENT_BLASTS = 12;
  * with camera distance from the planet.
  */
 const FAR_SIDE_CULL_DOT = 0;
+/**
+ * PERF TUNABLE — detonate budget per frame.
+ * Defensive cap on how many `detonateAt` calls actually spawn a new blast
+ * per render frame. Excess calls are dropped silently (the kill-zone scar
+ * is painted by the scenario handler, not this system, so the wasteland is
+ * unaffected). During a Nuclear War with all `MAX_CONCURRENT_BLASTS` slots
+ * busy, each extra detonate evicts the lowest-particle slot and re-runs
+ * `_initSlot` — initialising 784 particles. Splines are cached by tuning
+ * hash and reused, so per-detonate cost is the particle init plus an
+ * attribute-buffer rewrite, not a fresh spline bake. Capping at 4/frame
+ * holds the worst-case init cost to ~3 ms even in a peak war front.
+ */
+const DETONATE_BUDGET_PER_FRAME = 4;
 export class BlastSystem {
     mesh;
     _camera;
@@ -204,6 +217,9 @@ export class BlastSystem {
     _tmpDrag = new THREE.Vector3();
     _tmpVel = new THREE.Vector3();
     _tmpInvQuat = new THREE.Quaternion();
+    // Per-frame detonate counter — reset at the top of each `update()`,
+    // incremented in `detonateAt()`. Caps the burst spawn rate.
+    _detonatesThisFrame = 0;
     // Shared tuning.
     _viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 1080;
     _liveScale;
@@ -368,8 +384,17 @@ export class BlastSystem {
      * Spawn a new blast. Picks the first idle slot; falls back to the slot
      * with the fewest live particles so the visible disruption is minimised.
      * `radius` is on the unit sphere (1.0 + elevation×scale).
+     *
+     * Per-frame budget: drops the call if more than `DETONATE_BUDGET_PER_FRAME`
+     * blasts have already spawned since the last `update()`. The wasteland
+     * kill-zone scar is painted by the scenario handler — not here — so a
+     * dropped visual does NOT skip the kill zone. Worst case the user sees
+     * fewer simultaneous mushroom clouds than strikes hit the map during a
+     * 70-strike opening volley.
      */
     detonateAt(direction, radius, wind, sizeKm) {
+        if (this._detonatesThisFrame >= DETONATE_BUDGET_PER_FRAME)
+            return;
         let slotIdx = -1;
         for (let i = 0; i < this._slots.length; i++) {
             if (!this._slots[i].running) {
@@ -390,8 +415,13 @@ export class BlastSystem {
         if (slotIdx < 0)
             return;
         this._initSlot(slotIdx, direction, radius, wind, sizeKm);
+        this._detonatesThisFrame++;
     }
     update(deltaSec) {
+        // Per-frame detonate budget resets at the top of each update. `update`
+        // is called once per render frame from scene-graph, so this is the
+        // natural boundary for "this frame".
+        this._detonatesThisFrame = 0;
         for (let s = 0; s < this._slots.length; s++) {
             const slot = this._slots[s];
             if (!slot.running)
@@ -764,7 +794,7 @@ export class BlastSystem {
             sz[baseVertex + i] = 0;
         }
         // Upload only this slot's range. Without addUpdateRange Three.js would
-        // re-upload the whole MAX_SLOTS × maxN buffer each frame; with it, the
+        // re-upload the whole MAX_CONCURRENT_BLASTS × maxN buffer each frame; with it, the
         // per-blast cost stays bounded to a slot's worth of bytes. Three.js
         // auto-clears updateRanges after upload (WebGLAttributes.updateBuffer
         // line 143), so each slot only *adds* ranges — never clears, otherwise

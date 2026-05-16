@@ -68,7 +68,7 @@ const YEAR_PHASE_OFFSET = 0.221;
 const T01_PER_SECOND = 0.04;
 export function createSceneGraph() {
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(DEFAULTS.scene.background);
+    scene.background = new THREE.Color(0x000000);
     // Z-up matches the data-pipeline's `lonlat_to_xyz` convention end-to-end.
     // Orbit, picking, and shading all stay in this frame — no axis swap.
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
@@ -243,7 +243,7 @@ export function createSceneGraph() {
         world = w;
         attachedCanvas = canvas;
         controls = new OrbitControls(camera, canvas);
-        controls.enableDamping = true;
+        controls.enableDamping = false;
         controls.minDistance = 1.2;
         controls.maxDistance = 15;
         controls.target.set(0, 0, 0);
@@ -546,7 +546,7 @@ export function createSceneGraph() {
         }
         // Zoom-fade factor for highways. Camera position length to the origin
         // is the globe-centre distance (globe is at world 0). tFar = 0 at
-        // camera distance ≤ 1.5 (zoomed in), 1 at ≥ 15 (zoomed out).
+        // camera distance ≤ 1.2 (zoomed in), 1 at ≥ 5 (zoomed out).
         const camDist = camera.position.length();
         const tFar = THREE.MathUtils.smoothstep(camDist, 1.2, 5);
         if (highways) {
@@ -757,9 +757,6 @@ export function createSceneGraph() {
             controls.autoRotate = debug.camera.autoOrbit && !debug.timeOfDay.paused;
             controls.autoRotateSpeed = debug.camera.orbitSpeed * 60;
             controls.update(deltaSec);
-        }
-        if (scene.background instanceof THREE.Color) {
-            scene.background.set(debug.scene.background);
         }
         debug.pick.lastPick = lastPickRef.value;
         // Time / calendar tick. See the "Time / calendar" header at the top of

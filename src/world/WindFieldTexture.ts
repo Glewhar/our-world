@@ -3,9 +3,6 @@
  * header, and uploads the body as a Three `DataTexture` of format `RGFormat`
  * + `HalfFloatType`. Consumed by `VolumetricCloudPass` for cloud advection.
  *
- * File format spec lives in
- * [`docs/adr/0009-wind-field-byte-format.md`](../../../docs/adr/0009-wind-field-byte-format.md).
- *
  * Byte layout: 32-byte header (magic 'WIND' + version + width + height +
  * 16 reserved) + width × height × (u_f16, v_f16) interleaved.
  *

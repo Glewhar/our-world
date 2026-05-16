@@ -48,7 +48,7 @@ const MAX_WALL_TIME_MS = 1500;
 const PIXEL_BUDGET_4K = 6_000_000;
 const RENDER_SCALE_4K_CLAMP = 0.7;
 
-export type ProbeResult = {
+type ProbeResult = {
   tier: Tier;
   avgFrameMs: number;
   samples: number;

@@ -51,9 +51,9 @@ function hexToRgbUnit(hex: string): { r: number; g: number; b: number } {
 }
 
 export const DEFAULT_ICE_AGE_CONFIG: IceAgeScenarioConfig = {
-  maxTempDeltaC: -10,
+  maxTempDeltaC: -30,
   precipDeltaMm: -30,
-  durationDays: 60,
+  durationDays: 15,
   seafloorPalette: [
     hexToRgbUnit('#b8c8d4'), // 16 polar shelf — pale frozen blue-grey
     hexToRgbUnit('#5a544c'), // 17 temperate shelf — dark wet mud

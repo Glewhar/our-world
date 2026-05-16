@@ -6,6 +6,6 @@
  * IdRaster, AttributeTextures, WorkerBridge, manifest-loader, healpix,
  * coordinates — are deliberately NOT exported from this barrel: render
  * code reaches WorldRuntime via this entry only, keeping the C2 boundary
- * tight (per docs/plans/02-world-runtime.md:39).
+ * tight.
  */
 export { createWorldRuntime } from './WorldRuntime.js';

@@ -12,7 +12,7 @@
  *   (0, 10) → Pond Outer  (outside Middle's 7° bbox)
  *   (0, 15) → null        (outside all)
  *
- * NOTE: The rasterizer (cap-prefilter + arc-crossing PIP, ADR-0002) leaves
+ * NOTE: The rasterizer (cap-prefilter + arc-crossing PIP) leaves
  * the single cell at (lat≈0°, lon≈0.7°) — index 24192 at nside=64 — as 0,
  * a known artifact at the polygon-centroid pixel. We pick (1, 1) instead
  * for the Inner case to dodge this; the picking exit-gate verifies that
@@ -122,7 +122,7 @@ describe('pickFromRay', () => {
   });
 
   it('still resolves correctly when the ray comes from a far camera', () => {
-    // LOD-3 camera distance (per ADR-0004): a few unit-spheres out. The id
+    // LOD-3 camera distance: a few unit-spheres out. The id
     // raster doesn't change with LOD, so picking must remain identical.
     const target = latLonToXyz(0, 5);
     const origin = target.clone().multiplyScalar(20);

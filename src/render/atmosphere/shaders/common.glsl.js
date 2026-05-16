@@ -10,8 +10,7 @@ export const source = `// Hillaire 2020 atmosphere — shared physical constants
 // changing the radius dilates the integration domain while preserving the
 // column-integral optical depth.
 //
-// See \`docs/adr/0007-bruneton-hillaire-atmosphere.md\` and the reference
-// at \`jeantimex/precomputed_atmospheric_scattering\` for the math source.
+// Math source: \`jeantimex/precomputed_atmospheric_scattering\`.
 
 // GLSL ES 3.00 requires explicit precision before any non-const float decl.
 // common.glsl is concatenated before each frag shader, so set it here so the

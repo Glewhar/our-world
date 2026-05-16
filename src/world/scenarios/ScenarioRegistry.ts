@@ -74,7 +74,6 @@ import type {
   ScenarioKindHandler,
   ScenarioPayload,
   ScenarioStamp,
-  SeafloorContribution,
   StartScenarioOpts,
 } from './types.js';
 import {
@@ -94,10 +93,13 @@ import { buildProjectionPolygonTextures } from './biomeProjection.js';
 
 /**
  * Radiation half-saturation point in km² — `1 - exp(-units / RAD_HALF)`
- * is the bar fill. Tuned so a single Nuclear strike (≈210,000 km² at
- * default radius) pushes ~12% of the bar; a 70-strike war saturates.
+ * is the bar fill. Tuned so a Nuclear War ramps the bar smoothly with
+ * bombs landing: ~3 strikes ≈ 25%, ~10 strikes ≈ 60%, ~25 strikes ≈ 90%,
+ * full 50-strike war saturates. Previously 1.5M, which pinned the bar
+ * to 100% after just 3 bombs because the war's aggregate `radiationUnits`
+ * (sum of every kill ellipse) is ~120M km² × intensity.
  */
-const RADIATION_HALF_FULL = 1_500_000;
+const RADIATION_HALF_FULL = 80_000_000;
 
 let nextScenarioCounter = 1;
 
@@ -156,6 +158,20 @@ export type BiomeOverrideSink = {
   countBiomesGlobal(): Record<number, number>;
   /** Continuous elevation in metres at the given cell. */
   getElevationMetersAtCell(ipix: number): number;
+  /**
+   * Polygon id covering the given HEALPix cell, or 0 if no polygon
+   * owns it. Backed by a lazy per-cell index (built once from the
+   * equirect polygon raster). Used by climate destruction stamps that
+   * walk cells inside polygons projected to flip to ICE / DESERT.
+   */
+  getPolygonOfCell(ipix: number): number;
+  /**
+   * Polygon id at the given lat/lon, sampled directly from the
+   * equirect polygon raster. Used by the ICE city-kill tally — cities
+   * are point samples; mapping each to its polygon doesn't need a
+   * full per-cell index.
+   */
+  getPolygonIdAt(latDeg: number, lonDeg: number): number;
   /** Polygon lookup the projection bake walks at climate-membership change. */
   getPolygonLookup(): PolygonLookup;
   /**
@@ -289,6 +305,18 @@ type ActiveEntry = {
  */
 const RECOMPOSE_THROTTLE_MS = 1000;
 
+/**
+ * PERF TUNABLE — force-recompose floor.
+ * Lower bound for *forced* recomposes (new strike, scenario start/stop,
+ * auto-repeat). Without a floor, an async-stamp burst (Nuclear War with
+ * dozens of simultaneous strike replies) trips one full recompose per
+ * reply — the cumulative cost trips the browser's "Page not responsive"
+ * watchdog. 150 ms caps forced recomposes at ~6 paint steps/sec — the
+ * visible scar growth during a war is still smooth, but the main thread
+ * gets time to breathe between repaints.
+ */
+const RECOMPOSE_FORCE_FLOOR_MS = 150;
+
 export class ScenarioRegistry {
   private readonly handlers = new Map<ScenarioKind, ScenarioKindHandler<ScenarioKind>>();
   private readonly active: ActiveEntry[] = [];
@@ -413,6 +441,14 @@ export class ScenarioRegistry {
       detonateAt: (lat, lon, terrain, sizeKm) => userCtx.detonateAt(lat, lon, terrain, sizeKm),
       paintAttributeEllipse: (args) => this.captureEllipsePaint(args, userCtx),
       paintAttributeBand: (args) => this.captureBandPaint(args, userCtx),
+      paintAttributeCells: (args) => this.captureCellsPaint(args, userCtx),
+      getElevationMetersAtCell: (ipix) =>
+        this.biomeOverrideSink ? this.biomeOverrideSink.getElevationMetersAtCell(ipix) : 0,
+      getPolygonOfCell: (ipix) =>
+        this.biomeOverrideSink ? this.biomeOverrideSink.getPolygonOfCell(ipix) : 0,
+      getCellCount: () => 12 * this.nside * this.nside,
+      getPolygonLookup: () =>
+        this.biomeOverrideSink ? this.biomeOverrideSink.getPolygonLookup() : null,
       spawnChildScenario: <K extends Exclude<ScenarioKind, 'nuclearWar'>>(
         kind: K,
         payload: ScenarioPayload[K],
@@ -428,6 +464,7 @@ export class ScenarioRegistry {
       stopChildScenario: (id) => this.stop(id),
       setWorldEffect: (name, scale) => userCtx.setWorldEffect(name, scale),
       getMajorCities: (maxCount) => userCtx.getMajorCities(maxCount),
+      getRoadCount: () => userCtx.getRoadCount(),
       getSeaLevelMultiplier: () => userCtx.getSeaLevelMultiplier(),
     };
   }
@@ -521,21 +558,21 @@ export class ScenarioRegistry {
 
   /**
    * Throttled recompose: scar paint feeds millions of cells but the per-frame
-   * fade is sub-perceptible. Cap at ≤1× per real-time second so the long
-   * post-war tail (~15 min real-time) stops saturating the main thread.
-   * Wallclock cadence keeps the visible fade rate stable across sim speed,
-   * pause, and scrub. Edges that must show immediately (new strike, scenario
-   * start/stop, auto-repeat) bypass via `forceRecomposeNext`.
+   * fade is sub-perceptible. Two floors, picked by whether a force flag is set:
+   *   • Natural fade   → RECOMPOSE_THROTTLE_MS (1 s)
+   *   • Forced (edge)  → RECOMPOSE_FORCE_FLOOR_MS (150 ms)
+   * Async stamp replies during a Nuclear War set the force flag dozens of
+   * times per second; the 150 ms floor collapses that burst into ~6 paint
+   * steps/sec so the main thread isn't pegged. Force flag is preserved
+   * across throttle skips so the next eligible frame still paints.
    */
   private maybeRecompose(totalDays: number): void {
     if (!this.dirty) return;
     const now = performance.now();
-    if (
-      !this.forceRecomposeNext &&
-      now - this.lastRecomposeWallMs < RECOMPOSE_THROTTLE_MS
-    ) {
-      return;
-    }
+    const floor = this.forceRecomposeNext
+      ? RECOMPOSE_FORCE_FLOOR_MS
+      : RECOMPOSE_THROTTLE_MS;
+    if (now - this.lastRecomposeWallMs < floor) return;
     this.recomposeFrame(totalDays);
     this.lastRecomposeWallMs = now;
     this.forceRecomposeNext = false;
@@ -913,6 +950,19 @@ export class ScenarioRegistry {
   }
 
   /**
+   * Boot-time world totals (population, cities count, etc.) for HUD
+   * readouts. Returns null until the first impact-budget call has
+   * lazily populated the cache. UI polls each frame and falls back to
+   * placeholder text while null.
+   */
+  getWorldTotals(): WorldTotals | null {
+    if (!this.worldTotalsCache && this.biomeOverrideSink) {
+      this.getImpactDeps();
+    }
+    return this.worldTotalsCache;
+  }
+
+  /**
    * Six-bucket pristine biome diorama composition. Walks
    * `worldTotalsCache.biomeCellsByClass` once via `biomeCategoryOf`,
    * caches the result for the registry's life — the underlying baked
@@ -972,16 +1022,18 @@ export class ScenarioRegistry {
         getCityPopulations: function* () {
           for (let i = 0; i < cities.length; i++) yield cities[i]!.pop;
         },
+        getRoadCount: () => this.context.getRoadCount(),
         countBiomesGlobal: () => sink.countBiomesGlobal(),
         getPolygonLookup: () => polygonLookup,
       });
     }
     const lookup = this.biomeOverrideSink.getPolygonLookup();
+    const sink = this.biomeOverrideSink;
     return {
       cities: this.citiesCache ?? [],
       polygonLookup: lookup,
       totals: this.worldTotalsCache,
-      getPolygonIdAt: () => 0,
+      getPolygonIdAt: (lat, lon) => sink.getPolygonIdAt(lat, lon),
       combinedClimate: this.getPeakCombinedClimate(),
     };
   }
@@ -1106,12 +1158,17 @@ export class ScenarioRegistry {
       const progress01 = raw < 0 ? 0 : raw > 1 ? 1 : raw;
       const intensityNormal = decayQuickThenSlow(progress01, this.tuning.decayExponent);
       const intensitySustained = decaySustained(progress01);
+      const intensityClimate = climateRisePlateauFall(progress01);
       for (let stIdx = 0; stIdx < entry.stamps.length; stIdx++) {
         const stamp = entry.stamps[stIdx]!;
         const stampKey = stamp.attribute ?? 'wasteland';
         if (stampKey !== sinkKey) continue;
         const intensity =
-          stamp.decayMode === 'sustained' ? intensitySustained : intensityNormal;
+          stamp.decayMode === 'sustained'
+            ? intensitySustained
+            : stamp.decayMode === 'climateRiseFall'
+              ? intensityClimate
+              : intensityNormal;
         if (intensity <= 0) continue;
         const cells = stamp.cells;
         const values = stamp.values;
@@ -1299,6 +1356,39 @@ export class ScenarioRegistry {
     }
   }
 
+  /**
+   * Pre-baked cell-list stamp. Climate destruction scenarios compute
+   * the exact HEALPix cell footprint at `onStart` (cells under peak
+   * sea level / cells inside polygons projected to flip to ICE) and
+   * hand it to the registry as a single `value`-everywhere stamp. The
+   * registry composes it just like an ellipse / band stamp; no worker
+   * round-trip — the caller already did the work.
+   */
+  private captureCellsPaint(
+    args: {
+      attribute: string;
+      value: number;
+      cells: Uint32Array;
+      decayMode?: 'quickThenSlow' | 'sustained' | 'climateRiseFall';
+    },
+    userCtx: ScenarioContext,
+  ): void {
+    if (!this.capturingStamps) {
+      userCtx.paintAttributeCells(args);
+      return;
+    }
+    const v = args.value > 1 ? 1 : args.value < 0 ? 0 : args.value;
+    const values = new Float32Array(args.cells.length);
+    if (v !== 0) values.fill(v);
+    const stamp: ScenarioStamp = {
+      cells: args.cells,
+      values,
+      attribute: args.attribute,
+    };
+    if (args.decayMode) stamp.decayMode = args.decayMode;
+    this.capturingStamps.push(stamp);
+  }
+
   private captureBandPaint(args: BandPaintArgs, userCtx: ScenarioContext): void {
     if (!this.capturingStamps) {
       userCtx.paintAttributeBand(args);
@@ -1354,8 +1444,13 @@ export class ScenarioRegistry {
 
     this.dirty = true;
     this.composedFrame = null;
+    // Set the force flag and let the next `tick` → `maybeRecompose` paint it.
+    // Direct `recomposeFrame()` here used to fire once per async reply — a
+    // 70-strike war reply storm would trigger 70 full recomposes back-to-back
+    // and trip the browser's "Page not responsive" watchdog. The 150 ms
+    // force floor in maybeRecompose now collapses those replies into ~6
+    // paint steps/sec while still feeling immediate to the eye.
     this.forceRecomposeNext = true;
-    this.recomposeFrame(this.lastTotalDays);
     if (stamp.attribute === 'biomeOverride' && owner.climateSlot !== null) {
       this.bakeBiomeOverrideTextures();
     }

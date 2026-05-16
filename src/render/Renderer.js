@@ -14,6 +14,11 @@ export class Renderer {
     renderer;
     resizeObserver = null;
     renderScale = 1.0;
+    // Context-loss subscribers. main.ts wires these after constructing the
+    // Renderer so the sim can be frozen + the loading overlay re-shown when
+    // the GPU driver yanks the WebGL context (Win+L, TDR, OOM, etc.).
+    onContextLost = null;
+    onContextRestored = null;
     constructor(host, sceneGraph) {
         this.host = host;
         this.sceneGraph = sceneGraph;
@@ -31,6 +36,17 @@ export class Renderer {
         // Apply default render scale (1.0). main.ts re-calls setRenderScale
         // with the auto-tuned value once the GPU probe lands.
         this.setRenderScale(1.0);
+        // preventDefault on `webglcontextlost` is what asks the browser to fire
+        // `webglcontextrestored` once the driver recovers. Without it the canvas
+        // stays dead forever and Three.js silently swallows every subsequent
+        // draw call — what looked like a freeze in earlier sessions.
+        this.canvas.addEventListener('webglcontextlost', (e) => {
+            e.preventDefault();
+            this.onContextLost?.();
+        });
+        this.canvas.addEventListener('webglcontextrestored', () => {
+            this.onContextRestored?.();
+        });
         // Hand the WebGLRenderer to the scene graph so it can construct the
         // PostFXChain (EffectComposer + RenderPass at M0; passes attach in
         // later milestones).
