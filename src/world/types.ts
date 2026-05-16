@@ -168,13 +168,31 @@ export type RoadRecord = {
  * This artifact sits OUTSIDE `WorldManifest.artifacts` — the runtime
  * fetches it by URL convention as a sibling of `world_manifest.json` so
  * older bakes that predate the artifact still validate against C1.
+ *
+ * Version 1 ships a single outer-ring `polygon` per record; the runtime
+ * synthesises tiers at load time. Version 2 ships per-tier polygons
+ * (GHS-SMOD urban centre / dense / semi-dense / suburban) directly.
  */
 export type UrbanAreasFile = {
-  version: 1;
+  version: 1 | 2;
   source: string; // e.g. "ghs_ucdb_R2024A_V1.1"
   generated_at: string; // ISO8601
   count: number;
-  urban_areas: UrbanAreaRecord[];
+  urban_areas: UrbanAreaRecord[] | LegacyUrbanAreaRecord[];
+};
+
+/**
+ * One density tier of an urban area. SMOD-derived: 1.0 = urban centre,
+ * 0.75 = dense cluster, 0.5 = semi-dense, 0.25 = suburban. Each tier is
+ * a single closed polygon (multi-component tiers are split into separate
+ * `UrbanAreaRecord` entries so a single record always has connected
+ * tier polygons).
+ */
+export type UrbanDensityTier = {
+  /** Density weight in [0, 1] — drives the cities shader's block-spray + outline + alpha. */
+  density: number;
+  /** Simplified outer-ring vertices as `[lat, lon]` pairs (degrees), no closing dup. */
+  polygon: [number, number][];
 };
 
 export type UrbanAreaRecord = {
@@ -190,10 +208,24 @@ export type UrbanAreaRecord = {
   name: string;
   country: string;
   /**
-   * Simplified outer-ring vertices as `[lat, lon]` pairs (degrees). First
-   * vertex is NOT repeated at the end — the consumer closes the ring.
-   * Typical length ≈ 40 verts after the ~200 m Douglas–Peucker simplify.
+   * Density tiers, densest first. v2 bakes ship the real GHS-SMOD slices;
+   * the v1 loader synthesises them from the legacy outer-ring polygon.
    */
+  tiers: UrbanDensityTier[];
+};
+
+/**
+ * Legacy v1 raw record (single outer-ring polygon). Only used by the
+ * loader to back-fill `tiers` until the v2 bake lands; never reaches the
+ * render layer.
+ */
+export type LegacyUrbanAreaRecord = {
+  id: number;
+  lat: number;
+  lon: number;
+  pop: number;
+  name: string;
+  country: string;
   polygon: [number, number][];
 };
 

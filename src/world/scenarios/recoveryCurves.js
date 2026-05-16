@@ -50,6 +50,18 @@ export function decaySustained(progress01, holdFrac = 0.85, exponent = 2.5, ramp
     return Math.pow(1 - q, exponent);
 }
 /**
+ * Infrastructure-Decay envelope: gentle eased ramp from 0 to 1, no
+ * falloff. The fragment shader's per-polygon `seedToThreshold`
+ * randomisation spreads the visual decay across the lifetime, so a
+ * mildly accelerating ramp (`p^1.5`) gives a subtle onset and a clear
+ * "finishing the job" feel at the end. Never returns above 1 — infra
+ * loss must not reverse.
+ */
+export function infraDecayEnvelope(progress01) {
+    const p = progress01 < 0 ? 0 : progress01 > 1 ? 1 : progress01;
+    return Math.pow(p, 1.5);
+}
+/**
  * Climate envelope: linear rise → plateau at 1 → linear fall.
  *
  *   - 0 → 1 over first `riseFrac` of lifetime (default 10%)

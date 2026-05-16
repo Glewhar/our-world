@@ -40,3 +40,24 @@ export function polygonsThatFlipTo(peakDelta, targetBiomeId, lookup, minWeight =
     }
     return out;
 }
+/**
+ * R8 mask sized `lookup.count + 1`. Byte = 255 for every polygon with a
+ * non-zero baseline biome (i.e. every populated land polygon); 0 for
+ * ocean / no-data polygons and the slot-0 sentinel.
+ *
+ * Used by Infrastructure-Decay — the scenario that auto-fires when the
+ * world's population hits zero and slowly erases every city and road
+ * worldwide. Decoupled from `polygonsThatFlipTo` because that helper is
+ * tied to a specific biome flip target; Infra-Decay needs "everywhere
+ * civilisation could exist" without changing biome rendering.
+ */
+export function allPopulatedPolygons(lookup) {
+    const out = new Uint8Array(lookup.count + 1);
+    for (let i = 1; i <= lookup.count; i++) {
+        const baselineId = lookup.biome[i] & 0xff;
+        if (baselineId === 0)
+            continue;
+        out[i] = 255;
+    }
+    return out;
+}

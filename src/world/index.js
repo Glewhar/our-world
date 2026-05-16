@@ -8,4 +8,5 @@
  * code reaches WorldRuntime via this entry only, keeping the C2 boundary
  * tight.
  */
+export { outermostTier } from './urban-areas.js';
 export { createWorldRuntime } from './WorldRuntime.js';

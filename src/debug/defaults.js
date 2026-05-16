@@ -218,7 +218,7 @@ export const DEFAULTS = {
             currentTintEnabled: true,
             showMediumCurrents: false,
             shimmerCurrentDrift: 17,
-            seaLevelOffsetM: 0,
+            seaLevelOffsetM: -10,
             // Additive cool cast painted onto ocean cells where surface-current
             // speed exceeds the visibility gate (Gulf Stream, Kuroshio, ACC).
             currentTintColor: '#273f45',

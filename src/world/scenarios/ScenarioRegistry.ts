@@ -1533,5 +1533,7 @@ function defaultLabel(kind: ScenarioKind): string {
       return 'Ice age';
     case 'nuclearWar':
       return 'Nuclear war';
+    case 'infraDecay':
+      return 'Infrastructure Decay';
   }
 }

@@ -173,6 +173,7 @@ function iconFor(scn: Scenario): string {
     case 'globalWarming': return WarmingIcon;
     case 'iceAge':        return IceIcon;
     case 'nuclearWar':    return NukeIcon;
+    case 'infraDecay':    return WarmingIcon;
   }
 }
 
@@ -182,5 +183,6 @@ function toneFor(scn: Scenario): string {
     case 'globalWarming': return 'warming';
     case 'iceAge':        return 'ice';
     case 'nuclearWar':    return 'war';
+    case 'infraDecay':    return 'decay';
   }
 }

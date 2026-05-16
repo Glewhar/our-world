@@ -13,7 +13,7 @@
 
 import type { ImpactBudgetDeps, ScenarioImpactBudget } from './impactBudget.js';
 
-export type ScenarioKind = 'nuclear' | 'globalWarming' | 'iceAge' | 'nuclearWar';
+export type ScenarioKind = 'nuclear' | 'globalWarming' | 'iceAge' | 'nuclearWar' | 'infraDecay';
 
 /**
  * Names the registry passes through `ScenarioContext.setWorldEffect`. The
@@ -133,11 +133,21 @@ export type IceAgeScenarioPayload = {
   precipDeltaMm?: number;
 };
 
+/**
+ * Infrastructure-Decay payload. No tunables — the scenario auto-fires
+ * once per game when world population hits zero and slowly erases every
+ * city and road over a fixed `INFRA_DECAY_DURATION_DAYS` lifetime. Empty
+ * object so the registry's generic `ScenarioPayload[K]` indexing still
+ * type-checks.
+ */
+export type InfraDecayScenarioPayload = Record<string, never>;
+
 export type ScenarioPayload = {
   nuclear: NuclearScenarioPayload;
   globalWarming: GlobalWarmingScenarioPayload;
   iceAge: IceAgeScenarioPayload;
   nuclearWar: NuclearWarScenarioPayload;
+  infraDecay: InfraDecayScenarioPayload;
 };
 
 export type Scenario<K extends ScenarioKind = ScenarioKind> = {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { BIOME } from '../../biomes/BiomeLookup.js';
-import { polygonsThatFlipTo } from '../climateDestructionStamps.js';
+import { allPopulatedPolygons, polygonsThatFlipTo } from '../climateDestructionStamps.js';
 import type { PolygonLookup } from '../../PolygonTexture.js';
 
 function buildLookup(biomes: number[]): PolygonLookup {
@@ -82,5 +82,26 @@ describe('polygonsThatFlipTo', () => {
     expect(out[0]).toBe(0);
     expect(out[1]).toBe(0); // baseline 0 — skipped
     expect(out[2]).toBe(255);
+  });
+});
+
+describe('allPopulatedPolygons', () => {
+  it('marks every non-zero baseline polygon at 255', () => {
+    const lookup = buildLookup([BIOME.TUNDRA, BIOME.TROPICAL_MOIST, BIOME.DESERT]);
+    const out = allPopulatedPolygons(lookup);
+    expect(out.length).toBe(lookup.count + 1);
+    expect(out[0]).toBe(0); // slot-0 no-data sentinel
+    expect(out[1]).toBe(255);
+    expect(out[2]).toBe(255);
+    expect(out[3]).toBe(255);
+  });
+
+  it('leaves ocean / no-data polygons at 0', () => {
+    const lookup = buildLookup([0, BIOME.TUNDRA, 0]);
+    const out = allPopulatedPolygons(lookup);
+    expect(out[0]).toBe(0);
+    expect(out[1]).toBe(0); // baseline 0 — ocean / no-data
+    expect(out[2]).toBe(255);
+    expect(out[3]).toBe(0);
   });
 });

@@ -3,8 +3,9 @@
  *
  * Left card: Biome
  *   - State icon (balanced / unbalanced) + label
- *   - Trend chips (top-3 by |deltaPct|, up=gain, down=loss)
- *   - 12-hex diorama row, allocated by largest-remainder over 8 buckets
+ *   - 12-hex diorama row. Each tile is statically rendered every frame:
+ *     either fully one biome color, or split between two biomes at the
+ *     fractional boundary along DESIGN_ORDER. No animation, no transitions.
  *
  * Right column: Civilization card + Radiation card
  *   - Civ: composite % + horizontal bar + 3 stat tiles (pop / cities / streets)
@@ -129,6 +130,7 @@ export function mountStatusPanel(
       h,
       totals ? totals.population : null,
       totals ? totals.roads : null,
+      streetsAliveFraction(registry),
     );
     radCard.update(h);
   }
@@ -178,20 +180,30 @@ function buildBiomeCard(host: HTMLElement): BiomeCard {
   const waterTile = buildVitalsTile(vitals, LandWaterIcon, 'Water / Land', 'land');
   card.appendChild(vitals);
 
-  const chips = document.createElement('div');
-  chips.className = 'biome-trend-chips';
-  card.appendChild(chips);
-
   const hexRow = document.createElement('div');
   hexRow.className = 'biome-hex-row';
-  const hexes: HTMLDivElement[] = [];
-  const current: (DesignKey | null)[] = [];
+  const stripeTop = document.createElement('div');
+  stripeTop.className = 'bc-hex-stripe';
+  const stripeBot = document.createElement('div');
+  stripeBot.className = 'bc-hex-stripe is-offset';
+  hexRow.appendChild(stripeTop);
+  hexRow.appendChild(stripeBot);
+  const hexes: HexEls[] = [];
+  const half = HEX_COUNT / 2;
   for (let i = 0; i < HEX_COUNT; i++) {
-    const hex = document.createElement('div');
-    hex.className = 'bc-hex';
-    hexes.push(hex);
-    current.push(null);
-    hexRow.appendChild(hex);
+    const wrap = document.createElement('div');
+    wrap.className = 'bc-hex';
+    const base = document.createElement('div');
+    base.className = 'bc-hex-base';
+    const overlay = document.createElement('div');
+    overlay.className = 'bc-hex-overlay';
+    const iconWrap = document.createElement('div');
+    iconWrap.className = 'bc-hex-icon';
+    wrap.appendChild(base);
+    wrap.appendChild(overlay);
+    wrap.appendChild(iconWrap);
+    (i < half ? stripeTop : stripeBot).appendChild(wrap);
+    hexes.push({ wrap, base, overlay, iconWrap, cat: null, secondCat: null, iconCat: null });
   }
   card.appendChild(hexRow);
 
@@ -210,39 +222,112 @@ function buildBiomeCard(host: HTMLElement): BiomeCard {
     icon.style.color = unbalanced ? 'var(--accent-warm)' : 'var(--biome-forest)';
     stateLabel.textContent = unbalanced ? 'Unbalanced' : 'Balanced';
 
-    // Trend chips — top-3 by abs delta.
-    chips.replaceChildren();
-    const top = h.stats.biomeChanges.slice(0, 3);
-    for (const c of top) {
-      const chip = document.createElement('span');
-      const up = c.deltaPct >= 0;
-      chip.className = `biome-trend-chip ${up ? 'up' : 'down'}`;
-      chip.innerHTML = `<span class="arrow">${up ? '↑' : '↓'}</span>${escapeHtml(c.name)} ${Math.abs(c.deltaPct).toFixed(1)}%`;
-      chips.appendChild(chip);
-    }
-
-    // Hex diorama.
+    // Static rendering: each slot is either a full tile of one biome,
+    // or a left/right split at the fractional boundary along DESIGN_ORDER.
+    // The browser shows whatever values we write this frame — share drift
+    // from the simulation provides continuity, not any interpolation here.
     const design = simSharesToDesign(h.stats.biomeCategoryShares);
-    const allocation = allocateHexes(design);
+    const slots = allocateHexes(design);
     for (let i = 0; i < HEX_COUNT; i++) {
-      const next = allocation[i] ?? null;
-      if (next === current[i]) continue;
-      const hex = hexes[i]!;
-      if (next) {
-        hex.dataset['cat'] = next;
-        hex.innerHTML = DESIGN_GLYPH[next];
-      } else {
-        delete hex.dataset['cat'];
-        hex.innerHTML = '';
-      }
-      hex.classList.remove('flash');
-      void hex.offsetWidth;
-      hex.classList.add('flash');
-      current[i] = next;
+      applyHex(hexes[i]!, slots[i]!);
     }
   }
 
   return { update };
+}
+
+type HexEls = {
+  wrap: HTMLDivElement;
+  base: HTMLDivElement;
+  overlay: HTMLDivElement;
+  iconWrap: HTMLDivElement;
+  cat: DesignKey | null;
+  secondCat: DesignKey | null;
+  iconCat: DesignKey | null;
+};
+
+type HexSlot = {
+  cat: DesignKey;
+  secondCat?: DesignKey;
+  leftFraction?: number;
+};
+
+function applyHex(h: HexEls, slot: HexSlot): void {
+  const cat = slot.cat;
+  const secondCat = slot.secondCat ?? null;
+  const leftFrac = slot.leftFraction ?? 1;
+  const rightPct = secondCat ? Math.max(0, Math.min(100, (1 - leftFrac) * 100)) : 0;
+  const dominant: DesignKey = secondCat && leftFrac < 0.5 ? secondCat : cat;
+
+  if (h.cat !== cat) {
+    h.base.dataset['cat'] = cat;
+    h.cat = cat;
+  }
+  if (h.secondCat !== secondCat) {
+    if (secondCat) h.overlay.dataset['cat'] = secondCat;
+    else delete h.overlay.dataset['cat'];
+    h.secondCat = secondCat;
+  }
+  h.overlay.style.width = `${rightPct.toFixed(2)}%`;
+  if (h.iconCat !== dominant) {
+    h.iconWrap.innerHTML = DESIGN_GLYPH[dominant];
+    h.iconCat = dominant;
+  }
+}
+
+/**
+ * Lay biomes along a continuous strip of length HEX_COUNT in DESIGN_ORDER,
+ * each spanning `(share / total) * HEX_COUNT` units. A slot covering
+ * integer position [i, i+1) is either fully one biome or split between
+ * two — the boundary's fractional offset becomes `leftFraction`.
+ */
+function allocateHexes(shares: DesignShares): HexSlot[] {
+  const out: HexSlot[] = [];
+  let total = 0;
+  for (const k of DESIGN_ORDER) total += shares[k];
+  if (total <= 0) {
+    for (let i = 0; i < HEX_COUNT; i++) out.push({ cat: 'ocean' });
+    return out;
+  }
+
+  type Run = { key: DesignKey; start: number; end: number };
+  const runs: Run[] = [];
+  let pos = 0;
+  for (const k of DESIGN_ORDER) {
+    const len = (shares[k] / total) * HEX_COUNT;
+    if (len <= 0) continue;
+    runs.push({ key: k, start: pos, end: pos + len });
+    pos += len;
+  }
+
+  const EPS = 1e-4;
+  for (let i = 0; i < HEX_COUNT; i++) {
+    const slotStart = i;
+    const slotEnd = i + 1;
+    let leftRun: Run | null = null;
+    let rightRun: Run | null = null;
+    let boundary = slotEnd;
+    for (const r of runs) {
+      const lo = Math.max(r.start, slotStart);
+      const hi = Math.min(r.end, slotEnd);
+      if (hi - lo <= EPS) continue;
+      if (leftRun === null) {
+        leftRun = r;
+        boundary = hi;
+      } else {
+        rightRun = r;
+        break;
+      }
+    }
+    if (leftRun === null) {
+      out.push({ cat: 'ocean' });
+    } else if (rightRun === null) {
+      out.push({ cat: leftRun.key });
+    } else {
+      out.push({ cat: leftRun.key, secondCat: rightRun.key, leftFraction: boundary - slotStart });
+    }
+  }
+  return out;
 }
 
 type VitalsTile = { root: HTMLDivElement; value: HTMLDivElement };
@@ -292,36 +377,6 @@ function simSharesToDesign(s: BiomeCategoryShares): DesignShares {
   return out;
 }
 
-/** Largest-remainder allocation over HEX_COUNT buckets. */
-function allocateHexes(shares: DesignShares): DesignKey[] {
-  let total = 0;
-  for (const k of DESIGN_ORDER) total += shares[k];
-  if (total <= 0) return [];
-  const rows: { key: DesignKey; floor: number; rem: number }[] = [];
-  let assigned = 0;
-  for (const k of DESIGN_ORDER) {
-    const expected = (shares[k] / total) * HEX_COUNT;
-    const floor = Math.floor(expected);
-    rows.push({ key: k, floor, rem: expected - floor });
-    assigned += floor;
-  }
-  const order = [...rows].sort((a, b) => b.rem - a.rem);
-  let idx = 0;
-  while (assigned < HEX_COUNT) {
-    const t = order[idx % order.length]!;
-    t.floor += 1;
-    assigned += 1;
-    idx += 1;
-  }
-  const out: DesignKey[] = [];
-  for (const r of rows) for (let k = 0; k < r.floor; k++) out.push(r.key);
-  return out;
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
-}
-
 /* -------------------------------------------------------------------------
  * Civilization card
  * ------------------------------------------------------------------------- */
@@ -331,8 +386,33 @@ type CivCard = {
     h: WorldHealthSnapshot,
     totalPopulation: number | null,
     totalRoads: number | null,
+    streetsAlive01: number,
   ): void;
 };
+
+/**
+ * Surviving-streets fraction inferred from the destruction frame the
+ * highways shader is actually using. Each road segment discards when
+ * `polyFlipMask * intensity > seedToThreshold(seed)`; with uniform seeds
+ * the expected surviving fraction is `1 - coverage * intensity`, where
+ * `coverage` is the share of populated polygons carrying a nonzero mask
+ * byte. Falls back to 1 (all alive) when no scenario contributes a mask.
+ */
+function streetsAliveFraction(registry: ScenarioRegistry): number {
+  const frame = registry.getDestructionFrame();
+  const mask = frame.polyFlipMask;
+  if (!mask || frame.intensity <= 0) return 1;
+  let on = 0;
+  let total = 0;
+  for (let i = 1; i < mask.length; i++) {
+    total++;
+    if (mask[i]! > 0) on++;
+  }
+  if (total === 0) return 1;
+  const coverage = on / total;
+  const killed = coverage * frame.intensity;
+  return killed >= 1 ? 0 : killed <= 0 ? 1 : 1 - killed;
+}
 
 function buildCivCard(host: HTMLElement): CivCard {
   const card = document.createElement('div');
@@ -377,6 +457,7 @@ function buildCivCard(host: HTMLElement): CivCard {
     h: WorldHealthSnapshot,
     totalPopulation: number | null,
     totalRoads: number | null,
+    streetsAlive01: number,
   ): void {
     const civ01 = Math.max(0, Math.min(1, h.civilization));
     const pct = Math.round(civ01 * 100);
@@ -422,12 +503,15 @@ function buildCivCard(host: HTMLElement): CivCard {
     cityStat.iconWrap.innerHTML = cityIconFor(tier);
     setStatTier(cityStat, tier);
 
-    // Streets — derived from civ01. No per-scenario lost-roads tally
-    // exists (the highways shader discards segments by wasteland
-    // threshold per fragment), so the alive count tracks the civ tier as
-    // a proxy: civ01=1 → all streets, civ01=0 → none.
+    // Streets — derived from the destruction frame the renderer is
+    // actually using. The previous proxy multiplied by civ01, which
+    // collapsed to 0 the instant population hit 0 — well before the
+    // Infrastructure-Decay scenario had finished erasing road segments
+    // from the globe. Using `streetsAlive01` keeps the counter in lock
+    // step with what the shader is drawing.
     if (totalRoads !== null && totalRoads > 0) {
-      const alive = Math.max(0, Math.round(totalRoads * civ01));
+      const aliveF = streetsAlive01 < 0 ? 0 : streetsAlive01 > 1 ? 1 : streetsAlive01;
+      const alive = Math.max(0, Math.round(totalRoads * aliveF));
       const lost = totalRoads - alive;
       streetStat.value.textContent = formatBig(alive);
       if (lost > 0) {
@@ -441,8 +525,9 @@ function buildCivCard(host: HTMLElement): CivCard {
       streetStat.value.textContent = '—';
       streetStat.trend.textContent = '';
     }
-    streetStat.iconWrap.innerHTML = roadIconFor(tier);
-    setStatTier(streetStat, tier);
+    const streetTier: Tier = streetsAlive01 > 0.5 ? 'healthy' : streetsAlive01 > 0.1 ? 'middle' : 'end';
+    streetStat.iconWrap.innerHTML = roadIconFor(streetTier);
+    setStatTier(streetStat, streetTier);
 
     // Composite icon mirrors city state
     icon.innerHTML = cityIconFor(tier);

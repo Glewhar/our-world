@@ -49,18 +49,21 @@ in vec2 aHalfExtentKm;
 in float aPopulation;
 in float aPatternSeed;
 in float aLiftMeters;
+in float aDensity;
 
 out vec2 vLocalKm;
 flat out vec2 vHalfExtentKm;
 out vec3 vWorldPos;
 out float vPopulation;
 out float vPatternSeed;
+out float vDensity;
 
 void main() {
   vLocalKm = aLocalKm;
   vHalfExtentKm = aHalfExtentKm;
   vPopulation = aPopulation;
   vPatternSeed = aPatternSeed;
+  vDensity = aDensity;
 
   vec3 dir = normalize(position);
 
@@ -94,6 +97,7 @@ flat in vec2 vHalfExtentKm;
 in vec3 vWorldPos;
 in float vPopulation;
 in float vPatternSeed;
+in float vDensity;
 
 uniform vec3 uSunDirection;
 
@@ -200,15 +204,12 @@ void main() {
 
   vec2 localKm = vLocalKm;
 
-  // Normalised intra-polygon coord. Reaches ~1 at the polygon's bbox
-  // edge in either axis; the radial-density term below uses length(local)
-  // so the layer fades toward the polygon's outer extents.
-  vec2 local = localKm / max(vHalfExtentKm, vec2(1.0));
-
   // Cell grid in km. Per-row x-stretch + half-cell running-bond offset
   // turn the uniform squares into irregular brickwork. uAspectJitter=0
   // collapses back to the original square grid; uRowOffset=0 keeps rows
-  // aligned.
+  // aligned. The half-extent here is the tier's own bbox so block scale
+  // stays sensible per tier; the seed is shared across a city's tiers so
+  // the pattern doesn't seam where tier boundaries meet.
   float cellsPerHalf = uGridDensity;
   vec2 cellCoord = localKm / max(vHalfExtentKm.x, vHalfExtentKm.y) * cellsPerHalf;
   float rowId = floor(cellCoord.y);
@@ -221,10 +222,12 @@ void main() {
   float h = hash21(cellId + vec2(vPatternSeed * 0.0123, vPatternSeed * 0.0719));
   float h2 = hash11(h * 91.7);
 
-  // Radial centre boost — denser near the centroid so even spread-out
-  // polygons still read as "dense downtown, lighter outskirts".
-  float r = length(local);
-  float density = exp(-r * r * 1.6);
+  // Per-vertex density from the SMOD tier this fragment belongs to.
+  // 1.0 = urban centre, 0.75 = dense cluster, 0.5 = semi-dense,
+  // 0.25 = suburban. The painter's block-spray, outline weight, and alpha
+  // all read this uniformly — sparser/dimmer blocks in suburb tiers, full
+  // intensity in the centre tier, with no centroid bias.
+  float density = vDensity;
 
   float blockExists = step(uBlockThreshold + (1.0 - density), h);
   float inset = mix(0.05, 0.18, h2) * (0.4 + 0.6 * density);
@@ -337,7 +340,8 @@ export class CitiesLayer {
     constructor(world, urbanAreas) {
         const { nside, ordering } = world.getHealpixSpec();
         this.group = new THREE.Group();
-        console.info(`[cities] constructing CitiesLayer with ${urbanAreas.length} polygons`);
+        const totalTiers = urbanAreas.reduce((sum, u) => sum + u.tiers.length, 0);
+        console.info(`[cities] constructing CitiesLayer with ${urbanAreas.length} cities (${totalTiers} tiers)`);
         const c = DEFAULTS.materials.cities;
         // Polygon-keyed climate destruction wiring (Plan A). Defaults to off
         // (uHasPolyFlipMask = 0) when the bake shipped no polygons.
@@ -529,84 +533,90 @@ function buildBucketGeometry(records, liftCtx) {
     const tris = [];
     let totalVerts = 0;
     let totalIdx = 0;
-    // Vector2-likes for ShapeUtils.triangulateShape — it uses .x, .y, .equals.
-    // Reusable scratch contour array, recycled per polygon.
     for (const rec of records) {
-        if (rec.polygon.length < 3)
-            continue;
+        // Tangent basis is shared across all tiers of a city (centred on the
+        // city's centroid lat/lon) so tier polygons project into the same
+        // local frame — necessary for the block-grid to align tier-to-tier.
         const basis = tangentBasisAt(rec.lat, rec.lon);
         const { centre, tangentX, tangentY } = basis;
-        const n = rec.polygon.length;
-        const positions = new Float32Array(n * 3);
-        const localKm = new Float32Array(n * 2);
-        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-        const contour = new Array(n);
-        for (let i = 0; i < n; i++) {
-            const lat = rec.polygon[i][0] * Math.PI / 180;
-            const lon = rec.polygon[i][1] * Math.PI / 180;
-            const cosLat = Math.cos(lat);
-            const px = cosLat * Math.cos(lon);
-            const py = cosLat * Math.sin(lon);
-            const pz = Math.sin(lat);
-            positions[i * 3] = px;
-            positions[i * 3 + 1] = py;
-            positions[i * 3 + 2] = pz;
-            const dx = px - centre.x;
-            const dy = py - centre.y;
-            const dz = pz - centre.z;
-            const ex = (dx * tangentX.x + dy * tangentX.y + dz * tangentX.z) * EARTH_RADIUS_KM;
-            const ey = (dx * tangentY.x + dy * tangentY.y + dz * tangentY.z) * EARTH_RADIUS_KM;
-            localKm[i * 2] = ex;
-            localKm[i * 2 + 1] = ey;
-            if (ex < minX)
-                minX = ex;
-            if (ex > maxX)
-                maxX = ex;
-            if (ey < minY)
-                minY = ey;
-            if (ey > maxY)
-                maxY = ey;
-            contour[i] = new THREE.Vector2(ex, ey);
-        }
-        // Same 5% headroom convention used by PolygonAtlas (so the radial
-        // density falloff in the fragment shader sees the same half-extent).
-        const halfExtent = {
-            x: Math.max(1, (maxX - minX) * 0.55),
-            y: Math.max(1, (maxY - minY) * 0.55),
-        };
-        // Earcut needs CCW winding; flip if clockwise. The triangulator
-        // tolerates degenerate input but returns zero tris for collapsed
-        // contours — those get skipped below.
-        const reversed = THREE.ShapeUtils.isClockWise(contour);
-        if (reversed)
-            contour.reverse();
-        // ShapeUtils mutates contour (drops a duplicated closing vertex if
-        // present). The artifact already omits the closing vertex, so the
-        // call is a no-op there.
-        const faces = THREE.ShapeUtils.triangulateShape(contour, []);
-        if (faces.length === 0)
-            continue;
-        // If we reversed the contour, face indices reference the reversed
-        // order; remap each index i to (n-1-i) so they index back into the
-        // original positions / localKm arrays.
-        const indices = new Uint32Array(faces.length * 3);
-        if (reversed) {
-            for (let i = 0; i < faces.length; i++) {
-                indices[i * 3] = n - 1 - faces[i][0];
-                indices[i * 3 + 1] = n - 1 - faces[i][1];
-                indices[i * 3 + 2] = n - 1 - faces[i][2];
+        for (const tier of rec.tiers) {
+            const poly = tier.polygon;
+            if (poly.length < 3)
+                continue;
+            const n = poly.length;
+            const positions = new Float32Array(n * 3);
+            const localKm = new Float32Array(n * 2);
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            const contour = new Array(n);
+            for (let i = 0; i < n; i++) {
+                const lat = poly[i][0] * Math.PI / 180;
+                const lon = poly[i][1] * Math.PI / 180;
+                const cosLat = Math.cos(lat);
+                const px = cosLat * Math.cos(lon);
+                const py = cosLat * Math.sin(lon);
+                const pz = Math.sin(lat);
+                positions[i * 3] = px;
+                positions[i * 3 + 1] = py;
+                positions[i * 3 + 2] = pz;
+                const dx = px - centre.x;
+                const dy = py - centre.y;
+                const dz = pz - centre.z;
+                const ex = (dx * tangentX.x + dy * tangentX.y + dz * tangentX.z) * EARTH_RADIUS_KM;
+                const ey = (dx * tangentY.x + dy * tangentY.y + dz * tangentY.z) * EARTH_RADIUS_KM;
+                localKm[i * 2] = ex;
+                localKm[i * 2 + 1] = ey;
+                if (ex < minX)
+                    minX = ex;
+                if (ex > maxX)
+                    maxX = ex;
+                if (ey < minY)
+                    minY = ey;
+                if (ey > maxY)
+                    maxY = ey;
+                contour[i] = new THREE.Vector2(ex, ey);
             }
-        }
-        else {
-            for (let i = 0; i < faces.length; i++) {
-                indices[i * 3] = faces[i][0];
-                indices[i * 3 + 1] = faces[i][1];
-                indices[i * 3 + 2] = faces[i][2];
+            // Per-tier half-extent keeps the block-grid scale sensible inside
+            // the tier; centre tiers get a tighter grid than suburb tiers,
+            // matching what each tier should read as visually.
+            const halfExtent = {
+                x: Math.max(1, (maxX - minX) * 0.55),
+                y: Math.max(1, (maxY - minY) * 0.55),
+            };
+            // Earcut needs CCW winding; flip if clockwise. The triangulator
+            // tolerates degenerate input but returns zero tris for collapsed
+            // contours — those get skipped below.
+            const reversed = THREE.ShapeUtils.isClockWise(contour);
+            if (reversed)
+                contour.reverse();
+            const faces = THREE.ShapeUtils.triangulateShape(contour, []);
+            if (faces.length === 0)
+                continue;
+            const indices = new Uint32Array(faces.length * 3);
+            if (reversed) {
+                for (let i = 0; i < faces.length; i++) {
+                    indices[i * 3] = n - 1 - faces[i][0];
+                    indices[i * 3 + 1] = n - 1 - faces[i][1];
+                    indices[i * 3 + 2] = n - 1 - faces[i][2];
+                }
             }
+            else {
+                for (let i = 0; i < faces.length; i++) {
+                    indices[i * 3] = faces[i][0];
+                    indices[i * 3 + 1] = faces[i][1];
+                    indices[i * 3 + 2] = faces[i][2];
+                }
+            }
+            tris.push({
+                record: rec,
+                density: tier.density,
+                positions,
+                localKm,
+                halfExtentKm: halfExtent,
+                indices,
+            });
+            totalVerts += n;
+            totalIdx += indices.length;
         }
-        tris.push({ record: rec, positions, localKm, halfExtentKm: halfExtent, indices });
-        totalVerts += n;
-        totalIdx += indices.length;
     }
     if (totalIdx === 0)
         return null;
@@ -617,6 +627,7 @@ function buildBucketGeometry(records, liftCtx) {
     const populations = new Float32Array(totalVerts);
     const seeds = new Float32Array(totalVerts);
     const lifts = new Float32Array(totalVerts);
+    const densities = new Float32Array(totalVerts);
     const indices = new Uint32Array(totalIdx);
     let vBase = 0;
     let iWrite = 0;
@@ -633,6 +644,7 @@ function buildBucketGeometry(records, liftCtx) {
             halfExtents[(vBase + i) * 2 + 1] = t.halfExtentKm.y;
             populations[vBase + i] = t.record.pop;
             seeds[vBase + i] = t.record.id;
+            densities[vBase + i] = t.density;
             const px = t.positions[i * 3];
             const py = t.positions[i * 3 + 1];
             const pz = t.positions[i * 3 + 2];
@@ -648,10 +660,6 @@ function buildBucketGeometry(records, liftCtx) {
                 minPz = pz;
             if (pz > maxPz)
                 maxPz = pz;
-            // 9-tap lift baked once per vertex; the shader scales by
-            // uElevationScale so the altitude slider keeps working without
-            // re-baking. Terraforming would need a `rebakeLifts()` pass to
-            // overwrite this buffer + flip needsUpdate.
             lifts[vBase + i] = bakeLiftMeters(px, py, pz, liftCtx);
         }
         for (let i = 0; i < t.indices.length; i++) {
@@ -667,6 +675,7 @@ function buildBucketGeometry(records, liftCtx) {
     geom.setAttribute('aPopulation', new THREE.BufferAttribute(populations, 1));
     geom.setAttribute('aPatternSeed', new THREE.BufferAttribute(seeds, 1));
     geom.setAttribute('aLiftMeters', new THREE.BufferAttribute(lifts, 1));
+    geom.setAttribute('aDensity', new THREE.BufferAttribute(densities, 1));
     geom.setIndex(new THREE.BufferAttribute(indices, 1));
     // Bounding sphere over this bucket's vertex positions, slightly
     // inflated to cover the elevation lift (max ~9 km × default

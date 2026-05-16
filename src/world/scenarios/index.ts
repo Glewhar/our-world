@@ -28,6 +28,11 @@ export type { GlobalWarmingScenarioConfig } from './handlers/GlobalWarmingScenar
 export { IceAgeScenario } from './handlers/IceAgeScenario.js';
 export { DEFAULT_ICE_AGE_CONFIG } from './handlers/IceAgeScenario.config.js';
 export type { IceAgeScenarioConfig } from './handlers/IceAgeScenario.config.js';
+export { InfraDecayScenario } from './handlers/InfraDecayScenario.js';
+export {
+  INFRA_DECAY_DURATION_DAYS,
+  INFRA_DECAY_LABEL,
+} from './handlers/InfraDecayScenario.config.js';
 export { NuclearWarScenario } from './handlers/NuclearWarScenario.js';
 export {
   DEFAULT_NUCLEAR_WAR_CONFIG,
@@ -47,7 +52,12 @@ export type {
   ClimateDelta,
   ProjectedTransition,
 } from './biomeProjection.js';
-export { climateRisePlateauFall, decayQuickThenSlow, decaySustained } from './recoveryCurves.js';
+export {
+  climateRisePlateauFall,
+  decayQuickThenSlow,
+  decaySustained,
+  infraDecayEnvelope,
+} from './recoveryCurves.js';
 export { pristineWorldHealth } from './healthSnapshot.js';
 export type { WorldHealthSnapshot } from './healthSnapshot.js';
 export { zeroBudget } from './impactBudget.js';
@@ -63,6 +73,7 @@ export type {
   EllipsePaintArgs,
   GlobalWarmingScenarioPayload,
   IceAgeScenarioPayload,
+  InfraDecayScenarioPayload,
   NuclearScenarioPayload,
   NuclearStrike,
   NuclearWarScenarioPayload,

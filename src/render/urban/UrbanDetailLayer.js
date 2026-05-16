@@ -242,6 +242,7 @@ void main() {
 `;
 import { ATLAS_WIDTH, buildPolygonAtlas, pointInPolygon } from './PolygonAtlas.js';
 import { Pcg32 } from '../util/pcg32.js';
+import { outermostTier } from '../../world/urban-areas.js';
 const EARTH_RADIUS_KM = 6371;
 const BUILD_VERSION = 1; // bump to invalidate cached city builds
 /**
@@ -577,10 +578,13 @@ function rasteriseInsideMask(meta, size) {
     // but recomputing is cheap and avoids re-uploading data.)
     const { centre, tangentX, tangentY } = meta.basis;
     const rec = meta.record;
-    const polyXy = new Float32Array(rec.polygon.length * 2);
-    for (let i = 0; i < rec.polygon.length; i++) {
-        const lat = rec.polygon[i][0] * Math.PI / 180;
-        const lon = rec.polygon[i][1] * Math.PI / 180;
+    // Suburban tier carries the full city footprint — building placement
+    // wants to walk the whole urban extent, not just the dense core.
+    const footprint = outermostTier(rec).polygon;
+    const polyXy = new Float32Array(footprint.length * 2);
+    for (let i = 0; i < footprint.length; i++) {
+        const lat = footprint[i][0] * Math.PI / 180;
+        const lon = footprint[i][1] * Math.PI / 180;
         const cosLat = Math.cos(lat);
         const px = cosLat * Math.cos(lon);
         const py = cosLat * Math.sin(lon);

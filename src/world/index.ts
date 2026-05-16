@@ -23,12 +23,16 @@ export type {
   RoadRecord,
   UrbanAreasFile,
   UrbanAreaRecord,
+  UrbanDensityTier,
+  LegacyUrbanAreaRecord,
   PickResult,
   TopologyChange,
   WorldAggregates,
   TileId,
   Unsubscribe,
 } from './types.js';
+
+export { outermostTier } from './urban-areas.js';
 
 export { createWorldRuntime } from './WorldRuntime.js';
 export type { CreateWorldRuntimeOptions, SimControl, WorldRuntimeBundle } from './WorldRuntime.js';

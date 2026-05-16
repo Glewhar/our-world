@@ -1010,67 +1010,63 @@ html, body {
 .vitals-tile[data-tone="warm"] .vitals-value { color: #ffd9a0; }
 .vitals-tile[data-tone="land"] .vitals-icon { color: var(--biome-forest); background: rgba(45, 212, 121, 0.16); }
 .vitals-tile[data-tone="land"] .vitals-value { color: #b9f0d0; }
-#biome-card .biome-trend-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.biome-trend-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 8px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: var(--r-pill);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--text-dim);
-}
-.biome-trend-chip .arrow { font-family: var(--font-mono); font-size: 10px; }
-.biome-trend-chip.up   { color: var(--accent-green); border-color: rgba(108, 230, 157, 0.3); }
-.biome-trend-chip.down { color: var(--accent-hot);   border-color: rgba(255, 90, 58, 0.3); }
 #biome-card .biome-hex-row {
+  /* Pointy-top honeycomb. Derived offsets keep perpendicular padding
+     equal in all three neighbour directions: tweak --hex-gap and the
+     other measurements stay consistent. */
+  --hex-w: 36px;
+  --hex-h: 42px;
+  --hex-gap: 4px;
   display: flex;
-  gap: 5px;
-  height: 44px;
-  align-items: center;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+}
+.bc-hex-stripe {
+  display: flex;
+  gap: var(--hex-gap);
+}
+.bc-hex-stripe.is-offset {
+  margin-left: calc((var(--hex-w) + var(--hex-gap)) / 2);
+  /* Vertical pitch = 0.75h + g·√3/2; subtract h to get the overlap pull. */
+  margin-top: calc(var(--hex-gap) * 0.8660254 - var(--hex-h) / 4);
 }
 .bc-hex {
-  width: 36px;
-  height: 42px;
-  flex: 0 0 36px;
+  width: var(--hex-w);
+  height: var(--hex-h);
+  flex: 0 0 var(--hex-w);
   position: relative;
-  background: rgba(255, 255, 255, 0.04);
   clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
-  display: flex; align-items: center; justify-content: center;
-  transition: background-color 0.4s ease;
   color: #1a1207;
 }
-.bc-hex svg { width: 22px; height: 22px; display: block; opacity: 0.95; }
-.bc-hex[data-cat="forest"]    { background: var(--biome-forest); }
-.bc-hex[data-cat="jungle"]    { background: var(--biome-jungle); }
-.bc-hex[data-cat="grass"]     { background: var(--biome-grass); }
-.bc-hex[data-cat="desert"]    { background: var(--biome-desert); }
-.bc-hex[data-cat="tundra"]    { background: var(--biome-tundra); }
-.bc-hex[data-cat="wasteland"] { background: var(--biome-wasteland); }
-.bc-hex[data-cat="ocean"]     { background: var(--biome-ocean); }
-.bc-hex[data-cat="mutated"]   { background: var(--biome-mutated); }
-.bc-hex.flash::after {
-  content: '';
+.bc-hex-base {
   position: absolute;
   inset: 0;
-  background: rgba(255, 255, 255, 0.85);
-  clip-path: inherit;
-  animation: hex-flip 0.42s ease-out forwards;
 }
-@keyframes hex-flip {
-  0%   { opacity: 1; }
-  60%  { opacity: 0.25; }
-  100% { opacity: 0; }
+.bc-hex-overlay {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 0;
 }
+.bc-hex-icon {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+.bc-hex-icon svg { width: 22px; height: 22px; display: block; opacity: 0.95; }
+.bc-hex-base[data-cat="forest"],    .bc-hex-overlay[data-cat="forest"]    { background: var(--biome-forest); }
+.bc-hex-base[data-cat="jungle"],    .bc-hex-overlay[data-cat="jungle"]    { background: var(--biome-jungle); }
+.bc-hex-base[data-cat="grass"],     .bc-hex-overlay[data-cat="grass"]     { background: var(--biome-grass); }
+.bc-hex-base[data-cat="desert"],    .bc-hex-overlay[data-cat="desert"]    { background: var(--biome-desert); }
+.bc-hex-base[data-cat="tundra"],    .bc-hex-overlay[data-cat="tundra"]    { background: var(--biome-tundra); }
+.bc-hex-base[data-cat="wasteland"], .bc-hex-overlay[data-cat="wasteland"] { background: var(--biome-wasteland); }
+.bc-hex-base[data-cat="ocean"],     .bc-hex-overlay[data-cat="ocean"]     { background: var(--biome-ocean); }
+.bc-hex-base[data-cat="mutated"],   .bc-hex-overlay[data-cat="mutated"]   { background: var(--biome-mutated); }
 .biome-inline-row {
   display: none;
   gap: 8px;
@@ -1611,8 +1607,7 @@ html, body {
   .vitals-icon { width: 20px; height: 20px; border-radius: 6px; }
   .vitals-icon svg { width: 14px; height: 14px; }
   .vitals-value { font-size: 12px; }
-  #biome-card .biome-hex-row { height: auto; gap: 4px; }
-  .bc-hex { width: 26px; height: 30px; flex: 0 0 26px; }
+  #biome-card .biome-hex-row { --hex-w: 26px; --hex-h: 30px; }
   .bc-hex svg { width: 16px; height: 16px; }
   .biome-trend-chip { font-size: 9px; padding: 2px 6px; }
 

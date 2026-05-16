@@ -21,6 +21,7 @@
  */
 import * as THREE from 'three';
 import { tangentBasisAt } from '../../world/coordinates.js';
+import { outermostTier } from '../../world/urban-areas.js';
 const EARTH_RADIUS_KM = 6371;
 export const ATLAS_WIDTH = 256;
 /**
@@ -37,11 +38,14 @@ export function buildPolygonAtlas(records) {
     for (const rec of records) {
         const basis = tangentBasisAt(rec.lat, rec.lon);
         const { centre, tangentX, tangentY } = basis;
-        const xy = new Float32Array(rec.polygon.length * 2);
+        // Atlas packs the full city footprint for the urban detail layer's
+        // inside-test; the outermost (suburban) tier is the correct footprint.
+        const footprint = outermostTier(rec).polygon;
+        const xy = new Float32Array(footprint.length * 2);
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-        for (let i = 0; i < rec.polygon.length; i++) {
-            const lat = rec.polygon[i][0] * Math.PI / 180;
-            const lon = rec.polygon[i][1] * Math.PI / 180;
+        for (let i = 0; i < footprint.length; i++) {
+            const lat = footprint[i][0] * Math.PI / 180;
+            const lon = footprint[i][1] * Math.PI / 180;
             const cosLat = Math.cos(lat);
             // Unit-sphere world position of this polygon vertex.
             const px = cosLat * Math.cos(lon);
@@ -72,7 +76,7 @@ export function buildPolygonAtlas(records) {
         const halfX = Math.max(1, (maxX - minX) * 0.55);
         const halfY = Math.max(1, (maxY - minY) * 0.55);
         projected.push({ xy, halfExtentKm: { x: halfX, y: halfY }, basis });
-        totalVerts += rec.polygon.length;
+        totalVerts += footprint.length;
         const half = Math.max(halfX, halfY);
         if (half > maxHalfExtentKm)
             maxHalfExtentKm = half;
@@ -85,15 +89,16 @@ export function buildPolygonAtlas(records) {
     for (let i = 0; i < records.length; i++) {
         const p = projected[i];
         const rec = records[i];
+        const polyCount = p.xy.length / 2;
         const offset = cursor;
-        for (let v = 0; v < rec.polygon.length; v++) {
+        for (let v = 0; v < polyCount; v++) {
             data[(cursor + v) * 2] = p.xy[v * 2];
             data[(cursor + v) * 2 + 1] = p.xy[v * 2 + 1];
         }
-        cursor += rec.polygon.length;
+        cursor += polyCount;
         meta.push({
             polyOffset: offset,
-            polyCount: rec.polygon.length,
+            polyCount,
             halfExtentKm: p.halfExtentKm,
             basis: p.basis,
             record: rec,

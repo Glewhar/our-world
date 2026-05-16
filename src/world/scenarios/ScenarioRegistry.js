@@ -1267,5 +1267,7 @@ function defaultLabel(kind) {
             return 'Ice age';
         case 'nuclearWar':
             return 'Nuclear war';
+        case 'infraDecay':
+            return 'Infrastructure Decay';
     }
 }

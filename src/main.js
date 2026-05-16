@@ -19,7 +19,7 @@ import { createWorldRuntime } from './world/index.js';
 import { createDebugPanel, initialDebugState } from './debug/Tweakpane.js';
 import { runGpuProbe, applyTier, tierName } from './debug/autotune.js';
 import { setAttributeEvent } from './sim/events/primitives.js';
-import { GlobalWarmingScenario, IceAgeScenario, NuclearScenario, NuclearWarScenario, ScenarioRegistry, } from './world/scenarios/index.js';
+import { GlobalWarmingScenario, IceAgeScenario, InfraDecayScenario, INFRA_DECAY_DURATION_DAYS, INFRA_DECAY_LABEL, NuclearScenario, NuclearWarScenario, ScenarioRegistry, } from './world/scenarios/index.js';
 import { DEFAULT_NUCLEAR_WAR_CONFIG } from './world/scenarios/handlers/NuclearWarScenario.config.js';
 import { DEFAULT_NUCLEAR_CONFIG } from './world/scenarios/handlers/NuclearScenario.config.js';
 import { DEFAULT_GLOBAL_WARMING_CONFIG } from './world/scenarios/handlers/GlobalWarmingScenario.config.js';
@@ -159,6 +159,12 @@ async function boot() {
     scenarioRegistry.registerHandler('globalWarming', GlobalWarmingScenario);
     scenarioRegistry.registerHandler('iceAge', IceAgeScenario);
     scenarioRegistry.registerHandler('nuclearWar', NuclearWarScenario);
+    scenarioRegistry.registerHandler('infraDecay', InfraDecayScenario);
+    // Fire-once-per-game flag for the Infrastructure-Decay auto-trigger.
+    // Once a killer scenario empties the planet, this flips true and the
+    // next frame's tick block starts the decay scenario — see the guard
+    // block right after `scenarioRegistry.tick(...)` in the RAF loop.
+    let infraDecayFired = false;
     // --- UI mounting --------------------------------------------------------
     const topbar = mountTopbar(debug.state, () => debug.pane.refresh());
     const subtleStack = mountSubtleStack(document.getElementById('subtle-stack'), scenarioRegistry);
@@ -232,6 +238,21 @@ async function boot() {
         tickPerfRingHead = (tickPerfRingHead + 1) % TICK_PERF_RING;
         if (tickPerfRingHead === 0)
             tickPerfRingFilled = true;
+        // Auto-trigger Infrastructure-Decay the moment world population
+        // hits zero. Must run AFTER `tick(...)` so this frame's
+        // `populationLost` reflects the killer's latest contribution, and
+        // BEFORE `setDestructionFrame(...)` below so the new scenario's
+        // mask is included from frame one. Fires at most once per game.
+        if (!infraDecayFired) {
+            const totals = scenarioRegistry.getWorldTotals();
+            if (totals && totals.population > 0) {
+                const health = scenarioRegistry.getWorldHealth();
+                if (health.stats.populationLost >= totals.population) {
+                    scenarioRegistry.start('infraDecay', {}, debug.state.timeOfDay.totalDays, INFRA_DECAY_DURATION_DAYS, { label: INFRA_DECAY_LABEL });
+                    infraDecayFired = true;
+                }
+            }
+        }
         sceneGraph.setClimateFrame(scenarioRegistry.getClimateFrame());
         sceneGraph.setBiomeOverrideTextures(world.getBiomeOverrideTexture(), world.getBiomeOverrideStampTexture());
         sceneGraph.setClimateEnvelopes(scenarioRegistry.getClimateEnvelopes());

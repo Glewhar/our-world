@@ -41,6 +41,7 @@ import type {
   AttributeKey,
   CitiesFile,
   CityRecord,
+  LegacyUrbanAreaRecord,
   PickResult,
   RoadRecord,
   RoadsFile,
@@ -51,6 +52,7 @@ import type {
   WorldAggregates,
   WorldRuntime,
 } from './types.js';
+import { legacyToTieredRecord } from './urban-areas.js';
 
 const DEG = Math.PI / 180;
 
@@ -468,6 +470,13 @@ async function loadUrbanAreasArtifact(url: string): Promise<readonly UrbanAreaRe
     if (!Array.isArray(file?.urban_areas)) {
       console.warn(`[urban_areas] missing 'urban_areas' array in ${url}`);
       return [];
+    }
+    // v1 ships a single outer-ring `polygon` per record; back-fill density
+    // tiers at load time so the render layer only ever sees the v2 shape.
+    // The cast is the single point where v1/v2 shapes are disambiguated.
+    if (file.version !== 2) {
+      const legacy = file.urban_areas as unknown as LegacyUrbanAreaRecord[];
+      return legacy.map(legacyToTieredRecord);
     }
     return file.urban_areas as UrbanAreaRecord[];
   } catch (err) {
